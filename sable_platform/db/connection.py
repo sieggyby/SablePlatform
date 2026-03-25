@@ -1,0 +1,59 @@
+"""Shared SQLite connection factory and migration runner for sable.db."""
+from __future__ import annotations
+
+import importlib.resources
+import os
+import sqlite3
+from pathlib import Path
+
+_MIGRATIONS = [
+    ("001_initial.sql", 1),
+    ("002_sync_runs_run_id.sql", 2),
+    ("003_diagnostic_runs_cult_columns.sql", 3),
+    ("004_jobs_extend.sql", 4),
+    ("005_artifacts_degraded.sql", 5),
+    ("006_workflow_tables.sql", 6),
+]
+
+
+def _sable_db_path() -> Path:
+    env = os.environ.get("SABLE_DB_PATH")
+    if env:
+        return Path(env)
+    return Path.home() / ".sable" / "sable.db"
+
+
+def get_db(db_path: str | Path | None = None) -> sqlite3.Connection:
+    path = Path(db_path) if db_path else _sable_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(conn)
+    return conn
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Apply pending migrations to bring sable.db up to current version."""
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        current = row[0] if row else 0
+    except sqlite3.OperationalError:
+        current = 0
+
+    migrations_pkg = importlib.resources.files("sable_platform.db") / "migrations"
+
+    for filename, target_version in _MIGRATIONS:
+        if current < target_version:
+            sql_file = migrations_pkg / filename
+            sql = sql_file.read_text(encoding="utf-8")
+            stmts = [s.strip() for s in sql.split(";") if s.strip()]
+            with conn:
+                for stmt in stmts:
+                    conn.execute(stmt)
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                    (target_version,),
+                )
+            current = target_version

@@ -1,0 +1,213 @@
+"""Workflow 2: Weekly Client Operating Loop.
+
+Answers for any completed run:
+- Is this client's data fresh?             workflow_steps[check_tracking_freshness].output_json
+- What steps were run this week?           workflow_steps table
+- What outputs were generated?             workflow_steps[register_artifacts].output_json
+- Which upstream sources were stale?       workflow_steps[mark_stale_artifacts].output_json
+"""
+from __future__ import annotations
+
+import datetime
+import json
+
+from sable_platform.db.stale import mark_artifacts_stale
+from sable_platform.errors import SableError, INVALID_CONFIG
+from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
+from sable_platform.workflows import registry
+
+_DEFAULT_TRACKING_STALENESS_DAYS = 7
+_DEFAULT_PULSE_STALENESS_DAYS = 14
+
+
+# ---------------------------------------------------------------------------
+# Step implementations
+# ---------------------------------------------------------------------------
+
+def _check_tracking_freshness(ctx) -> StepResult:
+    """Query sync_runs for the latest tracking sync and compute age."""
+    staleness_days = ctx.config.get("tracking_staleness_days", _DEFAULT_TRACKING_STALENESS_DAYS)
+
+    row = ctx.db.execute(
+        """
+        SELECT completed_at FROM sync_runs
+        WHERE org_id=? AND sync_type='sable_tracking' AND status='completed'
+        ORDER BY completed_at DESC LIMIT 1
+        """,
+        (ctx.org_id,),
+    ).fetchone()
+
+    if row and row["completed_at"]:
+        last_sync_str = row["completed_at"]
+        try:
+            last_sync = datetime.datetime.fromisoformat(last_sync_str.replace("Z", "+00:00"))
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if last_sync.tzinfo is None:
+                last_sync = last_sync.replace(tzinfo=datetime.timezone.utc)
+            age_days = (now - last_sync).days
+        except (ValueError, TypeError):
+            age_days = 999
+        tracking_fresh = age_days <= staleness_days
+    else:
+        last_sync_str = None
+        age_days = 999
+        tracking_fresh = False
+
+    return StepResult(
+        status="completed",
+        output={
+            "tracking_fresh": tracking_fresh,
+            "tracking_age_days": age_days,
+            "tracking_last_sync": last_sync_str,
+        },
+    )
+
+
+def _check_pulse_freshness(ctx) -> StepResult:
+    """Query artifacts for latest pulse/meta report and compute age."""
+    staleness_days = ctx.config.get("pulse_staleness_days", _DEFAULT_PULSE_STALENESS_DAYS)
+
+    row = ctx.db.execute(
+        """
+        SELECT created_at FROM artifacts
+        WHERE org_id=? AND artifact_type IN ('pulse_report', 'meta_report') AND stale=0
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (ctx.org_id,),
+    ).fetchone()
+
+    if row and row["created_at"]:
+        try:
+            created = datetime.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=datetime.timezone.utc)
+            age_days = (now - created).days
+        except (ValueError, TypeError):
+            age_days = 999
+        pulse_fresh = age_days <= staleness_days
+    else:
+        age_days = 999
+        pulse_fresh = False
+
+    return StepResult(
+        status="completed",
+        output={
+            "pulse_fresh": pulse_fresh,
+            "pulse_age_days": age_days,
+        },
+    )
+
+
+def _mark_stale_artifacts(ctx) -> StepResult:
+    """Mark downstream artifacts stale when tracking data is stale."""
+    types = ["twitter_strategy_brief", "discord_playbook"]
+    mark_artifacts_stale(ctx.db, ctx.org_id, types)
+    return StepResult(
+        status="completed",
+        output={"stale_artifact_types": types},
+    )
+
+
+def _trigger_tracking_sync(ctx) -> StepResult:
+    """Invoke SableTracking adapter to refresh contributor/content data."""
+    from sable_platform.adapters.tracking_sync import SableTrackingAdapter
+
+    adapter = SableTrackingAdapter()
+    result = adapter.run({"org_id": ctx.org_id})
+    return StepResult(
+        status="completed",
+        output={"tracking_sync_result": result},
+    )
+
+
+def _trigger_strategy_generation(ctx) -> StepResult:
+    """Invoke Slopper advisory adapter to generate strategy brief."""
+    from sable_platform.adapters.slopper import SlopperAdvisoryAdapter
+
+    adapter = SlopperAdvisoryAdapter()
+    result = adapter.run({"org_id": ctx.org_id})
+    return StepResult(
+        status="completed",
+        output={"strategy_result": result},
+    )
+
+
+def _register_artifacts(ctx) -> StepResult:
+    """Collect artifact references from prior step outputs and write to DB."""
+    artifact_ids: list[int] = []
+
+    # Collect any artifact paths produced by strategy generation
+    strategy_result = ctx.input_data.get("strategy_result", {})
+    artifacts = strategy_result.get("artifacts", [])
+    for art in artifacts:
+        if isinstance(art, dict) and art.get("path"):
+            cur = ctx.db.execute(
+                """
+                INSERT OR IGNORE INTO artifacts (org_id, artifact_type, path, metadata_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    ctx.org_id,
+                    art.get("artifact_type", "strategy_output"),
+                    art["path"],
+                    json.dumps({"source": "weekly_client_loop", "run_id": ctx.run_id}),
+                ),
+            )
+            if cur.lastrowid:
+                artifact_ids.append(cur.lastrowid)
+
+    ctx.db.commit()
+    return StepResult(
+        status="completed",
+        output={"artifact_ids": artifact_ids, "artifact_count": len(artifact_ids)},
+    )
+
+
+def _mark_complete(ctx) -> StepResult:
+    """Return freshness summary."""
+    return StepResult(
+        status="completed",
+        output={
+            "summary": {
+                "run_id": ctx.run_id,
+                "org_id": ctx.org_id,
+                "tracking_fresh": ctx.input_data.get("tracking_fresh"),
+                "tracking_age_days": ctx.input_data.get("tracking_age_days"),
+                "pulse_fresh": ctx.input_data.get("pulse_fresh"),
+                "pulse_age_days": ctx.input_data.get("pulse_age_days"),
+                "artifact_count": ctx.input_data.get("artifact_count", 0),
+            }
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workflow definition
+# ---------------------------------------------------------------------------
+
+WEEKLY_CLIENT_LOOP = WorkflowDefinition(
+    name="weekly_client_loop",
+    version="1.0",
+    steps=[
+        StepDefinition(name="check_tracking_freshness", fn=_check_tracking_freshness, max_retries=0),
+        StepDefinition(name="check_pulse_freshness", fn=_check_pulse_freshness, max_retries=0),
+        StepDefinition(
+            name="mark_stale_artifacts",
+            fn=_mark_stale_artifacts,
+            max_retries=0,
+            skip_if=lambda ctx: ctx.input_data.get("tracking_fresh", False) is True,
+        ),
+        StepDefinition(
+            name="trigger_tracking_sync",
+            fn=_trigger_tracking_sync,
+            max_retries=1,
+            skip_if=lambda ctx: ctx.input_data.get("tracking_fresh", False) is True,
+        ),
+        StepDefinition(name="trigger_strategy_generation", fn=_trigger_strategy_generation, max_retries=1),
+        StepDefinition(name="register_artifacts", fn=_register_artifacts, max_retries=1),
+        StepDefinition(name="mark_complete", fn=_mark_complete, max_retries=0),
+    ],
+)
+
+registry.register(WEEKLY_CLIENT_LOOP)
