@@ -99,7 +99,7 @@ class CultGraderAdapter(SubprocessAdapterMixin):
                 "run_id": meta.get("run_id", ""),
                 "checkpoint_path": str(diagnostics_dir),
                 "fit_score": meta.get("fit_score"),
-                "recommended_action": meta.get("recommendation"),
+                "recommended_action": meta.get("recommended_action"),
             }
 
         return {"checkpoint_path": str(diagnostics_dir)}

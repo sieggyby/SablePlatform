@@ -13,6 +13,12 @@ EXPECTED_TABLES = {
     "diagnostic_runs", "jobs", "job_steps", "artifacts", "cost_events", "sync_runs",
     # Migration 006: 3 new tables
     "workflow_runs", "workflow_steps", "workflow_events",
+    # Migration 007: actions + outcomes + diagnostic_deltas
+    "actions", "outcomes", "diagnostic_deltas",
+    # Migration 008: entity journey
+    "entity_tag_history",
+    # Migration 009: alerts
+    "alerts", "alert_configs",
 }
 
 
@@ -27,7 +33,7 @@ def test_fresh_db_reaches_version_6():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 6
+    assert row["version"] == 9
 
 
 def test_all_tables_exist():
@@ -46,7 +52,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 6
+    assert row["version"] == 9
 
 
 def test_workflow_tables_columns():

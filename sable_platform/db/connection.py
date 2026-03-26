@@ -13,6 +13,9 @@ _MIGRATIONS = [
     ("004_jobs_extend.sql", 4),
     ("005_artifacts_degraded.sql", 5),
     ("006_workflow_tables.sql", 6),
+    ("007_actions_outcomes.sql", 7),
+    ("008_entity_journey.sql", 8),
+    ("009_alerts.sql", 9),
 ]
 
 

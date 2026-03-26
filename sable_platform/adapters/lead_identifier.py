@@ -60,7 +60,9 @@ class LeadIdentifierAdapter(SubprocessAdapterMixin):
 
         raw = json.loads(latest.read_text(encoding="utf-8"))
         leads: list[dict] = []
-        for item in raw:
+        entries = raw.get("leads", []) if isinstance(raw, dict) else raw
+        for item in entries:
+            # Lead Identifier JSON envelope: {"run_id", "generated_at", "leads": [RankedProject...]}
             # RankedProject shape: {"rank": ..., "project": {...}, "scores": {...}, "flags": [...]}
             project = item.get("project", {})
             scores = item.get("scores", {})

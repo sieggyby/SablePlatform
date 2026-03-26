@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 
 from sable_platform.db.stale import mark_artifacts_stale
 from sable_platform.errors import SableError, INVALID_CONFIG
@@ -18,6 +19,7 @@ from sable_platform.workflows import registry
 
 _DEFAULT_TRACKING_STALENESS_DAYS = 7
 _DEFAULT_PULSE_STALENESS_DAYS = 14
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +166,62 @@ def _register_artifacts(ctx) -> StepResult:
     )
 
 
+def _register_actions(ctx) -> StepResult:
+    """Parse the latest discord_playbook artifact and create action rows for each recommendation."""
+    import re
+    from sable_platform.db.actions import create_action
+
+    row = ctx.db.execute(
+        """
+        SELECT artifact_id, path FROM artifacts
+        WHERE org_id=? AND artifact_type='discord_playbook'
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (ctx.org_id,),
+    ).fetchone()
+
+    if not row or not row["path"]:
+        return StepResult("completed", {"action_ids": [], "actions_created": 0})
+
+    playbook_path = row["path"]
+    artifact_ref = row["artifact_id"]
+
+    try:
+        lines = open(playbook_path, encoding="utf-8").readlines()
+    except OSError:
+        log.warning("discord_playbook file not found at %s — no actions registered", playbook_path)
+        return StepResult("completed", {"action_ids": [], "actions_created": 0})
+
+    action_ids = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^#{1,3}\s+(Actions|Recommendations|This Week)", stripped, re.I):
+            in_section = True
+            continue
+        if re.match(r"^#{1,3}", stripped):
+            in_section = False
+        if in_section and re.match(r"^[-*\d]", stripped):
+            title = re.sub(r"^[-*\d.]+\s*", "", stripped)[:200].strip()
+            if title:
+                aid = create_action(
+                    ctx.db, ctx.org_id, title,
+                    source="playbook",
+                    source_ref=str(artifact_ref),
+                    action_type="general",
+                )
+                action_ids.append(aid)
+
+    return StepResult("completed", {"action_ids": action_ids, "actions_created": len(action_ids)})
+
+
+def _evaluate_alerts(ctx) -> StepResult:
+    """Run alert evaluation for this org."""
+    from sable_platform.workflows.alert_evaluator import evaluate_alerts
+    alert_ids = evaluate_alerts(ctx.db, org_id=ctx.org_id)
+    return StepResult("completed", {"alerts_created": len(alert_ids), "alert_ids": alert_ids})
+
+
 def _mark_complete(ctx) -> StepResult:
     """Return freshness summary."""
     return StepResult(
@@ -177,6 +235,7 @@ def _mark_complete(ctx) -> StepResult:
                 "pulse_fresh": ctx.input_data.get("pulse_fresh"),
                 "pulse_age_days": ctx.input_data.get("pulse_age_days"),
                 "artifact_count": ctx.input_data.get("artifact_count", 0),
+                "actions_created": ctx.input_data.get("actions_created", 0),
             }
         },
     )
@@ -206,6 +265,8 @@ WEEKLY_CLIENT_LOOP = WorkflowDefinition(
         ),
         StepDefinition(name="trigger_strategy_generation", fn=_trigger_strategy_generation, max_retries=1),
         StepDefinition(name="register_artifacts", fn=_register_artifacts, max_retries=1),
+        StepDefinition(name="register_actions", fn=_register_actions, max_retries=0),
+        StepDefinition(name="evaluate_alerts", fn=_evaluate_alerts, max_retries=0),
         StepDefinition(name="mark_complete", fn=_mark_complete, max_retries=0),
     ],
 )

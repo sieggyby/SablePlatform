@@ -193,6 +193,30 @@ def test_resume_skips_completed_steps(wf_db):
     assert run["status"] == "completed"
 
 
+def test_resume_already_completed_raises(wf_db):
+    """Resuming a fully completed run raises SableError."""
+    defn = WorkflowDefinition(
+        name="test_resume_done", version="1.0",
+        steps=[_ok_step("only_step")],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    with pytest.raises(SableError):
+        runner.resume(run_id, conn=wf_db)
+
+
+def test_resume_nonexistent_raises(wf_db):
+    """Resuming a run_id that doesn't exist raises SableError."""
+    defn = WorkflowDefinition(
+        name="test_resume_missing", version="1.0",
+        steps=[_ok_step("only_step")],
+    )
+    runner = WorkflowRunner(defn)
+    with pytest.raises(SableError):
+        runner.resume("nonexistent_run_id_xyz", conn=wf_db)
+
+
 # ---------------------------------------------------------------------------
 # skip_if
 # ---------------------------------------------------------------------------
@@ -220,6 +244,26 @@ def test_skip_if_skips_step(wf_db):
     assert by_name["step_a"]["status"] == "completed"
     assert by_name["step_b"]["status"] == "skipped"
     assert by_name["step_c"]["status"] == "completed"
+
+
+def test_skip_if_false_executes_step(wf_db):
+    """skip_if returning False must NOT skip the step."""
+    defn = WorkflowDefinition(
+        name="test_skip_false", version="1.0",
+        steps=[
+            StepDefinition(
+                name="step_a",
+                fn=lambda ctx: StepResult("completed", {"ran": True}),
+                max_retries=0,
+                skip_if=lambda ctx: False,
+            ),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    steps = get_workflow_steps(wf_db, run_id)
+    assert steps[0]["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------

@@ -162,6 +162,22 @@ def _register_artifacts(ctx) -> StepResult:
     )
 
 
+def _compute_diagnostic_delta(ctx) -> StepResult:
+    """Compare current diagnostic run to previous run and store metric deltas."""
+    from sable_platform.db.outcomes import compute_and_store_diagnostic_delta
+    delta_ids = compute_and_store_diagnostic_delta(
+        ctx.db, ctx.org_id, ctx.input_data["diagnostic_run_id"]
+    )
+    return StepResult("completed", {"delta_ids": delta_ids, "delta_count": len(delta_ids)})
+
+
+def _evaluate_alerts(ctx) -> StepResult:
+    """Run alert evaluation for this org after diagnostic sync."""
+    from sable_platform.workflows.alert_evaluator import evaluate_alerts
+    alert_ids = evaluate_alerts(ctx.db, org_id=ctx.org_id)
+    return StepResult("completed", {"alerts_created": len(alert_ids), "alert_ids": alert_ids})
+
+
 def _mark_complete(ctx) -> StepResult:
     """Return a summary of the completed workflow run."""
     return StepResult(
@@ -173,6 +189,7 @@ def _mark_complete(ctx) -> StepResult:
                 "entity_count": ctx.input_data.get("entity_count", 0),
                 "artifact_count": ctx.input_data.get("artifact_count", 0),
                 "checkpoint_path": ctx.input_data.get("checkpoint_path", ""),
+                "delta_count": ctx.input_data.get("delta_count", 0),
             }
         },
     )
@@ -190,7 +207,14 @@ PROSPECT_DIAGNOSTIC_SYNC = WorkflowDefinition(
         StepDefinition(name="request_diagnostic", fn=_request_diagnostic, max_retries=1),
         StepDefinition(name="poll_diagnostic", fn=_poll_diagnostic, max_retries=2),
         StepDefinition(name="verify_entity_sync", fn=_verify_entity_sync, max_retries=1),
+        StepDefinition(
+            name="compute_diagnostic_delta",
+            fn=_compute_diagnostic_delta,
+            max_retries=0,
+            skip_if=lambda ctx: ctx.input_data.get("diagnostic_run_id") is None,
+        ),
         StepDefinition(name="register_artifacts", fn=_register_artifacts, max_retries=1),
+        StepDefinition(name="evaluate_alerts", fn=_evaluate_alerts, max_retries=0),
         StepDefinition(name="mark_complete", fn=_mark_complete, max_retries=0),
     ],
 )
