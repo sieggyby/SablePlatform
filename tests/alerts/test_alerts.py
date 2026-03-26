@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -14,7 +15,7 @@ from sable_platform.db.alerts import (
     upsert_alert_config,
     get_alert_config,
 )
-from sable_platform.workflows.alert_evaluator import evaluate_alerts
+from sable_platform.workflows.alert_evaluator import evaluate_alerts, _send_telegram, _send_discord
 from sable_platform.workflows.engine import WorkflowRunner
 from sable_platform.workflows.builtins.alert_check import ALERT_CHECK
 
@@ -268,3 +269,86 @@ def test_alert_check_workflow_completes(org_db):
     from sable_platform.db.workflow_store import get_workflow_run
     run = get_workflow_run(conn, run_id)
     assert run["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# P2-2: workflow_failures time window — old failures should not re-alert
+# ---------------------------------------------------------------------------
+
+def test_old_workflow_failure_does_not_alert(org_db):
+    """A workflow_run that failed 31+ days ago must not produce a new alert."""
+    conn, org_id = org_db
+    old_ts = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=31)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    run_id = uuid.uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO workflow_runs (run_id, org_id, workflow_name, status, error, created_at)
+        VALUES (?, ?, 'weekly_client_loop', 'failed', 'old error', ?)
+        """,
+        (run_id, org_id, old_ts),
+    )
+    conn.commit()
+
+    evaluate_alerts(conn, org_id=org_id)
+    rows = [r for r in list_alerts(conn, org_id=org_id, severity="critical")
+            if r["alert_type"] == "workflow_failed"]
+    assert len(rows) == 0
+
+
+def test_recent_workflow_failure_does_alert(org_db):
+    """A workflow_run that failed 1 day ago must produce an alert."""
+    conn, org_id = org_db
+    recent_ts = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    run_id = uuid.uuid4().hex
+    conn.execute(
+        """
+        INSERT INTO workflow_runs (run_id, org_id, workflow_name, status, error, created_at)
+        VALUES (?, ?, 'weekly_client_loop', 'failed', 'recent error', ?)
+        """,
+        (run_id, org_id, recent_ts),
+    )
+    conn.commit()
+
+    evaluate_alerts(conn, org_id=org_id)
+    rows = [r for r in list_alerts(conn, org_id=org_id, severity="critical")
+            if r["alert_type"] == "workflow_failed"]
+    assert len(rows) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: Alert delivery — Telegram + Discord
+# ---------------------------------------------------------------------------
+
+def test_telegram_delivery_called_when_configured(org_db):
+    """urlopen is called when telegram_chat_id is configured and token present."""
+    conn, org_id = org_db
+    upsert_alert_config(conn, org_id, telegram_chat_id="123456789")
+
+    # Insert a stale sync so _deliver is triggered
+    conn.execute(
+        "INSERT INTO sync_runs (org_id, sync_type, status, completed_at) VALUES (?, 'sable_tracking', 'completed', ?)",
+        (org_id, _ts(18)),
+    )
+    conn.commit()
+
+    with patch("sable_platform.workflows.alert_evaluator.os.environ.get", return_value="fake-token"):
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            evaluate_alerts(conn, org_id=org_id)
+            assert mock_urlopen.called
+
+
+def test_telegram_delivery_failure_does_not_propagate():
+    """urlopen raising must not propagate out of _send_telegram."""
+    with patch("urllib.request.urlopen", side_effect=Exception("network error")):
+        # Should not raise
+        _send_telegram("fake-token", "123", "test message")
+
+
+def test_discord_delivery_failure_does_not_propagate():
+    """urlopen raising must not propagate out of _send_discord."""
+    with patch("urllib.request.urlopen", side_effect=Exception("webhook error")):
+        _send_discord("https://discord.com/fake-webhook", "test message")

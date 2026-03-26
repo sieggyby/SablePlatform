@@ -5,6 +5,8 @@ import json
 import sqlite3
 import uuid
 
+from sable_platform.errors import redact_error
+
 
 def create_workflow_run(
     conn: sqlite3.Connection,
@@ -44,7 +46,7 @@ def complete_workflow_run(conn: sqlite3.Connection, run_id: str) -> None:
 def fail_workflow_run(conn: sqlite3.Connection, run_id: str, error: str) -> None:
     conn.execute(
         "UPDATE workflow_runs SET status='failed', completed_at=datetime('now'), error=? WHERE run_id=?",
-        (error, run_id),
+        (redact_error(error), run_id),
     )
     conn.commit()
 
@@ -95,7 +97,7 @@ def skip_workflow_step(conn: sqlite3.Connection, step_id: str, reason: str) -> N
         SET status='skipped', completed_at=datetime('now'), output_json=?
         WHERE step_id=?
         """,
-        (json.dumps({"reason": reason}), step_id),
+        (json.dumps({"_skip_reason": reason}), step_id),
     )
     conn.commit()
 
@@ -107,9 +109,29 @@ def fail_workflow_step(conn: sqlite3.Connection, step_id: str, error: str) -> No
         SET status='failed', completed_at=datetime('now'), retries=retries+1, error=?
         WHERE step_id=?
         """,
-        (error, step_id),
+        (redact_error(error), step_id),
     )
     conn.commit()
+
+
+def mark_timed_out_runs(conn: sqlite3.Connection, hours: int = 6) -> list[str]:
+    """Mark workflow_runs stuck in 'running' for >hours as 'timed_out'."""
+    rows = conn.execute(
+        """
+        SELECT run_id FROM workflow_runs
+        WHERE status='running'
+          AND started_at < datetime('now', ? || ' hours')
+        """,
+        (f"-{hours}",),
+    ).fetchall()
+    run_ids = [r["run_id"] for r in rows]
+    for run_id in run_ids:
+        conn.execute(
+            "UPDATE workflow_runs SET status='timed_out', completed_at=datetime('now') WHERE run_id=?",
+            (run_id,),
+        )
+    conn.commit()
+    return run_ids
 
 
 def reset_workflow_step_for_retry(conn: sqlite3.Connection, step_id: str) -> None:

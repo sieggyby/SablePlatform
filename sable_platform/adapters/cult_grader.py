@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Literal
@@ -16,16 +15,7 @@ class CultGraderAdapter(SubprocessAdapterMixin):
     name = "cult_grader"
 
     def _repo_path(self) -> Path:
-        env = os.environ.get("SABLE_CULT_GRADER_PATH")
-        if not env:
-            raise SableError(
-                INVALID_CONFIG,
-                "SABLE_CULT_GRADER_PATH environment variable is not set",
-            )
-        p = Path(env)
-        if not p.is_dir():
-            raise SableError(INVALID_CONFIG, f"SABLE_CULT_GRADER_PATH does not exist: {p}")
-        return p
+        return self._resolve_repo_path("SABLE_CULT_GRADER_PATH")
 
     def run(self, input_data: dict) -> dict:
         """Trigger a diagnostic run. Returns {"status": "submitted", "job_ref": str, "checkpoint_path": str}."""

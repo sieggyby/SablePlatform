@@ -12,6 +12,7 @@ from sable_platform.db.workflow_store import (
     get_workflow_events,
     get_workflow_run,
     get_workflow_steps,
+    mark_timed_out_runs,
 )
 
 
@@ -153,6 +154,20 @@ def workflow_events(run_id: str) -> None:
         payload = json.loads(e["payload_json"] or "{}")
         payload_str = json.dumps(payload) if payload else ""
         click.echo(f"[{e['created_at']}] {e['event_type']:<20} {payload_str}")
+
+
+@workflow.command("gc")
+@click.option("--hours", default=6, show_default=True, help="Mark runs stuck in 'running' for >N hours as timed_out.")
+def workflow_gc(hours: int) -> None:
+    """Mark stuck 'running' workflow runs as timed_out."""
+    conn = get_db()
+    try:
+        run_ids = mark_timed_out_runs(conn, hours=hours)
+        for rid in run_ids:
+            click.echo(rid)
+        click.echo(f"Marked {len(run_ids)} run(s) as timed_out.", err=True)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

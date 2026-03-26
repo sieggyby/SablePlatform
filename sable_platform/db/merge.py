@@ -8,8 +8,10 @@ import sqlite3
 from sable_platform.errors import SableError, CROSS_ORG_MERGE_BLOCKED, ENTITY_NOT_FOUND
 from sable_platform.db.tags import _REPLACE_CURRENT_TAGS
 
+MERGE_CONFIDENCE_THRESHOLD = 0.70
 
-def reconsider_expired_merges(org_id: str, conn: sqlite3.Connection, threshold: float = 0.70) -> int:
+
+def reconsider_expired_merges(org_id: str, conn: sqlite3.Connection, threshold: float = MERGE_CONFIDENCE_THRESHOLD) -> int:
     """Flip expired merge candidates back to pending if confidence now meets threshold."""
     cursor = conn.execute(
         """UPDATE merge_candidates SET status='pending'
@@ -31,7 +33,7 @@ def create_merge_candidate(
     if entity_a_id > entity_b_id:
         entity_a_id, entity_b_id = entity_b_id, entity_a_id
 
-    status = "expired" if confidence < 0.70 else "pending"
+    status = "expired" if confidence < MERGE_CONFIDENCE_THRESHOLD else "pending"
 
     conn.execute(
         """

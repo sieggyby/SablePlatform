@@ -4,8 +4,6 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
-_SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1}
-
 
 def upsert_alert_config(
     conn: sqlite3.Connection,

@@ -1,26 +1,19 @@
 """Adapter for Sable_Slopper advisory / strategy generation."""
 from __future__ import annotations
 
-import os
 import sys
-from pathlib import Path
 from typing import Literal
 
 from sable_platform.adapters.base import SubprocessAdapterMixin
+from sable_platform.db.connection import get_db
 from sable_platform.errors import SableError, INVALID_CONFIG
 
 
 class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
     name = "slopper_advisory"
 
-    def _repo_path(self) -> Path:
-        env = os.environ.get("SABLE_SLOPPER_PATH")
-        if not env:
-            raise SableError(INVALID_CONFIG, "SABLE_SLOPPER_PATH environment variable is not set")
-        p = Path(env)
-        if not p.is_dir():
-            raise SableError(INVALID_CONFIG, f"SABLE_SLOPPER_PATH does not exist: {p}")
-        return p
+    def _repo_path(self):
+        return self._resolve_repo_path("SABLE_SLOPPER_PATH")
 
     def run(self, input_data: dict) -> dict:
         """Trigger strategy/advise generation for an org. Blocks until completion."""
@@ -36,10 +29,10 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
         )
         return {"status": "completed", "job_ref": org_id, "org_id": org_id}
 
-    def status(self, job_ref: str) -> Literal["pending", "running", "completed", "failed"]:
+    def status(self, job_ref: str, conn=None) -> Literal["pending", "running", "completed", "failed"]:
         """Check latest artifact freshness for org."""
-        from sable_platform.db.connection import get_db
-        conn = get_db()
+        _owns = conn is None
+        conn = conn or get_db()
         try:
             row = conn.execute(
                 """
@@ -53,11 +46,12 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
                 return "pending"
             return "completed" if not row["stale"] else "failed"
         finally:
-            conn.close()
+            if _owns:
+                conn.close()
 
-    def get_result(self, job_ref: str) -> dict:
-        from sable_platform.db.connection import get_db
-        conn = get_db()
+    def get_result(self, job_ref: str, conn=None) -> dict:
+        _owns = conn is None
+        conn = conn or get_db()
         try:
             rows = conn.execute(
                 """
@@ -69,4 +63,5 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
             ).fetchall()
             return {"artifacts": [dict(r) for r in rows]}
         finally:
-            conn.close()
+            if _owns:
+                conn.close()

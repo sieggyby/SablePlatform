@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 
 from sable_platform.db.alerts import create_alert
 
 log = logging.getLogger(__name__)
+
+TRACKING_STALE_DAYS = 14
 
 
 def evaluate_alerts(
@@ -56,7 +59,7 @@ def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
         ).fetchone()
         if stale_check and stale_check["age_days"] is not None:
             age_days = int(stale_check["age_days"])
-            is_stale = age_days > 14
+            is_stale = age_days > TRACKING_STALE_DAYS
 
     if not is_stale:
         return []
@@ -224,7 +227,7 @@ def _check_workflow_failures(
     org_id: str | None,
 ) -> list[str]:
     """Critical: workflow_runs with status='failed' that have no open alert."""
-    conditions = "WHERE status='failed'"
+    conditions = "WHERE status='failed' AND (created_at IS NULL OR created_at > datetime('now', '-30 days'))"
     params: list = []
     if org_id:
         conditions += " AND org_id=?"
@@ -255,14 +258,15 @@ def _check_workflow_failures(
 
 
 def _deliver(conn: sqlite3.Connection, org_id: str | None, severity: str, message: str) -> None:
-    """Deliver alert to configured channels. v1: log only."""
+    """Deliver alert to configured channels (log + optional Telegram/Discord)."""
     if not org_id:
         log.warning("ALERT %s: %s", severity.upper(), message)
         return
 
     try:
         config = conn.execute(
-            "SELECT min_severity, enabled FROM alert_configs WHERE org_id=?", (org_id,)
+            "SELECT min_severity, enabled, telegram_chat_id, discord_webhook_url FROM alert_configs WHERE org_id=?",
+            (org_id,),
         ).fetchone()
     except Exception:
         config = None
@@ -275,5 +279,42 @@ def _deliver(conn: sqlite3.Connection, org_id: str | None, severity: str, messag
     if severity_ranks.get(severity, 0) < severity_ranks.get(min_sev, 2):
         return
 
+    if config and config["telegram_chat_id"]:
+        token = os.environ.get("SABLE_TELEGRAM_BOT_TOKEN", "")
+        if token:
+            _send_telegram(token, config["telegram_chat_id"], message)
+
+    if config and config["discord_webhook_url"]:
+        _send_discord(config["discord_webhook_url"], message)
+
     log.warning("ALERT %s [%s]: %s", severity.upper(), org_id, message)
-    # v2: send to telegram_chat_id / discord_webhook_url if configured
+
+
+def _send_telegram(token: str, chat_id: str, text: str) -> None:
+    import json as _json
+    import urllib.request
+    try:
+        data = _json.dumps({"chat_id": chat_id, "text": text}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        log.warning("Telegram delivery failed: %s", e)
+
+
+def _send_discord(webhook_url: str, text: str) -> None:
+    import json as _json
+    import urllib.request
+    try:
+        data = _json.dumps({"content": text}).encode()
+        req = urllib.request.Request(
+            webhook_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        log.warning("Discord delivery failed: %s", e)

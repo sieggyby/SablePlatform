@@ -6,6 +6,8 @@ import uuid
 
 from sable_platform.errors import SableError, ENTITY_NOT_FOUND, ENTITY_ARCHIVED, ORG_NOT_FOUND
 
+SHARED_HANDLE_MERGE_CONFIDENCE = 0.80
+
 
 def create_entity(
     conn: sqlite3.Connection,
@@ -113,7 +115,7 @@ def add_handle(
             """,
             (entity_id, platform, handle, 1 if is_primary else 0),
         )
-    except Exception:
+    except sqlite3.IntegrityError:
         pass
 
     conn.execute(
@@ -129,7 +131,7 @@ def add_handle(
             conn,
             existing["entity_id"],
             entity_id,
-            confidence=0.80,
+            confidence=SHARED_HANDLE_MERGE_CONFIDENCE,
             reason=f"shared {platform} handle @{handle}",
         )
 

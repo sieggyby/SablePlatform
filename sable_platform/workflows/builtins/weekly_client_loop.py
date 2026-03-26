@@ -187,7 +187,8 @@ def _register_actions(ctx) -> StepResult:
     artifact_ref = row["artifact_id"]
 
     try:
-        lines = open(playbook_path, encoding="utf-8").readlines()
+        with open(playbook_path, encoding="utf-8") as fh:
+            lines = fh.readlines()
     except OSError:
         log.warning("discord_playbook file not found at %s — no actions registered", playbook_path)
         return StepResult("completed", {"action_ids": [], "actions_created": 0})

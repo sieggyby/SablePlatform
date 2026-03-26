@@ -1,6 +1,7 @@
 """Job and step management helpers for sable.db."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 
@@ -13,8 +14,6 @@ def create_job(
     job_type: str,
     config: dict | None = None,
 ) -> str:
-    import json
-
     job_id = uuid.uuid4().hex
     conn.execute(
         """
@@ -34,8 +33,6 @@ def add_step(
     step_order: int = 0,
     input_data: dict | None = None,
 ) -> int:
-    import json
-
     cursor = conn.execute(
         """
         INSERT INTO job_steps (job_id, step_name, step_order, status, input_json)
@@ -60,8 +57,6 @@ def start_step(conn: sqlite3.Connection, step_id: int) -> None:
 
 
 def complete_step(conn: sqlite3.Connection, step_id: int, output: dict | None = None) -> None:
-    import json
-
     conn.execute(
         """
         UPDATE job_steps

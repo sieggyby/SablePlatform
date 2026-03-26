@@ -16,16 +16,7 @@ class LeadIdentifierAdapter(SubprocessAdapterMixin):
     name = "lead_identifier"
 
     def _repo_path(self) -> Path:
-        env = os.environ.get("SABLE_LEAD_IDENTIFIER_PATH")
-        if not env:
-            raise SableError(
-                INVALID_CONFIG,
-                "SABLE_LEAD_IDENTIFIER_PATH environment variable is not set",
-            )
-        p = Path(env)
-        if not p.is_dir():
-            raise SableError(INVALID_CONFIG, f"SABLE_LEAD_IDENTIFIER_PATH does not exist: {p}")
-        return p
+        return self._resolve_repo_path("SABLE_LEAD_IDENTIFIER_PATH")
 
     def run(self, input_data: dict) -> dict:
         """Run the Lead Identifier pipeline (pass-1 only by default). Blocks until done."""

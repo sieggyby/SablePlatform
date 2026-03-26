@@ -21,7 +21,7 @@ from sable_platform.db.workflow_store import (
     start_workflow_run,
     start_workflow_step,
 )
-from sable_platform.errors import SableError, STEP_EXECUTION_ERROR, WORKFLOW_NOT_FOUND
+from sable_platform.errors import SableError, STEP_EXECUTION_ERROR, WORKFLOW_NOT_FOUND, redact_error
 from sable_platform.workflows.models import (
     StepContext,
     StepDefinition,
@@ -215,7 +215,7 @@ class WorkflowRunner:
                 return result
 
             except Exception as exc:
-                last_error = str(exc)
+                last_error = redact_error(str(exc))
                 fail_workflow_step(conn, ctx.step_id, last_error)
                 emit_workflow_event(
                     conn, ctx.run_id, "step_failed", ctx.step_id,

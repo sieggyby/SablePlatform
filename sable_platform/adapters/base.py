@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import Literal, Protocol
 
-from sable_platform.errors import SableError, STEP_EXECUTION_ERROR
+from sable_platform.errors import SableError, INVALID_CONFIG, STEP_EXECUTION_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +16,22 @@ class AdapterBase(Protocol):
     name: str
 
     def run(self, input_data: dict) -> dict: ...
-    def status(self, job_ref: str) -> Literal["pending", "running", "completed", "failed"]: ...
-    def get_result(self, job_ref: str) -> dict: ...
+    def status(self, job_ref: str, conn=None) -> Literal["pending", "running", "completed", "failed"]: ...
+    def get_result(self, job_ref: str, conn=None) -> dict: ...
 
 
 class SubprocessAdapterMixin:
     """Mixin providing a safe subprocess runner for adapter implementations."""
+
+    def _resolve_repo_path(self, env_var: str) -> Path:
+        """Resolve a repo path from an env var, raising SableError on missing/invalid."""
+        val = os.environ.get(env_var)
+        if not val:
+            raise SableError(INVALID_CONFIG, f"{env_var} environment variable is not set")
+        p = Path(val)
+        if not p.is_dir():
+            raise SableError(INVALID_CONFIG, f"{env_var} does not exist: {p}")
+        return p
 
     def _run_subprocess(
         self,

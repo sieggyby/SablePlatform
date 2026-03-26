@@ -267,6 +267,62 @@ def test_skip_if_false_executes_step(wf_db):
 
 
 # ---------------------------------------------------------------------------
+# P1-1: redact_error — secrets not persisted to DB
+# ---------------------------------------------------------------------------
+
+def test_redact_error_in_step_failure(wf_db):
+    """Step error containing an API key must be redacted before writing to DB."""
+    def leaky_step(ctx):
+        raise ValueError("call failed with sk-ant-FAKEKEYABCDEFGHIJKLMNOP123456789 in response")
+
+    defn = WorkflowDefinition(
+        name="test_redact", version="1.0",
+        steps=[StepDefinition(name="leaky", fn=leaky_step, max_retries=0)],
+    )
+    runner = WorkflowRunner(defn)
+    with pytest.raises(SableError):
+        runner.run("wf_org", {}, conn=wf_db)
+
+    step = wf_db.execute(
+        "SELECT error FROM workflow_steps WHERE step_name='leaky'"
+    ).fetchone()
+    assert step is not None
+    assert "sk-ant-" not in (step["error"] or "")
+    assert "[REDACTED]" in (step["error"] or "")
+
+
+# ---------------------------------------------------------------------------
+# P1-2: _skip_reason key — does not pollute accumulated context
+# ---------------------------------------------------------------------------
+
+def test_skip_reason_does_not_overwrite_prior_output(wf_db):
+    """skip_if output must not clobber a legitimate 'reason' key from a prior step."""
+    defn = WorkflowDefinition(
+        name="test_skip_reason", version="1.0",
+        steps=[
+            _ok_step("step_a", output={"reason": "community gap"}),
+            StepDefinition(
+                name="step_b",
+                fn=lambda ctx: StepResult("completed", {}),
+                max_retries=0,
+                skip_if=lambda ctx: True,
+            ),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    # After skip, the step_b output_json should use _skip_reason, not "reason"
+    step_b = wf_db.execute(
+        "SELECT output_json FROM workflow_steps WHERE step_name='step_b'"
+    ).fetchone()
+    import json
+    output = json.loads(step_b["output_json"])
+    assert "_skip_reason" in output
+    assert "reason" not in output
+
+
+# ---------------------------------------------------------------------------
 # Accumulated output propagation
 # ---------------------------------------------------------------------------
 

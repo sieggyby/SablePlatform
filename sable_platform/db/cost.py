@@ -8,6 +8,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+from sable_platform.errors import SableError, BUDGET_EXCEEDED
+
 
 def _read_platform_config() -> dict:
     """Read platform config from ~/.sable/config.yaml; return empty dict on failure."""
@@ -88,8 +90,6 @@ def get_org_cost_cap(conn: sqlite3.Connection, org_id: str) -> float:
 
 def check_budget(conn: sqlite3.Connection, org_id: str) -> tuple[float, float]:
     """Return (weekly_spend, cap). Raises SableError(BUDGET_EXCEEDED) if over cap."""
-    from sable_platform.errors import SableError, BUDGET_EXCEEDED
-
     spend = get_weekly_spend(conn, org_id)
     cap = get_org_cost_cap(conn, org_id)
     if spend > cap * 0.90:
