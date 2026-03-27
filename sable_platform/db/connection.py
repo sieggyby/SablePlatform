@@ -16,6 +16,7 @@ _MIGRATIONS = [
     ("007_actions_outcomes.sql", 7),
     ("008_entity_journey.sql", 8),
     ("009_alerts.sql", 9),
+    ("010_discord_pulse_runs.sql", 10),
 ]
 
 
