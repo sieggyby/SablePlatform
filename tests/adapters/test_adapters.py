@@ -8,6 +8,8 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from sable_platform.adapters.base import SubprocessAdapterMixin
+from sable_platform.adapters.tracking_sync import SableTrackingAdapter
+from sable_platform.adapters.slopper import SlopperAdvisoryAdapter
 from sable_platform.errors import SableError, STEP_EXECUTION_ERROR
 
 
@@ -66,3 +68,49 @@ def test_subprocess_command_not_found_raises():
             adapter._run_subprocess(["nonexistent_command"], cwd=Path("/tmp"))
 
     assert exc_info.value.code == STEP_EXECUTION_ERROR
+
+
+def test_tracking_adapter_status_uses_provided_conn():
+    adapter = SableTrackingAdapter()
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchone.return_value = {"status": "completed"}
+    with patch("sable_platform.adapters.tracking_sync.get_db") as mock_get_db:
+        result = adapter.status("test_org", conn=mock_conn)
+    mock_get_db.assert_not_called()
+    assert result == "completed"
+    mock_conn.close.assert_not_called()
+
+
+def test_tracking_adapter_get_result_uses_provided_conn():
+    adapter = SableTrackingAdapter()
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchone.return_value = {"org_id": "test_org", "status": "completed"}
+    with patch("sable_platform.adapters.tracking_sync.get_db") as mock_get_db:
+        result = adapter.get_result("test_org", conn=mock_conn)
+    mock_get_db.assert_not_called()
+    assert result == {"org_id": "test_org", "status": "completed"}
+    mock_conn.close.assert_not_called()
+
+
+def test_slopper_adapter_status_uses_provided_conn():
+    adapter = SlopperAdvisoryAdapter()
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchone.return_value = {"stale": 0}
+    with patch("sable_platform.adapters.slopper.get_db") as mock_get_db:
+        result = adapter.status("test_org", conn=mock_conn)
+    mock_get_db.assert_not_called()
+    assert result == "completed"
+    mock_conn.close.assert_not_called()
+
+
+def test_slopper_adapter_get_result_uses_provided_conn():
+    adapter = SlopperAdvisoryAdapter()
+    mock_conn = MagicMock()
+    mock_conn.execute.return_value.fetchall.return_value = [
+        {"artifact_type": "twitter_strategy_brief", "stale": 0}
+    ]
+    with patch("sable_platform.adapters.slopper.get_db") as mock_get_db:
+        result = adapter.get_result("test_org", conn=mock_conn)
+    mock_get_db.assert_not_called()
+    assert result == {"artifacts": [{"artifact_type": "twitter_strategy_brief", "stale": 0}]}
+    mock_conn.close.assert_not_called()

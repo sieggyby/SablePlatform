@@ -1,9 +1,11 @@
 """Deterministic, synchronous workflow runner."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
+import time
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
@@ -30,6 +32,12 @@ from sable_platform.workflows.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _workflow_fingerprint(workflow_def: WorkflowDefinition) -> str:
+    """Compute an 8-char SHA-1 fingerprint of the workflow's step names."""
+    names = "|".join(sorted(s.name for s in workflow_def.steps))
+    return hashlib.sha1(names.encode()).hexdigest()[:8]
 
 
 class WorkflowRunner:
@@ -60,12 +68,14 @@ class WorkflowRunner:
                 from sable_platform.errors import ORG_NOT_FOUND
                 raise SableError(ORG_NOT_FOUND, f"Org '{org_id}' not found")
 
+            fp = _workflow_fingerprint(self.definition)
             run_id = create_workflow_run(
                 conn,
                 org_id=org_id,
                 workflow_name=self.definition.name,
                 workflow_version=self.definition.version,
                 config=config,
+                step_fingerprint=fp,
             )
             start_workflow_run(conn, run_id)
             emit_workflow_event(conn, run_id, "run_started", payload={"org_id": org_id})
@@ -79,10 +89,13 @@ class WorkflowRunner:
         self,
         run_id: str,
         conn: sqlite3.Connection | None = None,
+        ignore_version_check: bool = False,
     ) -> str:
         """Resume a failed or interrupted run from the first non-completed step.
 
         Returns run_id.
+        Raises SableError(STEP_EXECUTION_ERROR) if the workflow definition changed
+        since the run was created, unless ignore_version_check=True.
         """
         _owns_conn = conn is None
         conn = conn or get_db()
@@ -90,8 +103,21 @@ class WorkflowRunner:
             run_row = get_workflow_run(conn, run_id)
             if run_row is None:
                 raise SableError(WORKFLOW_NOT_FOUND, f"Workflow run '{run_id}' not found")
-            if run_row["status"] == "completed":
-                raise SableError(WORKFLOW_NOT_FOUND, f"Workflow run '{run_id}' is already completed")
+            if run_row["status"] in ("completed", "cancelled"):
+                raise SableError(WORKFLOW_NOT_FOUND, f"Workflow run '{run_id}' is already {run_row['status']}")
+
+            # Workflow config versioning check
+            if not ignore_version_check:
+                stored_fp = run_row["step_fingerprint"]
+                if stored_fp is not None:
+                    current_fp = _workflow_fingerprint(self.definition)
+                    if stored_fp != current_fp:
+                        raise SableError(
+                            STEP_EXECUTION_ERROR,
+                            f"Workflow definition changed since run was created "
+                            f"(stored={stored_fp}, current={current_fp}). "
+                            f"Use --ignore-version-check to resume anyway.",
+                        )
 
             # Rebuild accumulated output from all completed/skipped steps
             step_rows = get_workflow_steps(conn, run_id)
@@ -225,5 +251,7 @@ class WorkflowRunner:
 
                 if attempt < step_def.max_retries:
                     reset_workflow_step_for_retry(conn, ctx.step_id)
+                    if step_def.retry_delay_seconds > 0:
+                        time.sleep(step_def.retry_delay_seconds)
 
         return StepResult(status="failed", output={}, error=last_error)

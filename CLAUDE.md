@@ -17,14 +17,19 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.1** is complete. Includes:
-- DB layer (006 migrations, all helpers extracted from Slopper)
+**v0.3** is complete. Includes:
+- DB layer (013 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
-- WorkflowRunner (synchronous, deterministic, retry/resume/skip_if)
-- 2 builtin workflows
+- WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
+- 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
 - Subprocess adapters for all 4 repos
-- CLI (workflow run/resume/status/list/events, inspect orgs/entities/artifacts/freshness)
-- 40/40 tests passing
+- CLI (workflow run/resume/cancel/status/list/events/gc; inspect orgs/entities/artifacts/freshness/health; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; all list commands support --json; sable-platform init bootstraps DB)
+- Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs
+- Alert delivery cooldown (4h default, configurable per org, dedup_key-scoped)
+- Alert delivery failure tracking (last_delivery_error stamped on failed HTTP calls; queryable via list_alerts)
+- Per-org failure isolation in evaluate_alerts() (one bad org does not abort remaining orgs)
+- Workflow config versioning (step-name fingerprint on create; mismatch blocks resume)
+- 221/221 tests passing
 
 ## Architecture Decisions
 
@@ -49,5 +54,50 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/db/workflow_store.py` | All workflow table CRUD |
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
+| `sable_platform/workflows/alert_evaluator.py` | evaluate_alerts() — thin orchestrator |
+| `sable_platform/workflows/alert_checks.py` | All 9 `_check_*` condition functions |
+| `sable_platform/workflows/alert_delivery.py` | `_deliver()`, `_send_telegram()`, `_send_discord()` — HTTP delivery + cooldown gate |
 | `sable_platform/cli/workflow_cmds.py` | CLI surface for operators |
 | `docs/MIGRATION_PLAN.md` | Step-by-step migration for each existing repo |
+
+## Environment Variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `SABLE_DB_PATH` | No | Path to `sable.db`. Defaults to `~/.sable/sable.db` |
+| `SABLE_TELEGRAM_BOT_TOKEN` | No | Telegram bot token for alert delivery. If unset, Telegram delivery is silently skipped even when `telegram_chat_id` is configured on an org. |
+
+## Alert Delivery Cooldown
+
+`_deliver()` in `alert_delivery.py` gates HTTP delivery (Telegram/Discord) by a per-`dedup_key`
+cooldown window. After a successful delivery, `alerts.last_delivered_at` is stamped. On the next
+`evaluate_alerts()` invocation, if the same `dedup_key` was delivered within `cooldown_hours`
+(default: 4), the HTTP notification is suppressed. The alert DB record is always written; only
+the external delivery is gated.
+
+Rules:
+- Cooldown scopes to `dedup_key`, not alert type or org.
+- `last_delivered_at IS NULL` → treat as never delivered → fire.
+- `cooldown_hours = 0` in `alert_configs` → cooldown disabled, always deliver.
+- Cooldown does NOT reset on acknowledge/resolve — ages out naturally.
+- Default: `cooldown_hours = 4` (set via `sable-platform alerts config set --org ORG cooldown-hours N`).
+
+**Delivery failure tracking:** When HTTP delivery fails, `_deliver()` calls
+`mark_delivery_failed(conn, dedup_key, error)` which stamps `alerts.last_delivery_error`
+(truncated to 500 chars). On a subsequent successful delivery, `mark_delivered()` clears
+`last_delivery_error = NULL`. Failures are queryable via `list_alerts()`.
+
+## Workflow Config Versioning
+
+`WorkflowRunner.run()` computes a fingerprint of the workflow's step names
+(`sha1(sorted_names)[:8]`) and stores it in `workflow_runs.step_fingerprint`.
+
+`WorkflowRunner.resume()` recomputes the fingerprint for the current definition. If the stored
+fingerprint is non-NULL and mismatches, resume raises `SableError(STEP_EXECUTION_ERROR)` with a
+message naming both fingerprints.
+
+**Escape hatch:** `sable-platform workflow resume <run_id> --ignore-version-check` bypasses the
+check. Use this only for emergency resumes when you have confirmed the structural change is safe
+to apply to the in-flight run (e.g., a new step was added at the end, not renamed mid-run).
+
+NULL stored fingerprint (runs created before migration 012) → validation is skipped silently.

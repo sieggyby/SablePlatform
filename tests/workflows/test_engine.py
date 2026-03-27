@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from sable_platform.errors import SableError, STEP_EXECUTION_ERROR
-from sable_platform.workflows.engine import WorkflowRunner
+from sable_platform.workflows.engine import WorkflowRunner, _workflow_fingerprint
 from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
 from sable_platform.db.workflow_store import get_workflow_run, get_workflow_steps, get_workflow_events
 
@@ -344,3 +344,222 @@ def test_accumulated_output_available_to_next_step(wf_db):
     runner.run("wf_org", {}, conn=wf_db)
 
     assert received_input.get("key_from_a") == "value_from_a"
+
+
+# ---------------------------------------------------------------------------
+# Workflow config versioning
+# ---------------------------------------------------------------------------
+
+def _failing_defn(name: str, steps: list) -> WorkflowDefinition:
+    return WorkflowDefinition(name=name, version="1.0", steps=steps)
+
+
+def test_version_mismatch_raises(wf_db):
+    """Resume raises SableError when step fingerprint changed since run was created."""
+    # Run a workflow with step_a + step_b (step_b fails)
+    step_b_fail = {"fail": True}
+
+    def step_b_fn(ctx):
+        if step_b_fail["fail"]:
+            raise ValueError("intentional failure")
+        return StepResult("completed", {})
+
+    defn_original = WorkflowDefinition(
+        name="version_test", version="1.0",
+        steps=[
+            _ok_step("step_a"),
+            StepDefinition(name="step_b", fn=step_b_fn, max_retries=0),
+        ],
+    )
+    runner = WorkflowRunner(defn_original)
+    with pytest.raises(SableError):
+        runner.run("wf_org", {}, conn=wf_db)
+
+    run_row = wf_db.execute("SELECT run_id FROM workflow_runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    run_id = run_row["run_id"]
+
+    # Resume with a different definition (different step names)
+    defn_changed = WorkflowDefinition(
+        name="version_test", version="1.0",
+        steps=[
+            _ok_step("step_a"),
+            _ok_step("step_b_renamed"),  # name changed
+        ],
+    )
+    runner2 = WorkflowRunner(defn_changed)
+    with pytest.raises(SableError) as exc_info:
+        runner2.resume(run_id, conn=wf_db)
+    assert exc_info.value.code == STEP_EXECUTION_ERROR
+    assert "changed" in str(exc_info.value)
+
+
+def test_null_version_skips_check(wf_db):
+    """Resume succeeds without fingerprint check if stored step_fingerprint is NULL (old run)."""
+    # Insert a run directly with NULL step_fingerprint
+    import uuid as _uuid
+    run_id = _uuid.uuid4().hex
+    import json as _json
+    wf_db.execute(
+        """
+        INSERT INTO workflow_runs (run_id, org_id, workflow_name, workflow_version, status, config_json, step_fingerprint)
+        VALUES (?, 'wf_org', 'null_fp_test', '1.0', 'failed', '{}', NULL)
+        """,
+        (run_id,),
+    )
+    wf_db.commit()
+
+    # Resume with any definition — fingerprint check must be skipped
+    defn = WorkflowDefinition(
+        name="null_fp_test", version="1.0",
+        steps=[_ok_step("any_step")],
+    )
+    runner = WorkflowRunner(defn)
+    runner.resume(run_id, conn=wf_db)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_matching_version_resumes(wf_db):
+    """Resume succeeds when fingerprint matches (same step names)."""
+    step_b_fail = {"fail": True}
+
+    def step_b_fn(ctx):
+        if step_b_fail["fail"]:
+            raise ValueError("intentional failure")
+        return StepResult("completed", {})
+
+    defn = WorkflowDefinition(
+        name="match_test", version="1.0",
+        steps=[
+            _ok_step("step_a"),
+            StepDefinition(name="step_b", fn=step_b_fn, max_retries=0),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+    with pytest.raises(SableError):
+        runner.run("wf_org", {}, conn=wf_db)
+
+    run_row = wf_db.execute("SELECT run_id FROM workflow_runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    run_id = run_row["run_id"]
+
+    # Resume with same definition — should succeed
+    step_b_fail["fail"] = False
+    runner2 = WorkflowRunner(defn)
+    runner2.resume(run_id, conn=wf_db)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_ignore_version_check_bypasses_error(wf_db):
+    """ignore_version_check=True allows resume even when fingerprint mismatches."""
+    step_b_fail = {"fail": True}
+
+    def step_b_fn(ctx):
+        if step_b_fail["fail"]:
+            raise ValueError("intentional failure")
+        return StepResult("completed", {})
+
+    defn_original = WorkflowDefinition(
+        name="ignore_test", version="1.0",
+        steps=[
+            _ok_step("step_a"),
+            StepDefinition(name="step_b", fn=step_b_fn, max_retries=0),
+        ],
+    )
+    runner = WorkflowRunner(defn_original)
+    with pytest.raises(SableError):
+        runner.run("wf_org", {}, conn=wf_db)
+
+    run_row = wf_db.execute("SELECT run_id FROM workflow_runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    run_id = run_row["run_id"]
+
+    # Resume with DIFFERENT definition but ignore_version_check=True
+    step_b_fail["fail"] = False
+    defn_changed = WorkflowDefinition(
+        name="ignore_test", version="1.0",
+        steps=[
+            _ok_step("step_a"),
+            StepDefinition(name="step_b", fn=step_b_fn, max_retries=0),
+            _ok_step("step_c_new"),
+        ],
+    )
+    runner2 = WorkflowRunner(defn_changed)
+    runner2.resume(run_id, conn=wf_db, ignore_version_check=True)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# cancel_workflow_run (Slice 3)
+# ---------------------------------------------------------------------------
+
+def test_cancel_pending_run(wf_db):
+    """Cancelling a pending run sets status to 'cancelled'."""
+    from sable_platform.db.workflow_store import cancel_workflow_run, create_workflow_run
+
+    run_id = create_workflow_run(wf_db, "wf_org", "cancel_test", "1.0", {})
+    cancel_workflow_run(wf_db, run_id)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "cancelled"
+
+
+def test_cancel_completed_run_raises(wf_db):
+    """Cancelling an already-completed run raises SableError."""
+    from sable_platform.db.workflow_store import cancel_workflow_run
+    from sable_platform.errors import SableError
+
+    defn = WorkflowDefinition(
+        name="cancel_completed", version="1.0",
+        steps=[_ok_step("only_step")],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    with pytest.raises(SableError) as exc_info:
+        cancel_workflow_run(wf_db, run_id)
+    assert "already completed" in str(exc_info.value)
+
+
+def test_resume_cancelled_run_raises(wf_db):
+    """Resuming a cancelled run raises SableError."""
+    from sable_platform.db.workflow_store import cancel_workflow_run, create_workflow_run
+
+    run_id = create_workflow_run(wf_db, "wf_org", "resume_cancel_test", "1.0", {})
+    cancel_workflow_run(wf_db, run_id)
+
+    defn = WorkflowDefinition(
+        name="resume_cancel_test", version="1.0",
+        steps=[_ok_step("only_step")],
+    )
+    runner = WorkflowRunner(defn)
+    with pytest.raises(SableError) as exc_info:
+        runner.resume(run_id, conn=wf_db)
+    assert "cancelled" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# retry_delay_seconds (Slice 4)
+# ---------------------------------------------------------------------------
+
+def test_retry_delay_is_applied(wf_db):
+    """time.sleep is called with retry_delay_seconds between retry attempts."""
+    from unittest.mock import patch
+
+    def always_fails(ctx):
+        raise ValueError("always fails")
+
+    defn = WorkflowDefinition(
+        name="retry_delay_test", version="1.0",
+        steps=[StepDefinition(name="fail_step", fn=always_fails, max_retries=1, retry_delay_seconds=0.1)],
+    )
+    runner = WorkflowRunner(defn)
+
+    with patch("sable_platform.workflows.engine.time.sleep") as mock_sleep:
+        with pytest.raises(SableError):
+            runner.run("wf_org", {}, conn=wf_db)
+
+    mock_sleep.assert_called_once_with(0.1)

@@ -30,6 +30,7 @@ class StepDefinition:
     name: str
     fn: Callable[[StepContext], StepResult]
     max_retries: int = 1
+    retry_delay_seconds: float = 0.0
     skip_if: Optional[Callable[[StepContext], bool]] = None
 
 

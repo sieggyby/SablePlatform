@@ -17,6 +17,9 @@ _MIGRATIONS = [
     ("008_entity_journey.sql", 8),
     ("009_alerts.sql", 9),
     ("010_discord_pulse_runs.sql", 10),
+    ("011_alert_cooldown.sql", 11),
+    ("012_workflow_version.sql", 12),
+    ("013_alert_delivery_error.sql", 13),
 ]
 
 

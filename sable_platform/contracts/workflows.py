@@ -12,7 +12,7 @@ class WorkflowRun(BaseModel):
     org_id: str
     workflow_name: str
     workflow_version: str = "1.0"
-    status: Literal["pending", "running", "completed", "failed", "cancelled"] = "pending"
+    status: Literal["pending", "running", "completed", "failed", "cancelled", "timed_out"] = "pending"
     config_json: Optional[str] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None

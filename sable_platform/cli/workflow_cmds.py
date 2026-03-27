@@ -8,6 +8,7 @@ import click
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
+    cancel_workflow_run,
     get_latest_run,
     get_workflow_events,
     get_workflow_run,
@@ -63,7 +64,9 @@ def workflow_run(workflow_name: str, org: str, config: tuple[str, ...]) -> None:
 
 @workflow.command("resume")
 @click.argument("run_id")
-def workflow_resume(run_id: str) -> None:
+@click.option("--ignore-version-check", is_flag=True, default=False,
+              help="Resume even if the workflow definition changed since the run was created.")
+def workflow_resume(run_id: str, ignore_version_check: bool) -> None:
     """Resume a failed or interrupted workflow run."""
     conn = get_db()
     run_row = get_workflow_run(conn, run_id)
@@ -87,7 +90,7 @@ def workflow_resume(run_id: str) -> None:
     runner = WorkflowRunner(defn)
     conn = get_db()
     try:
-        runner.resume(run_id, conn=conn)
+        runner.resume(run_id, conn=conn, ignore_version_check=ignore_version_check)
     except Exception as exc:
         click.echo(f"Resume failed: {exc}", err=True)
         sys.exit(1)
@@ -98,18 +101,35 @@ def workflow_resume(run_id: str) -> None:
     _print_run_status(run_id)
 
 
+@workflow.command("cancel")
+@click.argument("run_id")
+def workflow_cancel(run_id: str) -> None:
+    """Mark a non-terminal workflow run as cancelled."""
+    conn = get_db()
+    try:
+        cancel_workflow_run(conn, run_id)
+        click.echo(f"Run {run_id} cancelled.")
+    except Exception as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
 @workflow.command("status")
 @click.argument("run_id")
-def workflow_status(run_id: str) -> None:
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def workflow_status(run_id: str, as_json: bool) -> None:
     """Show status of a workflow run."""
-    _print_run_status(run_id)
+    _print_run_status(run_id, as_json=as_json)
 
 
 @workflow.command("list")
 @click.option("--org", required=True, help="Org ID")
 @click.option("--workflow", "wf_name", default=None, help="Filter by workflow name")
 @click.option("--limit", default=10, show_default=True)
-def workflow_list(org: str, wf_name: str | None, limit: int) -> None:
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def workflow_list(org: str, wf_name: str | None, limit: int, as_json: bool) -> None:
     """List recent workflow runs for an org."""
     conn = get_db()
     try:
@@ -125,6 +145,10 @@ def workflow_list(org: str, wf_name: str | None, limit: int) -> None:
             ).fetchall()
     finally:
         conn.close()
+
+    if as_json:
+        click.echo(json.dumps([dict(r) for r in rows], default=str))
+        return
 
     if not rows:
         click.echo("No runs found.")
@@ -174,13 +198,20 @@ def workflow_gc(hours: int) -> None:
 # Helper
 # ---------------------------------------------------------------------------
 
-def _print_run_status(run_id: str) -> None:
+def _print_run_status(run_id: str, as_json: bool = False) -> None:
     conn = get_db()
     try:
         run = get_workflow_run(conn, run_id)
         steps = get_workflow_steps(conn, run_id)
     finally:
         conn.close()
+
+    if as_json:
+        if not run:
+            click.echo(json.dumps({"error": f"run {run_id!r} not found"}))
+            return
+        click.echo(json.dumps({"run": dict(run), "steps": [dict(s) for s in steps]}, default=str))
+        return
 
     if not run:
         click.echo(f"Run '{run_id}' not found.")

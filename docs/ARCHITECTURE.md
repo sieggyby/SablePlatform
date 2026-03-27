@@ -25,21 +25,28 @@ sable_platform/
 │   └── tasks.py            Task, Outcome, Recommendation
 ├── db/
 │   ├── connection.py       get_db(), ensure_schema() — uses importlib.resources for migrations
-│   ├── migrations/         001-006 SQL files (001-005 = verbatim Slopper, 006 = new)
+│   ├── migrations/         001-013 SQL files (001-005 = verbatim Slopper, 006-013 = new)
 │   ├── entities.py         Entity CRUD
 │   ├── tags.py             Tag management (replace-current vs append semantics)
 │   ├── merge.py            Merge candidates + 9-step atomic merge
 │   ├── jobs.py             Job/step lifecycle (Slopper-internal use)
 │   ├── cost.py             Cost logging + budget enforcement
 │   ├── stale.py            mark_artifacts_stale()
+│   ├── alerts.py           Alert CRUD + get_last_delivered_at / mark_delivered / mark_delivery_failed
 │   └── workflow_store.py   CRUD for workflow_runs/steps/events
 ├── workflows/
 │   ├── models.py           StepDefinition, WorkflowDefinition, StepContext, StepResult
 │   ├── engine.py           WorkflowRunner (synchronous, deterministic)
 │   ├── registry.py         register() / get() / list_all()
+│   ├── alert_evaluator.py  evaluate_alerts() — thin orchestrator, calls all checks
+│   ├── alert_checks.py     9 _check_* condition functions
+│   ├── alert_delivery.py   _deliver() + _send_telegram() + _send_discord() — HTTP delivery + cooldown
 │   └── builtins/
 │       ├── prospect_diagnostic_sync.py   Workflow 1
-│       └── weekly_client_loop.py         Workflow 2
+│       ├── weekly_client_loop.py         Workflow 2
+│       ├── alert_check.py                Workflow 3
+│       ├── lead_discovery.py             Workflow 4
+│       └── onboard_client.py             Workflow 5
 ├── adapters/
 │   ├── base.py             AdapterBase Protocol + SubprocessAdapterMixin
 │   ├── cult_grader.py      CultGraderAdapter
@@ -47,9 +54,14 @@ sable_platform/
 │   ├── slopper.py          SlopperAdvisoryAdapter
 │   └── lead_identifier.py  LeadIdentifierAdapter
 └── cli/
-    ├── main.py             sable-platform entry point
-    ├── workflow_cmds.py    run / resume / status / list / events
-    └── inspect_cmds.py     orgs / entities / artifacts / freshness
+    ├── main.py             sable-platform entry point; init command
+    ├── workflow_cmds.py    run / resume / cancel / status / list / events / gc
+    ├── inspect_cmds.py     orgs / entities / artifacts / freshness / health
+    ├── alert_cmds.py       list / acknowledge / evaluate / mute / unmute / config
+    ├── action_cmds.py      actions surface
+    ├── journey_cmds.py     journey surface
+    ├── outcome_cmds.py     outcomes surface
+    └── org_cmds.py         org surface
 ```
 
 ## DB schema ownership
@@ -61,7 +73,7 @@ sable_platform/
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
-**Schema versioning:** `schema_version` table holds a single integer. Migration 006 adds `workflow_runs`, `workflow_steps`, `workflow_events`.
+**Schema versioning:** `schema_version` table holds a single integer. Migration 006 adds `workflow_runs`, `workflow_steps`, `workflow_events`. Migrations 007–013 add alerts, alert_configs, discord_pulse_runs, and additional columns (cooldown_hours, last_delivered_at, step_fingerprint, last_delivery_error). Current schema head: version 13.
 
 ## Workflow engine design
 

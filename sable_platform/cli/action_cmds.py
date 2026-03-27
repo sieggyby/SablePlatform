@@ -1,6 +1,7 @@
 """CLI commands for operator action management."""
 from __future__ import annotations
 
+import json
 import sys
 
 import click
@@ -25,11 +26,15 @@ def actions() -> None:
 @click.option("--org", required=True, help="Org ID")
 @click.option("--status", type=click.Choice(["pending", "claimed", "completed", "skipped"]), default=None)
 @click.option("--limit", default=50, show_default=True)
-def actions_list(org: str, status: str | None, limit: int) -> None:
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def actions_list(org: str, status: str | None, limit: int, as_json: bool) -> None:
     """List actions for an org."""
     conn = get_db()
     try:
         rows = list_actions(conn, org, status=status, limit=limit)
+        if as_json:
+            click.echo(json.dumps([dict(r) for r in rows], default=str))
+            return
         if not rows:
             click.echo("No actions found.")
             return

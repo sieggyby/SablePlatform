@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import click
 
@@ -20,6 +21,25 @@ def cli(verbose: bool) -> None:
     """Sable Platform — suite-level workflow and inspection CLI."""
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(format="%(levelname)s %(name)s: %(message)s", level=level)
+
+
+@cli.command("init")
+@click.option("--db-path", default=None, envvar="SABLE_DB_PATH",
+              help="Path to sable.db. Defaults to ~/.sable/sable.db")
+def init(db_path: str | None) -> None:
+    """Initialize sable.db and apply all schema migrations."""
+    from sable_platform.db.connection import get_db
+    try:
+        conn = get_db(db_path)
+        row = conn.execute("PRAGMA database_list").fetchone()
+        resolved_path = row[2] if row else (db_path or "~/.sable/sable.db")
+        version_row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version = version_row[0] if version_row else 0
+        conn.close()
+    except Exception as e:
+        click.echo(f"Init failed: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"sable.db initialized at {resolved_path} (schema version {version}).")
 
 
 cli.add_command(workflow)

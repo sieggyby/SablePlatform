@@ -88,7 +88,7 @@ If no issues exist at a given level, state that and move on.
 
 ## Security baseline
 - No API keys are owned by this repo.
-- `SABLE_DB_PATH` is the only sensitive env var — it points to a local file, not a credential.
+- `SABLE_DB_PATH` points to a local file (not a credential). `SABLE_TELEGRAM_BOT_TOKEN` is a bot credential — must not be logged, committed, or surfaced in subprocess output.
 - DB path must not appear in committed test fixtures or hardcoded strings.
 - Subprocess adapter calls must not log or surface credentials from the calling environment.
 - Generated files (reports, artifacts) must not interpolate env vars.

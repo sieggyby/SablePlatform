@@ -19,7 +19,7 @@ class Task(BaseModel):
     created_at: Optional[str] = None
 
 
-class Outcome(BaseModel):
+class RunOutcome(BaseModel):
     outcome_id: Optional[str] = None
     run_id: Optional[str] = None
     org_id: str

@@ -5,7 +5,7 @@ import json
 import sqlite3
 import uuid
 
-from sable_platform.errors import redact_error
+from sable_platform.errors import redact_error, SableError, STEP_EXECUTION_ERROR, WORKFLOW_NOT_FOUND
 
 
 def create_workflow_run(
@@ -14,14 +14,16 @@ def create_workflow_run(
     workflow_name: str,
     workflow_version: str,
     config: dict,
+    step_fingerprint: str | None = None,
 ) -> str:
     run_id = uuid.uuid4().hex
     conn.execute(
         """
-        INSERT INTO workflow_runs (run_id, org_id, workflow_name, workflow_version, status, config_json)
-        VALUES (?, ?, ?, ?, 'pending', ?)
+        INSERT INTO workflow_runs
+            (run_id, org_id, workflow_name, workflow_version, status, config_json, step_fingerprint)
+        VALUES (?, ?, ?, ?, 'pending', ?, ?)
         """,
-        (run_id, org_id, workflow_name, workflow_version, json.dumps(config)),
+        (run_id, org_id, workflow_name, workflow_version, json.dumps(config), step_fingerprint),
     )
     conn.commit()
     return run_id
@@ -132,6 +134,20 @@ def mark_timed_out_runs(conn: sqlite3.Connection, hours: int = 6) -> list[str]:
         )
     conn.commit()
     return run_ids
+
+
+def cancel_workflow_run(conn: sqlite3.Connection, run_id: str) -> None:
+    """Mark a non-terminal run as cancelled. Raises SableError on already-terminal status."""
+    row = conn.execute("SELECT status FROM workflow_runs WHERE run_id=?", (run_id,)).fetchone()
+    if row is None:
+        raise SableError(WORKFLOW_NOT_FOUND, f"Workflow run '{run_id}' not found")
+    if row["status"] in ("completed", "cancelled", "timed_out"):
+        raise SableError(STEP_EXECUTION_ERROR, f"Cannot cancel run '{run_id}': already {row['status']}")
+    conn.execute(
+        "UPDATE workflow_runs SET status='cancelled', completed_at=datetime('now') WHERE run_id=?",
+        (run_id,),
+    )
+    conn.commit()
 
 
 def reset_workflow_step_for_retry(conn: sqlite3.Connection, step_id: str) -> None:

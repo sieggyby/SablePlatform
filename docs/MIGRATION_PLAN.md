@@ -176,8 +176,16 @@ Week 6+: Use sable-platform workflow run / resume for daily operations.
 
 ---
 
-## Schema migration (006)
+## Schema migrations (006–012)
 
-Migration 006 adds `workflow_runs`, `workflow_steps`, `workflow_events` to the existing `sable.db`. It runs automatically on the first `get_db()` call after SablePlatform is installed. It only adds new tables — no existing tables or columns are modified. Safe to apply against any existing database at version 5.
+Migration 006 adds `workflow_runs`, `workflow_steps`, `workflow_events`. Migrations 007–010 add
+`alerts`, `alert_configs`, `discord_pulse_runs`, and related tables. Migration 011 adds
+`alert_configs.cooldown_hours` and `alerts.last_delivered_at`. Migration 012 adds
+`workflow_runs.step_fingerprint`.
 
-If `sable.db` is currently at version < 5, the full migration chain (002–006) will be applied in order.
+All migrations run automatically on the first `get_db()` call after SablePlatform is installed.
+Each migration is idempotent (`INSERT OR REPLACE INTO schema_version`). Safe to apply against
+any existing database at version 5.
+
+If `sable.db` is currently at version < 5, the full migration chain (002–012) will be applied
+in order. Current schema head: **version 12**.

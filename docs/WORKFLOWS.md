@@ -1,6 +1,6 @@
 # Workflows
 
-SablePlatform ships two builtin deterministic workflows. Each run is fully durable — every step's input, output, error, and timing is recorded in `sable.db`. Runs can be resumed after interruption.
+SablePlatform ships five builtin deterministic workflows. Each run is fully durable — every step's input, output, error, and timing is recorded in `sable.db`. Runs can be resumed after interruption.
 
 ---
 
@@ -150,6 +150,90 @@ sable-platform workflow events <run_id>
 
 ---
 
+## Workflow 3: `alert_check`
+
+**Purpose:** Evaluate all proactive alert conditions across all orgs and deliver via Telegram/Discord.
+
+**Config:** None required.
+
+**Key details:**
+- Runs 9 `_check_*` functions covering: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs.
+- Each check writes an alert row; delivery is gated by per-`dedup_key` cooldown (`cooldown_hours`, default 4).
+- Delivery channels: Telegram (`SABLE_TELEGRAM_BOT_TOKEN` + org `telegram_chat_id`) and Discord (webhook).
+- Alert DB records are always written; only external HTTP delivery is suppressed during cooldown.
+
+**CLI:**
+```bash
+sable-platform workflow run alert_check --org <org_id>
+```
+
+---
+
+## Workflow 4: `lead_discovery`
+
+**Purpose:** Run the LeadIdentifierAdapter, sync results to the DB, and register artifacts.
+
+**Config:**
+```
+org_id: str   # sable.db org_id
+```
+
+**State transitions:**
+```
+START → run_lead_identifier → sync_results → register_artifacts → mark_complete → COMPLETED
+```
+
+**CLI:**
+```bash
+sable-platform workflow run lead_discovery --org <org_id>
+```
+
+---
+
+## Workflow 5: `onboard_client`
+
+**Purpose:** 6-step onboarding sequence for a new org.
+
+**Config:**
+```
+org_id: str   # sable.db org_id (must already exist)
+```
+
+**State transitions:**
+```
+START
+  │
+  ▼
+verify_org              Raises SableError(ORG_NOT_FOUND) if org does not exist in DB
+  │
+  ▼
+verify_tracking         SableTrackingAdapter health check (non-blocking — failure captured in tools_failed)
+  │
+  ▼
+verify_slopper          SlopperAdvisoryAdapter health check (non-blocking)
+  │
+  ▼
+verify_cult_grader      CultGraderAdapter health check (non-blocking)
+  │
+  ▼
+create_initial_sync_record   Write seed sync_runs row
+  │
+  ▼
+mark_complete           Return summary including tools_failed list
+  │
+  ▼
+COMPLETED
+```
+
+**Note:** Adapter verification steps are non-blocking. A failed adapter check is recorded in `tools_failed` in the step output but does not fail the run. Only `verify_org` is blocking.
+
+**CLI:**
+```bash
+sable-platform workflow run onboard_client --org <org_id>
+```
+
+---
+
 ## Adding new workflows
 
 1. Create `sable_platform/workflows/builtins/my_workflow.py`
@@ -165,11 +249,12 @@ sable-platform workflow run my_workflow --org <org_id>
 
 ---
 
-## Workflow DB tables (migration 006)
+## Workflow DB tables (migrations 006–012)
 
 ```sql
 workflow_runs (run_id, org_id, workflow_name, workflow_version, status, config_json,
-               started_at, completed_at, error, created_at)
+               started_at, completed_at, error, created_at,
+               step_fingerprint TEXT)  -- migration 012: sha1[:8] of sorted step names; NULL on pre-012 runs (validation skipped)
 
 workflow_steps (step_id, run_id, step_name, step_index, status, retries,
                 input_json, output_json, error, started_at, completed_at)

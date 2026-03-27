@@ -11,7 +11,7 @@ from sable_platform.contracts.content import ContentItem
 from sable_platform.contracts.artifacts import Artifact
 from sable_platform.contracts.sync import SyncRun
 from sable_platform.contracts.workflows import WorkflowRun, WorkflowStep
-from sable_platform.contracts.tasks import Task, Outcome, Recommendation
+from sable_platform.contracts.tasks import Task, RunOutcome, Recommendation
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +100,13 @@ def test_entity_requires_org_id():
 def test_lead_invalid_recommended_action():
     with pytest.raises(ValidationError):
         Lead(project_id="p", name="p", recommended_action="maybe")
+
+
+def test_workflow_run_timed_out_status():
+    wr = WorkflowRun.model_validate({
+        "run_id": "x", "org_id": "o", "workflow_name": "w", "status": "timed_out"
+    })
+    assert wr.status == "timed_out"
 
 
 def test_workflow_run_invalid_status():

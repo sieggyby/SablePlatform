@@ -1,6 +1,7 @@
 """CLI commands for proactive alerting."""
 from __future__ import annotations
 
+import json
 import sys
 
 import click
@@ -27,11 +28,15 @@ def alerts() -> None:
 @click.option("--status", default="new",
               type=click.Choice(["new", "acknowledged", "resolved"]))
 @click.option("--limit", default=20, show_default=True)
-def alerts_list(org: str | None, severity: str | None, status: str, limit: int) -> None:
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def alerts_list(org: str | None, severity: str | None, status: str, limit: int, as_json: bool) -> None:
     """List alerts."""
     conn = get_db()
     try:
         rows = list_alerts(conn, org_id=org, severity=severity, status=status, limit=limit)
+        if as_json:
+            click.echo(json.dumps([dict(r) for r in rows], default=str))
+            return
         if not rows:
             click.echo("No alerts found.")
             return
@@ -92,8 +97,10 @@ def alerts_config() -> None:
 @click.option("--telegram-chat-id", default=None)
 @click.option("--discord-webhook", default=None)
 @click.option("--disable", is_flag=True, default=False)
+@click.option("--cooldown-hours", type=int, default=None)
 def alerts_config_set(org: str, min_severity: str, telegram_chat_id: str | None,
-                      discord_webhook: str | None, disable: bool) -> None:
+                      discord_webhook: str | None, disable: bool,
+                      cooldown_hours: int | None) -> None:
     """Set alert configuration for an org."""
     conn = get_db()
     try:
@@ -103,8 +110,59 @@ def alerts_config_set(org: str, min_severity: str, telegram_chat_id: str | None,
             telegram_chat_id=telegram_chat_id,
             discord_webhook_url=discord_webhook,
             enabled=not disable,
+            cooldown_hours=cooldown_hours,
         )
         click.echo(f"Alert config saved for {org} (config_id: {config_id})")
+    finally:
+        conn.close()
+
+
+@alerts.command("mute")
+@click.argument("org_id")
+def alerts_mute(org_id: str) -> None:
+    """Disable alert delivery for an org (sets alert_configs.enabled=0)."""
+    conn = get_db()
+    try:
+        existing = conn.execute(
+            "SELECT config_id FROM alert_configs WHERE org_id=?", (org_id,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE alert_configs SET enabled=0 WHERE org_id=?", (org_id,)
+            )
+        else:
+            import uuid
+            conn.execute(
+                "INSERT INTO alert_configs (config_id, org_id, enabled) VALUES (?, ?, 0)",
+                (uuid.uuid4().hex, org_id),
+            )
+        conn.commit()
+        click.echo(f"Alerts muted for {org_id}. Run 'alerts unmute {org_id}' to re-enable.")
+    finally:
+        conn.close()
+
+
+@alerts.command("unmute")
+@click.argument("org_id")
+def alerts_unmute(org_id: str) -> None:
+    """Re-enable alert delivery for an org."""
+    conn = get_db()
+    try:
+        existing = conn.execute(
+            "SELECT config_id FROM alert_configs WHERE org_id=?", (org_id,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE alert_configs SET enabled=1 WHERE org_id=?", (org_id,)
+            )
+        else:
+            import uuid
+            conn.execute(
+                "INSERT INTO alert_configs (config_id, org_id, enabled) VALUES (?, ?, 1)",
+                (uuid.uuid4().hex, org_id),
+            )
+        conn.commit()
+        click.echo(f"Alerts unmuted for {org_id}.")
     finally:
         conn.close()
 
@@ -124,5 +182,6 @@ def alerts_config_show(org: str) -> None:
         click.echo(f"  Min severity:     {cfg['min_severity']}")
         click.echo(f"  Telegram chat ID: {cfg['telegram_chat_id'] or '-'}")
         click.echo(f"  Discord webhook:  {cfg['discord_webhook_url'] or '-'}")
+        click.echo(f"  Cooldown hours:   {cfg['cooldown_hours']}")
     finally:
         conn.close()

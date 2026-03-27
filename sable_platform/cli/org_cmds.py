@@ -1,6 +1,7 @@
 """CLI commands for org management."""
 from __future__ import annotations
 
+import json
 import sys
 
 import click
@@ -47,7 +48,8 @@ def org_create(org_id: str, name: str, status: str) -> None:
 
 
 @org.command("list")
-def org_list() -> None:
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def org_list(as_json: bool) -> None:
     """List all orgs."""
     conn = get_db()
     try:
@@ -56,6 +58,10 @@ def org_list() -> None:
         ).fetchall()
     finally:
         conn.close()
+
+    if as_json:
+        click.echo(json.dumps([dict(r) for r in rows], default=str))
+        return
 
     if not rows:
         click.echo("No orgs found.")

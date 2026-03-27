@@ -13,6 +13,7 @@ def upsert_alert_config(
     telegram_chat_id: str | None = None,
     discord_webhook_url: str | None = None,
     enabled: bool = True,
+    cooldown_hours: int | None = None,
 ) -> str:
     """Create or update the alert config for an org. Returns config_id."""
     existing = conn.execute(
@@ -23,21 +24,32 @@ def upsert_alert_config(
         conn.execute(
             """
             UPDATE alert_configs
-            SET min_severity=?, telegram_chat_id=?, discord_webhook_url=?, enabled=?
+            SET min_severity=?, telegram_chat_id=?, discord_webhook_url=?, enabled=?,
+                cooldown_hours = COALESCE(?, cooldown_hours)
             WHERE config_id=?
             """,
-            (min_severity, telegram_chat_id, discord_webhook_url, int(enabled), config_id),
+            (min_severity, telegram_chat_id, discord_webhook_url, int(enabled), cooldown_hours, config_id),
         )
     else:
         config_id = uuid.uuid4().hex
-        conn.execute(
-            """
-            INSERT INTO alert_configs
-                (config_id, org_id, min_severity, telegram_chat_id, discord_webhook_url, enabled)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (config_id, org_id, min_severity, telegram_chat_id, discord_webhook_url, int(enabled)),
-        )
+        if cooldown_hours is not None:
+            conn.execute(
+                """
+                INSERT INTO alert_configs
+                    (config_id, org_id, min_severity, telegram_chat_id, discord_webhook_url, enabled, cooldown_hours)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (config_id, org_id, min_severity, telegram_chat_id, discord_webhook_url, int(enabled), cooldown_hours),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO alert_configs
+                    (config_id, org_id, min_severity, telegram_chat_id, discord_webhook_url, enabled)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (config_id, org_id, min_severity, telegram_chat_id, discord_webhook_url, int(enabled)),
+            )
     conn.commit()
     return config_id
 
@@ -102,6 +114,38 @@ def resolve_alert(conn: sqlite3.Connection, alert_id: str) -> None:
     conn.execute(
         "UPDATE alerts SET status='resolved', resolved_at=datetime('now') WHERE alert_id=?",
         (alert_id,),
+    )
+    conn.commit()
+
+
+def get_last_delivered_at(conn: sqlite3.Connection, dedup_key: str) -> str | None:
+    """Get most recent last_delivered_at for any alert with this dedup_key (any status)."""
+    row = conn.execute(
+        """
+        SELECT last_delivered_at FROM alerts
+        WHERE dedup_key=? AND last_delivered_at IS NOT NULL
+        ORDER BY last_delivered_at DESC LIMIT 1
+        """,
+        (dedup_key,),
+    ).fetchone()
+    return row["last_delivered_at"] if row else None
+
+
+def mark_delivered(conn: sqlite3.Connection, dedup_key: str) -> None:
+    """Set last_delivered_at=now on the current 'new' alert for this dedup_key."""
+    conn.execute(
+        "UPDATE alerts SET last_delivered_at=datetime('now'), last_delivery_error=NULL "
+        "WHERE dedup_key=? AND status='new'",
+        (dedup_key,),
+    )
+    conn.commit()
+
+
+def mark_delivery_failed(conn: sqlite3.Connection, dedup_key: str, error: str) -> None:
+    """Record a delivery failure on the current 'new' alert for this dedup_key."""
+    conn.execute(
+        "UPDATE alerts SET last_delivery_error=? WHERE dedup_key=? AND status='new'",
+        (error[:500], dedup_key),
     )
     conn.commit()
 
