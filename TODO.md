@@ -66,6 +66,44 @@ P1 is complete. Implement in order: **Alert Delivery → Client Onboarding**. Cu
 
 ---
 
+### Feature: Entity Interaction Edge Table (prerequisite for relationship web visualization)
+
+**Context:** SableWeb portal has a vision for a relationship web — a graph visualization showing how community members are connected (who replies to whom, who co-mentions whom, cluster boundaries). This would make the difference between hub-and-spoke and genuine rhizome communities immediately visible in client presentations. Currently `lateral_reply_pairs` is just an aggregate count; no edge data exists in sable.db.
+
+**What this feature adds:**
+
+A new `entity_interactions` table (new migration) storing directional interaction edges between entities:
+```sql
+CREATE TABLE entity_interactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id TEXT NOT NULL,
+    source_handle TEXT NOT NULL,   -- the entity initiating the interaction
+    target_handle TEXT NOT NULL,   -- the entity being replied to / mentioned
+    interaction_type TEXT NOT NULL, -- "reply" | "mention" | "co_mention"
+    count INTEGER NOT NULL DEFAULT 1,
+    first_seen TEXT,               -- ISO date of earliest observed interaction
+    last_seen TEXT,                -- ISO date of most recent observed interaction
+    run_date TEXT,                 -- diagnostic run that sourced this edge
+    FOREIGN KEY (org_id) REFERENCES orgs(org_id)
+);
+CREATE INDEX idx_entity_interactions_org ON entity_interactions(org_id);
+```
+
+**platform_sync.py additions:**
+- `sync_interaction_edges(conn, org_id, edges, run_date)` — upserts edges from Cult Grader's `computed_metrics.json` when a `reply_pairs` field is present. Idempotent: update count + last_seen on conflict, insert on new edge.
+- Called as part of `sync_after_run()` if `reply_pairs` key exists in computed metrics.
+
+**CLI surface:**
+- `sable-platform inspect interactions --org ORG [--type reply|mention] [--min-count N]` — list top edges for an org, sorted by count descending.
+
+**Dependency:** Cult Grader Stage 4 (metric_computation) must extract individual reply pairs before this table has data to store. See `Sable_Cult_Grader/TODO.md` — Post-MVP: Extract individual reply pairs for relationship graph.
+
+**Not in scope here:** The graph rendering itself lives in SableWeb. This feature only provides the data layer.
+
+**See also:** `SableWeb/docs/TODO_product_review.md` — Session 4 Addendum, Relationship Web Vision.
+
+---
+
 ### ✅ Feature: Alert Delivery via Telegram/Discord
 > **Resolved:** `_deliver()`, `_send_telegram()`, `_send_discord()` already implemented in `alert_evaluator.py` using `urllib.request`. Columns `telegram_chat_id` / `discord_webhook_url` already in `alert_configs` (migration 009). Token read from `SABLE_TELEGRAM_BOT_TOKEN` env var (documented in CLAUDE.md). Tests: `test_telegram_delivery_called_when_configured`, `test_telegram_delivery_failure_does_not_propagate`, `test_discord_delivery_failure_does_not_propagate` pass.
 

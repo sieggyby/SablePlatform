@@ -45,6 +45,10 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
 - All new workflows go in `sable_platform/workflows/builtins/` and self-register.
+- Run the test suite with `python3 -m pytest tests/ -q`; all 221 tests must pass before merging.
+- `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 3; set 0 for steps that must not retry), and `retry_delay_seconds` (default 5). Declare only when the step has a genuine transient failure mode or conditional path — defensive retry logic obscures determinism.
+- To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{entity_id}"` as the dedup_key.
+- New alert tests must cover both the fire case and the cooldown suppression case.
 
 ## Key Files
 
@@ -52,6 +56,8 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 |------|---------|
 | `sable_platform/db/connection.py` | DB entry point — get_db(), ensure_schema() |
 | `sable_platform/db/workflow_store.py` | All workflow table CRUD |
+| `sable_platform/db/alerts.py` | Alert CRUD — list_alerts(), mark_delivered(), mark_delivery_failed(), acknowledge_alert() |
+| `sable_platform/db/cost.py` | Cost tracking — log_cost(), check_budget(), get_weekly_spend() |
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
 | `sable_platform/workflows/alert_evaluator.py` | evaluate_alerts() — thin orchestrator |
@@ -66,6 +72,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 |---|---|---|
 | `SABLE_DB_PATH` | No | Path to `sable.db`. Defaults to `~/.sable/sable.db` |
 | `SABLE_TELEGRAM_BOT_TOKEN` | No | Telegram bot token for alert delivery. If unset, Telegram delivery is silently skipped even when `telegram_chat_id` is configured on an org. |
+| `SABLE_HOME` | No | Root dir for Sable config. Defaults to `~/.sable`. Used by `db/cost.py` to locate `config.yaml` for budget cap overrides. |
 
 ## Alert Delivery Cooldown
 
@@ -87,6 +94,11 @@ Rules:
 (truncated to 500 chars). On a subsequent successful delivery, `mark_delivered()` clears
 `last_delivery_error = NULL`. Failures are queryable via `list_alerts()`.
 
+**Dedup key format convention:** All checks in `alert_checks.py` must use
+`"{alert_type}:{entity_or_run_id}"` as the dedup_key — e.g. `"stuck_run:{run_id}"`,
+`"stale_tracking:{org_id}"`. Deviating silently breaks cooldown scoping: the key lookup will not
+match prior records, and the same alert will re-fire every evaluation cycle.
+
 ## Workflow Config Versioning
 
 `WorkflowRunner.run()` computes a fingerprint of the workflow's step names
@@ -101,3 +113,17 @@ check. Use this only for emergency resumes when you have confirmed the structura
 to apply to the in-flight run (e.g., a new step was added at the end, not renamed mid-run).
 
 NULL stored fingerprint (runs created before migration 012) → validation is skipped silently.
+
+## Cost & Budget Tracking
+
+`db/cost.py` tracks AI API spend per org against a weekly rolling cap.
+
+- `log_cost(conn, org_id, call_type, cost_usd, ...)` — call after every external AI API invocation. Records to the `cost_events` table.
+- `check_budget(conn, org_id)` — raises `SableError(BUDGET_EXCEEDED)` if 7-day rolling spend ≥ cap. Call this before LLM steps.
+- Default cap: **$5.00/week per org.** Override via `orgs.config_json["max_ai_usd_per_org_per_week"]` or `platform.cost_caps.max_ai_usd_per_org_per_week` in `~/.sable/config.yaml`.
+- At 90% of cap, a WARNING is logged but execution continues.
+- `BUDGET_EXCEEDED` is a hard stop — the workflow step fails and does not resume without manual budget adjustment or cap increase.
+
+Builtin workflows do not currently call `check_budget()` automatically. Cost responsibility lives
+with the subprocess adapter that makes the LLM call. Any new workflow step that invokes an
+external AI API must call `check_budget()` first.
