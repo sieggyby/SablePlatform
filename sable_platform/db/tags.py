@@ -103,6 +103,53 @@ def add_tag(
     conn.commit()
 
 
+def deactivate_tag(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    tag: str,
+    reason: str = "expired",
+    source: str | None = None,
+) -> bool:
+    """Deactivate an active tag on an entity. Returns True if a tag was deactivated.
+
+    Records the change in entity_tag_history for audit trail.
+    """
+    org_id = _get_org_id(conn, entity_id) or ""
+
+    existing = conn.execute(
+        f"""
+        SELECT confidence, source, expires_at FROM entity_tags
+        WHERE entity_id = ? AND tag = ? AND {_ACTIVE_PREDICATE}
+        """,
+        (entity_id, tag),
+    ).fetchone()
+    if not existing:
+        return False
+
+    _record_tag_history(
+        conn, entity_id, org_id, reason, tag,
+        confidence=existing["confidence"],
+        source=existing["source"],
+        source_ref=source,
+        expires_at=existing["expires_at"],
+    )
+
+    conn.execute(
+        f"""
+        UPDATE entity_tags
+        SET is_current = 0, deactivated_at = datetime('now')
+        WHERE entity_id = ? AND tag = ? AND {_ACTIVE_PREDICATE}
+        """,
+        (entity_id, tag),
+    )
+    conn.execute(
+        "UPDATE entities SET updated_at=datetime('now') WHERE entity_id=?",
+        (entity_id,),
+    )
+    conn.commit()
+    return True
+
+
 def get_active_tags(conn: sqlite3.Connection, entity_id: str) -> list[sqlite3.Row]:
     return conn.execute(
         f"""
