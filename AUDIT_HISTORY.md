@@ -120,3 +120,16 @@ Completed work, moved from TODO.md to keep the roadmap forward-looking only.
 >
 > **Note:** Data layer only. Cult Grader Stage 4 must extract individual reply pairs before this
 > table has data. Integration call site and SableWeb rendering remain in TODO.
+
+### Feature: Churn Prediction & Intervention Engine — Data Layer + Alerting
+> **Resolved:** Migration 015 creates `entity_decay_scores` table with per-entity decay scores
+> (upsert on `(org_id, entity_id)`). `db/decay.py` provides `sync_decay_scores()` (idempotent
+> upsert, resolves handles to entity_ids via `entity_handles`, normalizes fallback handles),
+> `list_decay_scores()`, `get_decay_summary()`. Alert check `_check_member_decay()` fires
+> warning at >= 0.6 and critical at >= 0.8 with structurally important tag. Thresholds configurable
+> via `orgs.config_json`. dedup_key includes org_id to prevent cross-org collision. CLI:
+> `sable-platform inspect decay ORG [--min-score] [--tier] [--json]`. 31 new tests pass (275 total).
+> QA-hardened: cross-org dedup isolation, handle normalization, FK safety for raw handle fallbacks.
+>
+> **Note:** Data layer + alerting only. Cult Grader DECAY-0 through DECAY-7 must ship before this
+> table has data. Slopper CHURN-1/CHURN-2 generate interventions. Integration call site remains in TODO.

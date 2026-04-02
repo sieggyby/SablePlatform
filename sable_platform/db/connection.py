@@ -21,6 +21,7 @@ _MIGRATIONS = [
     ("012_workflow_version.sql", 12),
     ("013_alert_delivery_error.sql", 13),
     ("014_entity_interactions.sql", 14),
+    ("015_entity_decay_scores.sql", 15),
 ]
 
 

@@ -8,6 +8,7 @@ import click
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.discord_pulse import get_discord_pulse_runs
+from sable_platform.db.decay import list_decay_scores
 from sable_platform.db.interactions import list_interactions
 
 
@@ -292,4 +293,47 @@ def inspect_interactions(org_id: str, interaction_type: str | None, min_count: i
         click.echo(
             f"{r['source_handle']:<24}  {r['target_handle']:<24}  "
             f"{r['interaction_type']:<12}  {r['count']:>5}  {r['last_seen'] or ''}"
+        )
+
+
+@inspect.command("decay")
+@click.argument("org_id")
+@click.option("--min-score", default=0.5, show_default=True, help="Minimum decay score")
+@click.option("--tier", default=None, help="Filter by risk tier: critical|high|medium|low")
+@click.option("--limit", default=50, show_default=True)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def inspect_decay(org_id: str, min_score: float, tier: str | None, limit: int, as_json: bool) -> None:
+    """Show at-risk members by decay score for an org."""
+    conn = get_db()
+    try:
+        rows = list_decay_scores(
+            conn, org_id,
+            min_score=min_score,
+            risk_tier=tier,
+            limit=limit,
+        )
+    finally:
+        conn.close()
+
+    if as_json:
+        click.echo(json.dumps([dict(r) for r in rows], indent=2))
+        return
+
+    if not rows:
+        click.echo(f"No decay scores found for org '{org_id}'.")
+        return
+
+    click.echo(f"{'ENTITY':<24}  {'SCORE':>6}  {'TIER':<10}  {'SCORED_AT':<20}  FACTORS")
+    click.echo("-" * 90)
+    for r in rows:
+        factors_str = ""
+        if r["factors_json"]:
+            try:
+                factors = json.loads(r["factors_json"])
+                factors_str = ", ".join(f"{k}" for k in list(factors.keys())[:3])
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        click.echo(
+            f"{r['entity_id']:<24}  {r['decay_score']:>6.2f}  {r['risk_tier']:<10}  "
+            f"{(r['scored_at'] or ''):<20}  {factors_str}"
         )

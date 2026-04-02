@@ -18,19 +18,20 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 ## Current State
 
 **v0.3** is complete. Includes:
-- DB layer (014 migrations, all helpers)
+- DB layer (015 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
 - Subprocess adapters for all 4 repos
-- CLI (workflow run/resume/cancel/status/list/events/gc; inspect orgs/entities/artifacts/freshness/health/interactions; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; all list commands support --json; sable-platform init bootstraps DB)
+- CLI (workflow run/resume/cancel/status/list/events/gc; inspect orgs/entities/artifacts/freshness/health/interactions/decay; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; all list commands support --json; sable-platform init bootstraps DB)
 - Entity interaction edge table (directional handle-to-handle edges for relationship web visualization)
-- Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs
+- Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay
+- Entity decay scores table (churn prediction data layer — receives scores from Cult Grader, alerts on at-risk members)
 - Alert delivery cooldown (4h default, configurable per org, dedup_key-scoped)
 - Alert delivery failure tracking (last_delivery_error stamped on failed HTTP calls; queryable via list_alerts)
 - Per-org failure isolation in evaluate_alerts() (one bad org does not abort remaining orgs)
 - Workflow config versioning (step-name fingerprint on create; mismatch blocks resume)
-- 237/237 tests passing
+- 275/275 tests passing
 
 ## Architecture Decisions
 
@@ -46,7 +47,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
 - All new workflows go in `sable_platform/workflows/builtins/` and self-register.
-- Run the test suite with `python3 -m pytest tests/ -q`; all 237 tests must pass before merging.
+- Run the test suite with `python3 -m pytest tests/ -q`; all 275 tests must pass before merging.
 - `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 3; set 0 for steps that must not retry), and `retry_delay_seconds` (default 5). Declare only when the step has a genuine transient failure mode or conditional path — defensive retry logic obscures determinism.
 - To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{entity_id}"` as the dedup_key.
 - New alert tests must cover both the fire case and the cooldown suppression case.
@@ -59,6 +60,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/db/workflow_store.py` | All workflow table CRUD |
 | `sable_platform/db/alerts.py` | Alert CRUD — list_alerts(), mark_delivered(), mark_delivery_failed(), acknowledge_alert() |
 | `sable_platform/db/interactions.py` | Interaction edge CRUD — sync_interaction_edges(), list_interactions(), get_interaction_summary() |
+| `sable_platform/db/decay.py` | Decay score CRUD — sync_decay_scores(), list_decay_scores(), get_decay_summary() |
 | `sable_platform/db/cost.py` | Cost tracking — log_cost(), check_budget(), get_weekly_spend() |
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
@@ -131,6 +133,26 @@ earliest `first_seen`, updates `last_seen` and `run_date`.
 **CLI:** `sable-platform inspect interactions ORG [--type reply|mention|co_mention] [--min-count N] [--json]`
 
 **Dependency:** Cult Grader Stage 4 must extract individual reply pairs before this table has data.
+
+## Entity Decay Scores (Churn Prediction)
+
+`entity_decay_scores` table (migration 015) stores per-entity decay scores received from
+Cult Grader diagnostic output. Platform stores and alerts — it does not compute scores.
+
+**Schema:** Each row is a latest-wins upsert on `(org_id, entity_id)`: `decay_score` (float 0–1),
+`risk_tier` (low/medium/high/critical), `scored_at`, `run_date`, `factors_json` (nullable).
+
+**Sync:** `sync_decay_scores(conn, org_id, scores, run_date)` resolves handles to entity_ids via
+`entity_handles` when possible; falls back to normalized handle (`lower().lstrip("@")`). Idempotent upsert.
+
+**Alert:** `_check_member_decay()` in `alert_checks.py` fires:
+- `warning` when `decay_score >= 0.6` (default, configurable via `orgs.config_json.decay_warning_threshold`)
+- `critical` when `decay_score >= 0.8` AND entity has a structurally important tag (cultist, voice, mvl, top_contributor)
+- `dedup_key`: `"member_decay:{org_id}:{entity_id}"` — includes org_id to prevent cross-org collision
+
+**CLI:** `sable-platform inspect decay ORG [--min-score N] [--tier critical|high|medium|low] [--json]`
+
+**Dependency:** Cult Grader must compute and emit decay scores before this table has data.
 
 ## Cost & Budget Tracking
 

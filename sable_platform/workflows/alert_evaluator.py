@@ -9,6 +9,7 @@ from sable_platform.workflows.alert_checks import (
     _check_cultist_tag_expiring,
     _check_discord_pulse_regression,
     _check_discord_pulse_stale,
+    _check_member_decay,
     _check_mvl_score_change,
     _check_sentiment_shift,
     _check_stuck_runs,
@@ -42,6 +43,7 @@ def evaluate_alerts(
             created.extend(_check_actions_unclaimed(conn, oid))
             created.extend(_check_discord_pulse_stale(conn, oid))
             created.extend(_check_stuck_runs(conn, oid))
+            created.extend(_check_member_decay(conn, oid))
         except Exception as exc:
             log.error("evaluate_alerts: unexpected error for org %s, skipping: %s", oid, exc)
 

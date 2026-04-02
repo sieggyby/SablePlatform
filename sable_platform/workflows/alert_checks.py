@@ -1,10 +1,12 @@
 """Alert condition checks for sable.db."""
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 
 from sable_platform.db.alerts import create_alert
+from sable_platform.db.decay import DECAY_WARNING_THRESHOLD, DECAY_CRITICAL_THRESHOLD
 from sable_platform.workflows.alert_delivery import _deliver
 
 log = logging.getLogger(__name__)
@@ -374,6 +376,90 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
         if alert_id:
             _deliver(conn, org_id, "warning",
                      f"[WARNING] Stuck workflow run {r['workflow_name']} ({r['run_id'][:12]})",
+                     dedup_key=dedup_key)
+            created.append(alert_id)
+    return created
+
+
+_STRUCTURALLY_IMPORTANT_TAGS = frozenset({
+    "cultist_candidate", "cultist", "voice", "mvl", "top_contributor",
+})
+
+
+def _check_member_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
+    """Warning/Critical: entity decay score exceeds threshold."""
+    warning_threshold = DECAY_WARNING_THRESHOLD
+    critical_threshold = DECAY_CRITICAL_THRESHOLD
+    try:
+        org_row = conn.execute(
+            "SELECT config_json FROM orgs WHERE org_id=?", (org_id,),
+        ).fetchone()
+        if org_row and org_row["config_json"]:
+            cfg = json.loads(org_row["config_json"])
+            warning_threshold = cfg.get("decay_warning_threshold", warning_threshold)
+            critical_threshold = cfg.get("decay_critical_threshold", critical_threshold)
+    except Exception:
+        pass  # malformed config_json — fall back to defaults
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT entity_id, decay_score, risk_tier, factors_json
+            FROM entity_decay_scores
+            WHERE org_id=? AND decay_score >= ?
+            """,
+            (org_id, warning_threshold),
+        ).fetchall()
+    except Exception as e:
+        log.warning("Alert check member_decay failed: %s", e)
+        return []
+
+    created = []
+    for r in rows:
+        entity_id = r["entity_id"]
+        score = r["decay_score"]
+
+        # Determine if entity_id is a real entity (vs raw handle fallback)
+        is_real_entity = conn.execute(
+            "SELECT 1 FROM entities WHERE entity_id=?", (entity_id,),
+        ).fetchone() is not None
+
+        # Check if entity has a structurally important tag (for critical escalation)
+        has_important_tag = False
+        if is_real_entity:
+            try:
+                tag_row = conn.execute(
+                    """
+                    SELECT 1 FROM entity_tags
+                    WHERE entity_id=? AND is_current=1 AND tag IN ({})
+                    LIMIT 1
+                    """.format(",".join("?" for _ in _STRUCTURALLY_IMPORTANT_TAGS)),
+                    (entity_id, *_STRUCTURALLY_IMPORTANT_TAGS),
+                ).fetchone()
+                has_important_tag = tag_row is not None
+            except Exception:
+                pass
+
+        if score >= critical_threshold and has_important_tag:
+            severity = "critical"
+        else:
+            severity = "warning"
+
+        dedup_key = f"member_decay:{org_id}:{entity_id}"
+        alert_id = create_alert(
+            conn,
+            alert_type="member_decay",
+            severity=severity,
+            title=f"Member at risk: {entity_id[:16]} (score {score:.2f})",
+            org_id=org_id,
+            entity_id=entity_id if is_real_entity else None,
+            body=f"Decay score {score:.2f} ({r['risk_tier']}) for {entity_id}.",
+            dedup_key=dedup_key,
+        )
+        if alert_id:
+            label = "CRITICAL" if severity == "critical" else "WARNING"
+            _deliver(conn, org_id, severity,
+                     f"[{label}] Member decay for {org_id}: {entity_id[:16]} score={score:.2f}",
                      dedup_key=dedup_key)
             created.append(alert_id)
     return created
