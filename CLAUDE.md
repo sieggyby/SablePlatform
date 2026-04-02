@@ -18,18 +18,19 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 ## Current State
 
 **v0.3** is complete. Includes:
-- DB layer (013 migrations, all helpers)
+- DB layer (014 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
 - Subprocess adapters for all 4 repos
-- CLI (workflow run/resume/cancel/status/list/events/gc; inspect orgs/entities/artifacts/freshness/health; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; all list commands support --json; sable-platform init bootstraps DB)
+- CLI (workflow run/resume/cancel/status/list/events/gc; inspect orgs/entities/artifacts/freshness/health/interactions; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; all list commands support --json; sable-platform init bootstraps DB)
+- Entity interaction edge table (directional handle-to-handle edges for relationship web visualization)
 - Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs
 - Alert delivery cooldown (4h default, configurable per org, dedup_key-scoped)
 - Alert delivery failure tracking (last_delivery_error stamped on failed HTTP calls; queryable via list_alerts)
 - Per-org failure isolation in evaluate_alerts() (one bad org does not abort remaining orgs)
 - Workflow config versioning (step-name fingerprint on create; mismatch blocks resume)
-- 221/221 tests passing
+- 237/237 tests passing
 
 ## Architecture Decisions
 
@@ -45,7 +46,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
 - All new workflows go in `sable_platform/workflows/builtins/` and self-register.
-- Run the test suite with `python3 -m pytest tests/ -q`; all 221 tests must pass before merging.
+- Run the test suite with `python3 -m pytest tests/ -q`; all 237 tests must pass before merging.
 - `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 3; set 0 for steps that must not retry), and `retry_delay_seconds` (default 5). Declare only when the step has a genuine transient failure mode or conditional path — defensive retry logic obscures determinism.
 - To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{entity_id}"` as the dedup_key.
 - New alert tests must cover both the fire case and the cooldown suppression case.
@@ -57,6 +58,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/db/connection.py` | DB entry point — get_db(), ensure_schema() |
 | `sable_platform/db/workflow_store.py` | All workflow table CRUD |
 | `sable_platform/db/alerts.py` | Alert CRUD — list_alerts(), mark_delivered(), mark_delivery_failed(), acknowledge_alert() |
+| `sable_platform/db/interactions.py` | Interaction edge CRUD — sync_interaction_edges(), list_interactions(), get_interaction_summary() |
 | `sable_platform/db/cost.py` | Cost tracking — log_cost(), check_budget(), get_weekly_spend() |
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
@@ -113,6 +115,22 @@ check. Use this only for emergency resumes when you have confirmed the structura
 to apply to the in-flight run (e.g., a new step was added at the end, not renamed mid-run).
 
 NULL stored fingerprint (runs created before migration 012) → validation is skipped silently.
+
+## Entity Interaction Edges
+
+`entity_interactions` table (migration 014) stores directional interaction edges between community
+member handles. Designed as the data layer for SableWeb's relationship web visualization.
+
+**Schema:** Each row is an aggregate edge: `(org_id, source_handle, target_handle, interaction_type)`
+with a running `count`, `first_seen`, and `last_seen`. Types: `reply`, `mention`, `co_mention`.
+
+**Sync:** `sync_interaction_edges(conn, org_id, edges, run_date)` upserts edges from Cult Grader's
+`computed_metrics.json` when `reply_pairs` data is present. Idempotent: accumulates count, preserves
+earliest `first_seen`, updates `last_seen` and `run_date`.
+
+**CLI:** `sable-platform inspect interactions ORG [--type reply|mention|co_mention] [--min-count N] [--json]`
+
+**Dependency:** Cult Grader Stage 4 must extract individual reply pairs before this table has data.
 
 ## Cost & Budget Tracking
 

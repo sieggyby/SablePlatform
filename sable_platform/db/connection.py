@@ -20,6 +20,7 @@ _MIGRATIONS = [
     ("011_alert_cooldown.sql", 11),
     ("012_workflow_version.sql", 12),
     ("013_alert_delivery_error.sql", 13),
+    ("014_entity_interactions.sql", 14),
 ]
 
 

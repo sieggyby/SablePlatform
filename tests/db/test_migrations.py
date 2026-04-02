@@ -21,6 +21,8 @@ EXPECTED_TABLES = {
     "alerts", "alert_configs",
     # Migration 010: discord pulse
     "discord_pulse_runs",
+    # Migration 014: entity interactions
+    "entity_interactions",
 }
 
 
@@ -35,7 +37,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 13
+    assert row["version"] == 14
 
 
 def test_all_tables_exist():
@@ -54,7 +56,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 13
+    assert row["version"] == 14
 
 
 def test_workflow_tables_columns():

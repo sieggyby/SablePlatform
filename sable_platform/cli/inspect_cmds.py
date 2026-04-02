@@ -8,6 +8,7 @@ import click
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.discord_pulse import get_discord_pulse_runs
+from sable_platform.db.interactions import list_interactions
 
 
 @click.group("inspect")
@@ -256,3 +257,39 @@ def inspect_health(org_id: str, as_json: bool) -> None:
             click.echo(f"  {r['workflow_name']:<32}  {r['status']:<12}  {(r['started_at'] or '')[:16]}")
     else:
         click.echo("  (none)")
+
+
+@inspect.command("interactions")
+@click.argument("org_id")
+@click.option("--type", "interaction_type", default=None, help="Filter by type: reply|mention|co_mention")
+@click.option("--min-count", default=1, show_default=True, help="Minimum interaction count")
+@click.option("--limit", default=50, show_default=True)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def inspect_interactions(org_id: str, interaction_type: str | None, min_count: int, limit: int, as_json: bool) -> None:
+    """List top interaction edges for an org, sorted by count descending."""
+    conn = get_db()
+    try:
+        rows = list_interactions(
+            conn, org_id,
+            interaction_type=interaction_type,
+            min_count=min_count,
+            limit=limit,
+        )
+    finally:
+        conn.close()
+
+    if as_json:
+        click.echo(json.dumps([dict(r) for r in rows], indent=2))
+        return
+
+    if not rows:
+        click.echo(f"No interactions found for org '{org_id}'.")
+        return
+
+    click.echo(f"{'SOURCE':<24}  {'TARGET':<24}  {'TYPE':<12}  {'COUNT':>5}  LAST_SEEN")
+    click.echo("-" * 85)
+    for r in rows:
+        click.echo(
+            f"{r['source_handle']:<24}  {r['target_handle']:<24}  "
+            f"{r['interaction_type']:<12}  {r['count']:>5}  {r['last_seen'] or ''}"
+        )
