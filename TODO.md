@@ -90,3 +90,35 @@ CRUD for `entity_notes` table in `db/entities.py`. 9 tests.
 **Remaining:**
 - **Lead Identifier side:** Add `platform_sync.py:sync_scores_to_platform()` function that calls `sync_prospect_scores()`. See `Sable_Community_Lead_Identifier/TODO.md § Platform Sync`.
 - **Consumer:** SableWeb `data-service.ts:assembleProspects()` (see `SableWeb/TODO.md § Backend Implementation Plan`).
+
+---
+
+## SableTracking Integration Improvements (from 2026-04-04 production readiness audit)
+
+SableTracking's platform_sync is operational but has integration gaps. These items require SablePlatform-side changes or coordination.
+
+### TRACK-1: Metadata schema contract (P7-1 in SableTracking)
+
+SableTracking writes 17 fields to `content_items.metadata_json` as an unversioned JSON blob. Slopper reads it via `meta.get("source_tool") == "sable_tracking"` but has no schema validation. If fields are added or renamed, consumers break silently.
+
+**SablePlatform action:** Create `sable_platform/contracts/tracking.py` with a `TrackingMetadata(BaseModel)` contract: `schema_version: int`, all 17 fields typed. SableTracking and Slopper both import this contract. Adding a field requires bumping `schema_version`. Slopper logs a warning (not error) for unknown versions.
+
+**Current 17 fields:** source_tool, url, canonical_author_handle, quality_score, audience_annotation, timing_annotation, grok_status, engagement_score, lexicon_adoption, emotional_valence, subsquad_signal, format_type, intent_type, topic_tags, review_status, outcome_type, is_reusable_template.
+
+### TRACK-2: Outcomes table population
+
+SableTracking captures `outcome_type` and `outcome_description` via `/outcome` command in Sheets, but never writes to the `outcomes` table in sable.db. SableTracking TODO P7-2 will add this to `sync_to_platform()`.
+
+**SablePlatform action:** Verify `outcomes` table schema accepts: `org_id`, `entity_id` (nullable — not all content has a linked entity), `outcome_type` (text), `description` (text), `source` ("sable_tracking"), `content_item_id` (references content_items.item_id). Add helpers to `db/outcomes.py` if not present.
+
+### TRACK-3: Sync error → actions workflow
+
+SableTracking's P-INT-7 accumulates per-entity sync errors. These should create `actions` entries in sable.db so operators see them in SableWeb. SableTracking TODO P7-3 will implement this.
+
+**SablePlatform action:** Verify `register_action()` or equivalent exists and supports: `org_id`, `action_type="sync_error"`, `entity_id` (nullable), `description` (error message), `source="sable_tracking"`. If the actions API is designed for a different use case, document what SableTracking should call instead.
+
+### TRACK-4: SableTracking sync scheduler coordination
+
+SableTracking TODO P4-5 adds an in-process twice-weekly sync scheduler (Mon/Thu 06:00 UTC). This supersedes P-INT-3 (SablePlatform cron preset). The `twice-weekly` cron preset already exists in SablePlatform. SableTracking will use its own scheduler rather than the SablePlatform cron system since tracking sync runs inside the bot process (needs access to sheets_clients).
+
+**No SablePlatform action required** — informational only. The `stale_tracking` alert in `alert_checks.py` should continue to fire if sync hasn't run in 14 days (existing behavior is correct as a safety net).
