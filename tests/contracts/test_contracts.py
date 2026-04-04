@@ -11,6 +11,7 @@ from sable_platform.contracts.content import ContentItem
 from sable_platform.contracts.artifacts import Artifact
 from sable_platform.contracts.sync import SyncRun
 from sable_platform.contracts.workflows import WorkflowRun, WorkflowStep
+from sable_platform.contracts.alerts import Alert, AlertConfig
 from sable_platform.contracts.tasks import Task, RunOutcome, Recommendation
 
 
@@ -83,6 +84,16 @@ def test_workflow_step_roundtrip():
     assert WorkflowStep.model_validate(ws.model_dump()) == ws
 
 
+def test_alert_roundtrip():
+    alert = Alert(alert_id="a1", alert_type="test", severity="warning", title="Title")
+    assert Alert.model_validate(alert.model_dump()) == alert
+
+
+def test_alert_config_roundtrip():
+    cfg = AlertConfig(config_id="cfg1", org_id="org1", cooldown_hours=8)
+    assert AlertConfig.model_validate(cfg.model_dump()) == cfg
+
+
 def test_task_roundtrip():
     t = Task(org_id="org1", task_type="review", title="Check brief", priority="high")
     assert Task.model_validate(t.model_dump()) == t
@@ -107,6 +118,38 @@ def test_workflow_run_timed_out_status():
         "run_id": "x", "org_id": "o", "workflow_name": "w", "status": "timed_out"
     })
     assert wr.status == "timed_out"
+
+
+def test_workflow_run_accepts_step_fingerprint():
+    wr = WorkflowRun.model_validate({
+        "run_id": "x",
+        "org_id": "o",
+        "workflow_name": "w",
+        "step_fingerprint": "v2:deadbeef",
+    })
+    assert wr.step_fingerprint == "v2:deadbeef"
+
+
+def test_alert_contract_accepts_delivery_fields():
+    alert = Alert.model_validate({
+        "alert_id": "a1",
+        "alert_type": "test",
+        "severity": "info",
+        "title": "Alert",
+        "last_delivered_at": "2026-01-01 00:00:00",
+        "last_delivery_error": "timeout",
+    })
+    assert alert.last_delivered_at == "2026-01-01 00:00:00"
+    assert alert.last_delivery_error == "timeout"
+
+
+def test_diagnostic_run_accepts_run_summary_json():
+    run = DiagnosticRun.model_validate({
+        "org_id": "org1",
+        "run_type": "cult_doctor",
+        "run_summary_json": '{"summary": true}',
+    })
+    assert run.run_summary_json == '{"summary": true}'
 
 
 def test_workflow_run_invalid_status():

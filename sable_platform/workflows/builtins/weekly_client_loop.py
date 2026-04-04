@@ -66,10 +66,26 @@ def _check_tracking_freshness(ctx) -> StepResult:
 
 
 def _check_pulse_freshness(ctx) -> StepResult:
-    """Query artifacts for latest pulse/meta report and compute age."""
+    """Query sync_runs and artifacts for latest pulse/meta data and compute age.
+
+    Checks both sync_runs (for Slopper's pulse_track/meta_scan entries) and
+    artifacts (for legacy pulse_report/meta_report entries). Uses whichever
+    is more recent.
+    """
     staleness_days = ctx.config.get("pulse_staleness_days", _DEFAULT_PULSE_STALENESS_DAYS)
 
-    row = ctx.db.execute(
+    # Check sync_runs first (Slopper writes these after pulse track / meta scan)
+    sync_row = ctx.db.execute(
+        """
+        SELECT completed_at FROM sync_runs
+        WHERE org_id=? AND sync_type IN ('pulse_track', 'meta_scan') AND status='completed'
+        ORDER BY completed_at DESC LIMIT 1
+        """,
+        (ctx.org_id,),
+    ).fetchone()
+
+    # Also check artifacts (legacy path)
+    artifact_row = ctx.db.execute(
         """
         SELECT created_at FROM artifacts
         WHERE org_id=? AND artifact_type IN ('pulse_report', 'meta_report') AND stale=0
@@ -78,13 +94,21 @@ def _check_pulse_freshness(ctx) -> StepResult:
         (ctx.org_id,),
     ).fetchone()
 
-    if row and row["created_at"]:
+    # Use the most recent timestamp from either source
+    timestamps = []
+    if sync_row and sync_row["completed_at"]:
+        timestamps.append(sync_row["completed_at"])
+    if artifact_row and artifact_row["created_at"]:
+        timestamps.append(artifact_row["created_at"])
+
+    if timestamps:
+        latest_str = max(timestamps)
         try:
-            created = datetime.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            latest = datetime.datetime.fromisoformat(latest_str.replace("Z", "+00:00"))
             now = datetime.datetime.now(datetime.timezone.utc)
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=datetime.timezone.utc)
-            age_days = (now - created).days
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=datetime.timezone.utc)
+            age_days = (now - latest).days
         except (ValueError, TypeError):
             age_days = 999
         pulse_fresh = age_days <= staleness_days
@@ -136,62 +160,59 @@ def _trigger_strategy_generation(ctx) -> StepResult:
 
 
 def _register_artifacts(ctx) -> StepResult:
-    """Collect artifact references from prior step outputs and write to DB."""
-    artifact_ids: list[int] = []
+    """Count non-stale artifacts produced for this org during the workflow run.
 
-    # Collect any artifact paths produced by strategy generation
-    strategy_result = ctx.input_data.get("strategy_result", {})
-    artifacts = strategy_result.get("artifacts", [])
-    for art in artifacts:
-        if isinstance(art, dict) and art.get("path"):
-            cur = ctx.db.execute(
-                """
-                INSERT OR IGNORE INTO artifacts (org_id, artifact_type, path, metadata_json)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    ctx.org_id,
-                    art.get("artifact_type", "strategy_output"),
-                    art["path"],
-                    json.dumps({"source": "weekly_client_loop", "run_id": ctx.run_id}),
-                ),
-            )
-            if cur.lastrowid:
-                artifact_ids.append(cur.lastrowid)
+    The Slopper adapter's run() returns {status, job_ref, org_id} — it does NOT
+    return artifact paths. Slopper writes artifacts directly to sable.db via
+    log_cost/artifact registration in generate_advise(). So we query the
+    artifacts table for recent non-stale entries rather than parsing adapter output.
+    """
+    rows = ctx.db.execute(
+        """
+        SELECT artifact_id FROM artifacts
+        WHERE org_id = ? AND stale = 0
+        ORDER BY created_at DESC LIMIT 20
+        """,
+        (ctx.org_id,),
+    ).fetchall()
 
-    ctx.db.commit()
+    artifact_ids = [r["artifact_id"] for r in rows]
+
     return StepResult(
         status="completed",
         output={"artifact_ids": artifact_ids, "artifact_count": len(artifact_ids)},
     )
 
 
-def _register_actions(ctx) -> StepResult:
-    """Parse the latest discord_playbook artifact and create action rows for each recommendation."""
+def _parse_actions_from_artifact(ctx, artifact_type: str, source: str, action_type: str) -> list[str]:
+    """Parse action items from the latest artifact of a given type.
+
+    Returns list of created action_ids.
+    """
     import re
     from sable_platform.db.actions import create_action
 
     row = ctx.db.execute(
         """
         SELECT artifact_id, path FROM artifacts
-        WHERE org_id=? AND artifact_type='discord_playbook'
+        WHERE org_id=? AND artifact_type=?
         ORDER BY created_at DESC LIMIT 1
         """,
-        (ctx.org_id,),
+        (ctx.org_id, artifact_type),
     ).fetchone()
 
     if not row or not row["path"]:
-        return StepResult("completed", {"action_ids": [], "actions_created": 0})
+        return []
 
-    playbook_path = row["path"]
+    artifact_path = row["path"]
     artifact_ref = row["artifact_id"]
 
     try:
-        with open(playbook_path, encoding="utf-8") as fh:
+        with open(artifact_path, encoding="utf-8") as fh:
             lines = fh.readlines()
     except OSError:
-        log.warning("discord_playbook file not found at %s — no actions registered", playbook_path)
-        return StepResult("completed", {"action_ids": [], "actions_created": 0})
+        log.warning("%s file not found at %s — no actions registered", artifact_type, artifact_path)
+        return []
 
     action_ids = []
     in_section = False
@@ -207,11 +228,24 @@ def _register_actions(ctx) -> StepResult:
             if title:
                 aid = create_action(
                     ctx.db, ctx.org_id, title,
-                    source="playbook",
+                    source=source,
                     source_ref=str(artifact_ref),
-                    action_type="general",
+                    action_type=action_type,
                 )
                 action_ids.append(aid)
+
+    return action_ids
+
+
+def _register_actions(ctx) -> StepResult:
+    """Parse latest playbook and strategy brief artifacts, create action rows for recommendations."""
+    action_ids = []
+    action_ids.extend(
+        _parse_actions_from_artifact(ctx, "discord_playbook", "playbook", "general")
+    )
+    action_ids.extend(
+        _parse_actions_from_artifact(ctx, "twitter_strategy_brief", "strategy_brief", "post_content")
+    )
 
     return StepResult("completed", {"action_ids": action_ids, "actions_created": len(action_ids)})
 

@@ -27,3 +27,4 @@ class DiagnosticRun(BaseModel):
     recommended_action: Optional[str] = None
     sable_verdict: Optional[str] = None
     total_cost_usd: Optional[float] = None
+    run_summary_json: Optional[str] = None

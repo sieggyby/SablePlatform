@@ -13,7 +13,8 @@ SablePlatform is a thin coordination layer. It does not rewrite the business log
 
 ```
 sable_platform/
-├── errors.py               SableError + all error codes (verbatim from Slopper + 2 new)
+├── errors.py               SableError + all error codes
+├── cron.py                 Crontab scheduler — add/remove/list/presets
 ├── contracts/
 │   ├── entities.py         Entity, EntityHandle, EntityTag
 │   ├── leads.py            Lead, ProspectHandoff
@@ -24,56 +25,72 @@ sable_platform/
 │   ├── workflows.py        WorkflowRun, WorkflowStep, WorkflowEvent
 │   └── tasks.py            Task, Outcome, Recommendation
 ├── db/
-│   ├── connection.py       get_db(), ensure_schema() — uses importlib.resources for migrations
-│   ├── migrations/         001-013 SQL files (001-005 = verbatim Slopper, 006-013 = new)
-│   ├── entities.py         Entity CRUD
+│   ├── connection.py       get_db(), ensure_schema() — importlib.resources migrations
+│   ├── backup.py           SQLite online backup — WAL-safe, atomic, pruning
+│   ├── migrations/         001–023 SQL files
+│   ├── entities.py         Entity CRUD + entity_notes
 │   ├── tags.py             Tag management (replace-current vs append semantics)
 │   ├── merge.py            Merge candidates + 9-step atomic merge
 │   ├── jobs.py             Job/step lifecycle (Slopper-internal use)
 │   ├── cost.py             Cost logging + budget enforcement
 │   ├── stale.py            mark_artifacts_stale()
-│   ├── alerts.py           Alert CRUD + get_last_delivered_at / mark_delivered / mark_delivery_failed
+│   ├── alerts.py           Alert CRUD + delivery tracking
+│   ├── interactions.py     Interaction edge CRUD (relationship web)
+│   ├── decay.py            Decay score CRUD (churn prediction)
+│   ├── centrality.py       Centrality score CRUD (bridge nodes)
+│   ├── prospects.py        Prospect score CRUD (Lead Identifier)
+│   ├── playbook.py         Playbook target/outcome CRUD
+│   ├── discord_pulse.py    Discord pulse run CRUD
+│   ├── watchlist.py        Watchlist + snapshot-based change detection
+│   ├── audit.py            Append-only operator audit log
+│   ├── webhooks.py         Webhook subscription CRUD (SSRF-hardened)
 │   └── workflow_store.py   CRUD for workflow_runs/steps/events
 ├── workflows/
 │   ├── models.py           StepDefinition, WorkflowDefinition, StepContext, StepResult
 │   ├── engine.py           WorkflowRunner (synchronous, deterministic)
 │   ├── registry.py         register() / get() / list_all()
-│   ├── alert_evaluator.py  evaluate_alerts() — thin orchestrator, calls all checks
-│   ├── alert_checks.py     9 _check_* condition functions
-│   ├── alert_delivery.py   _deliver() + _send_telegram() + _send_discord() — HTTP delivery + cooldown
+│   ├── alert_evaluator.py  evaluate_alerts() — thin orchestrator, per-org isolation
+│   ├── alert_checks.py     12 _check_* condition functions
+│   ├── alert_delivery.py   _deliver() + _send_telegram() + _send_discord() — cooldown-gated
 │   └── builtins/
 │       ├── prospect_diagnostic_sync.py   Workflow 1
 │       ├── weekly_client_loop.py         Workflow 2
 │       ├── alert_check.py                Workflow 3
 │       ├── lead_discovery.py             Workflow 4
 │       └── onboard_client.py             Workflow 5
+├── webhooks/
+│   └── dispatch.py         HMAC-SHA256 webhook dispatch
 ├── adapters/
 │   ├── base.py             AdapterBase Protocol + SubprocessAdapterMixin
 │   ├── cult_grader.py      CultGraderAdapter
 │   ├── tracking_sync.py    SableTrackingAdapter
-│   ├── slopper.py          SlopperAdvisoryAdapter
+│   ├── slopper.py          SlopperAdvisoryAdapter (handle resolution via entity_handles)
 │   └── lead_identifier.py  LeadIdentifierAdapter
 └── cli/
-    ├── main.py             sable-platform entry point; init command
-    ├── workflow_cmds.py    run / resume / cancel / status / list / events / gc
-    ├── inspect_cmds.py     orgs / entities / artifacts / freshness / health
+    ├── main.py             sable-platform entry point; init, backup commands
+    ├── workflow_cmds.py    run / resume / cancel / status / list / events / gc / preflight
+    ├── inspect_cmds.py     orgs / entities / artifacts / freshness / health / interactions / decay / centrality / spend / audit / playbook / prospects
     ├── alert_cmds.py       list / acknowledge / evaluate / mute / unmute / config
     ├── action_cmds.py      actions surface
-    ├── journey_cmds.py     journey surface
+    ├── dashboard_cmds.py   urgency-sorted operator dashboard
+    ├── journey_cmds.py     entity lifecycle timeline + funnel
     ├── outcome_cmds.py     outcomes surface
-    └── org_cmds.py         org surface
+    ├── org_cmds.py         org create / list
+    ├── watchlist_cmds.py   add / remove / list / changes / snapshot
+    ├── webhook_cmds.py     add / list / remove / test
+    └── cron_cmds.py        add / remove / list / presets
 ```
 
 ## DB schema ownership
 
-`sable_platform` owns `get_db()` and all migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location.
+`sable_platform` owns `get_db()` and all 23 migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location.
 
 **Three separate SQLite databases exist in the suite — only sable.db is owned here:**
 - `~/.sable/sable.db` — platform cross-tool store (owned by SablePlatform)
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
-**Schema versioning:** `schema_version` table holds a single integer. Migration 006 adds `workflow_runs`, `workflow_steps`, `workflow_events`. Migrations 007–013 add alerts, alert_configs, discord_pulse_runs, and additional columns (cooldown_hours, last_delivered_at, step_fingerprint, last_delivery_error). Current schema head: version 13.
+**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 23**.
 
 ## Workflow engine design
 
@@ -87,6 +104,7 @@ StepDefinition
   name: str
   fn: Callable[[StepContext], StepResult]
   max_retries: int = 1
+  retry_delay_seconds: int = 5
   skip_if: Callable[[StepContext], bool] | None
 
 StepContext
@@ -103,17 +121,17 @@ StepResult
 
 **Execution loop:**
 1. Validate org exists
-2. Create `workflow_run` row (status=running)
+2. Create `workflow_run` row (status=running, step_fingerprint=sha1[:8])
 3. For each step:
    a. Create `workflow_step` row
    b. Evaluate `skip_if` — if true, mark skipped and continue
-   c. Execute step function with retry
+   c. Execute step function with retry (up to `max_retries`)
    d. On failure: mark run failed, raise `SableError(STEP_EXECUTION_ERROR)`
    e. Merge step output into `accumulated` dict for next step
 
-**Resume:** Load completed/skipped steps from DB, rebuild `accumulated`, execute from first non-complete step.
+**Resume:** Load completed/skipped steps from DB, rebuild `accumulated`, execute from first non-complete step. Validates step_fingerprint matches current definition (blocks on mismatch, `--ignore-version-check` to bypass).
 
-**Why synchronous:** CultGrader runs take 5–20 minutes. There is no background poller. `poll_diagnostic` step fails if CultGrader isn't done yet. Operator runs `sable-platform workflow resume <run_id>` when ready. This mirrors the existing `sable resume` pattern in Slopper.
+**Why synchronous:** CultGrader runs take 5–20 minutes. There is no background poller. `poll_diagnostic` step fails if CultGrader isn't done yet. Operator runs `sable-platform workflow resume <run_id>` when ready.
 
 ## Adapter design
 
@@ -127,21 +145,13 @@ AdapterBase (Protocol)
 
 SubprocessAdapterMixin
   _run_subprocess(cmd, cwd, timeout) -> CompletedProcess
+  _resolve_repo_path(env_var) -> str
   # Raises SableError(STEP_EXECUTION_ERROR) on timeout or non-zero exit
 ```
 
-**Why subprocess:** No existing repo has a stable importable library API. Subprocess keeps the dependency boundary clean. When a repo matures to having a clean public API, the adapter can be upgraded internally without changing workflow definitions.
+**SlopperAdvisoryAdapter note:** Resolves `org_id` to primary Twitter handle via `entity_handles` before passing to `sable advise`. Falls back to any non-archived Twitter handle if no primary. Raises `SableError(INVALID_CONFIG)` if no handle found.
 
-## Compatibility shims
-
-After installing SablePlatform, Sable_Slopper's `sable/platform/*.py` files become thin re-exports:
-
-```python
-# sable/platform/db.py
-from sable_platform.db.connection import get_db, ensure_schema  # noqa: F401
-```
-
-This preserves all existing import paths across the suite while moving ownership to SablePlatform.
+**Why subprocess:** No existing repo has a stable importable library API. Subprocess keeps the dependency boundary clean.
 
 ## Jobs vs workflow tables
 
@@ -151,5 +161,3 @@ Two separate patterns coexist — intentionally:
 |-------|-------|---------|
 | `jobs` / `job_steps` | Slopper-internal | Onboarding orchestrator, advise pipeline |
 | `workflow_runs` / `workflow_steps` / `workflow_events` | SablePlatform | Cross-suite coordination |
-
-The `WorkflowRunner` uses the new workflow tables. The existing `sable resume` command uses `jobs`. They share the same DB but have distinct semantics.

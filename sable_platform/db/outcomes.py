@@ -86,22 +86,59 @@ def compute_and_store_diagnostic_delta(
     run_id_after: str,
 ) -> list[str]:
     """Compare run_id_after to the previous completed run. Returns created delta_ids."""
-    prev_row = conn.execute(
+    after_row = conn.execute(
         """
-        SELECT run_id, checkpoint_path FROM diagnostic_runs
-        WHERE org_id=? AND run_id != ? AND status='completed' AND checkpoint_path IS NOT NULL
-        ORDER BY completed_at DESC LIMIT 1
+        SELECT run_id, completed_at, checkpoint_path FROM diagnostic_runs
+        WHERE org_id=? AND run_id=? AND status='completed'
         """,
         (org_id, run_id_after),
     ).fetchone()
-    if not prev_row:
+    if not after_row or not after_row["checkpoint_path"]:
         return []
 
-    after_row = conn.execute(
-        "SELECT checkpoint_path FROM diagnostic_runs WHERE run_id=?",
-        (run_id_after,),
-    ).fetchone()
-    if not after_row or not after_row["checkpoint_path"]:
+    if after_row["completed_at"] is None:
+        prev_row = conn.execute(
+            """
+            SELECT run_id, checkpoint_path FROM diagnostic_runs
+            WHERE org_id=?
+              AND run_id < ?
+              AND status='completed'
+              AND checkpoint_path IS NOT NULL
+            ORDER BY run_id DESC LIMIT 1
+            """,
+            (org_id, run_id_after),
+        ).fetchone()
+    else:
+        prev_row = conn.execute(
+            """
+            SELECT run_id, checkpoint_path FROM diagnostic_runs
+            WHERE org_id=?
+              AND run_id != ?
+              AND status='completed'
+              AND checkpoint_path IS NOT NULL
+              AND (
+                  (completed_at IS NOT NULL AND (
+                      completed_at < ?
+                      OR (completed_at = ? AND run_id < ?)
+                  ))
+                  OR (completed_at IS NULL AND run_id < ?)
+              )
+            ORDER BY
+                CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END,
+                completed_at DESC,
+                run_id DESC
+            LIMIT 1
+            """,
+            (
+                org_id,
+                run_id_after,
+                after_row["completed_at"],
+                after_row["completed_at"],
+                run_id_after,
+                run_id_after,
+            ),
+        ).fetchone()
+    if not prev_row:
         return []
 
     before_metrics = _load_metrics(prev_row["checkpoint_path"])

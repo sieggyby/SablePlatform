@@ -40,7 +40,7 @@ def _record_tag_history(
             (uuid.uuid4().hex, entity_id, org_id, change_type, tag,
              confidence, source, source_ref, expires_at),
         )
-    except Exception:
+    except sqlite3.OperationalError:
         pass  # table absent before migration 008 — safe to skip
 
 

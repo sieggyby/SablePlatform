@@ -23,7 +23,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
 - Subprocess adapters for all 4 repos
-- CLI (workflow run/resume/cancel/status/list/events/gc/preflight; inspect orgs/entities/artifacts/freshness/health/interactions/decay/centrality/spend/audit; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; dashboard; watchlist add/remove/list/changes/snapshot; webhooks add/list/remove/test; all list commands support --json; sable-platform init bootstraps DB; sable-platform backup creates SQLite online backups)
+- CLI (workflow run/resume/cancel/status/list/events/gc/preflight; inspect orgs/entities/artifacts/freshness/health/interactions/decay/centrality/spend/audit/playbook/prospects; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; dashboard; watchlist add/remove/list/changes/snapshot; webhooks add/list/remove/test; all list commands support --json; sable-platform init bootstraps DB; sable-platform backup creates SQLite online backups)
 - Entity interaction edge table (directional handle-to-handle edges for relationship web visualization)
 - Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes
 - Entity decay scores table (churn prediction data layer — receives scores from Cult Grader, alerts on at-risk members)
@@ -40,7 +40,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Prospect scoring table (migration 020 — Lead Identifier integration data layer)
 - Run summary JSON blob column on diagnostic_runs (migration 021 — SableWeb integration)
 - Playbook outcome tagging tables (migration 022 — playbook_targets + playbook_outcomes)
-- 704/704 tests passing
+- 764/764 tests passing
 
 ## Architecture Decisions
 
@@ -56,7 +56,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
 - All new workflows go in `sable_platform/workflows/builtins/` and self-register.
-- Run the test suite with `python3 -m pytest tests/ -q`; all 680 tests must pass before merging.
+- Run the test suite with `python3 -m pytest tests/ -q`; all 757 tests must pass before merging.
 - `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 3; set 0 for steps that must not retry), and `retry_delay_seconds` (default 5). Declare only when the step has a genuine transient failure mode or conditional path — defensive retry logic obscures determinism.
 - To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{entity_id}"` as the dedup_key.
 - New alert tests must cover both the fire case and the cooldown suppression case.
@@ -77,7 +77,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
 | `sable_platform/workflows/alert_evaluator.py` | evaluate_alerts() — thin orchestrator |
-| `sable_platform/workflows/alert_checks.py` | All 11 `_check_*` condition functions |
+| `sable_platform/workflows/alert_checks.py` | All 12 `_check_*` condition functions |
 | `sable_platform/workflows/alert_delivery.py` | `_deliver()`, `_send_telegram()`, `_send_discord()` — HTTP delivery + cooldown gate |
 | `sable_platform/db/centrality.py` | Centrality score CRUD — sync_centrality_scores(), list_centrality_scores(), get_centrality_summary() |
 | `sable_platform/db/watchlist.py` | Watchlist CRUD + snapshot-based change detection |
@@ -89,7 +89,8 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/cli/watchlist_cmds.py` | Watchlist CLI — add/remove/list/changes/snapshot |
 | `sable_platform/cli/webhook_cmds.py` | Webhook CLI — add/list/remove/test |
 | `sable_platform/db/playbook.py` | Playbook tagging CRUD — upsert_playbook_targets(), record_playbook_outcomes() |
-| `docs/MIGRATION_PLAN.md` | Step-by-step migration for each existing repo |
+| `docs/CLI_REFERENCE.md` | Complete CLI command reference |
+| `docs/CROSS_REPO_INTEGRATION.md` | Adapter reference, data flows, direct commands |
 
 ## Environment Variables
 

@@ -7,6 +7,7 @@ Answers for any completed run:
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 
@@ -132,6 +133,52 @@ def _create_entities(ctx) -> StepResult:
     })
 
 
+def _sync_scores(ctx) -> StepResult:
+    """Sync parsed leads to prospect_scores table.
+
+    Maps Lead Identifier output fields to the prospect_scores schema.
+    Dimension inversion mirrors Lead Identifier's platform_sync.py:
+    community_gap → community_health (inverted), conversation_gap → language_signal (inverted).
+    """
+    from sable_platform.db.prospects import sync_prospect_scores
+
+    leads = ctx.input_data.get("leads", [])
+    if not leads:
+        return StepResult("completed", {"scores_synced": 0})
+
+    run_date = datetime.date.today().isoformat()
+    scores = []
+    for lead in leads:
+        dims = lead.get("dimensions", {})
+        # Invert gap scores to positive signals (matches Lead Identifier's platform_sync.py)
+        dimensions = {}
+        if "community_gap" in dims:
+            dimensions["community_health"] = round(1.0 - dims["community_gap"], 4)
+        if "conversation_gap" in dims:
+            dimensions["language_signal"] = round(1.0 - dims["conversation_gap"], 4)
+        if "growth_trajectory" in dims:
+            dimensions["growth_trajectory"] = dims["growth_trajectory"]
+        if "content_quality" in dims:
+            dimensions["content_quality"] = dims["content_quality"]
+
+        composite = lead.get("composite_score", 0.0)
+        tier = lead.get("tier", "monitor")
+
+        scores.append({
+            "org_id": lead.get("project_id", lead.get("name", "unknown")),
+            "composite_score": composite,
+            "tier": tier,
+            "stage": lead.get("stage"),
+            "dimensions": dimensions,
+            "rationale": lead.get("rationale"),
+            "enrichment": lead.get("enrichment"),
+            "next_action": lead.get("next_action"),
+        })
+
+    count = sync_prospect_scores(ctx.db, scores, run_date)
+    return StepResult("completed", {"scores_synced": count})
+
+
 def _register_artifacts(ctx) -> StepResult:
     """Register the Lead Identifier output directory as an artifact."""
     output_dir = ctx.input_data.get("lead_output_dir", "")
@@ -193,6 +240,7 @@ LEAD_DISCOVERY = WorkflowDefinition(
         StepDefinition(name="run_lead_identifier", fn=_run_lead_identifier, max_retries=1),
         StepDefinition(name="parse_leads", fn=_parse_leads, max_retries=1),
         StepDefinition(name="create_entities", fn=_create_entities, max_retries=1),
+        StepDefinition(name="sync_scores", fn=_sync_scores, max_retries=0),
         StepDefinition(name="register_artifacts", fn=_register_artifacts, max_retries=1),
         StepDefinition(name="evaluate_alerts", fn=_evaluate_alerts, max_retries=0),
         StepDefinition(name="mark_complete", fn=_mark_complete, max_retries=0),

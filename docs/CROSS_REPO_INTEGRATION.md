@@ -69,12 +69,14 @@ SablePlatform never imports from downstream repos. All integration happens via s
 | Property | Value |
 |----------|-------|
 | Env var | `SABLE_SLOPPER_PATH` |
-| Command | `python -m sable advise <org_id>` |
+| Command | `python -m sable advise <@handle>` |
 | Timeout | 600s |
-| Input | `org_id` |
-| Output | Latest `twitter_strategy_brief` artifacts |
+| Input | `org_id` (resolved to primary Twitter handle via `entity_handles`) |
+| Output | `{status, job_ref, org_id}` — artifacts written directly to `sable.db` |
 
-**What flows back:** Strategy brief artifacts → `artifacts` table (type: `twitter_strategy_brief`).
+**Handle resolution:** The adapter resolves `org_id` → primary Twitter handle via `entity_handles` table (primary first, any non-archived fallback). Raises `SableError(INVALID_CONFIG)` if no handle found. Slopper's `sable advise` expects a Twitter handle, not an org_id.
+
+**What flows back:** Strategy brief artifacts → `artifacts` table (type: `twitter_strategy_brief`). Slopper writes directly to `sable.db`; the adapter return value does not contain artifact paths.
 
 ### LeadIdentifierAdapter
 
@@ -286,5 +288,8 @@ After a Cult Grader diagnostic completes, Stage 8 automatically syncs data to sa
 5. Syncs centrality scores if present
 6. Syncs interaction edges if reply pair data exists
 7. Registers diagnostic artifacts
+
+8. Syncs playbook targets and outcomes if present
+9. Writes `run_summary_json` blob (F-BLOB v1: grades, scores, narratives, classification, decay, funnel, roster)
 
 This is fire-and-forget — the Cult Grader run completes `"ok"` even if sync fails. Check `diagnostics/_error_log.jsonl` for sync errors.

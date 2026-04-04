@@ -13,6 +13,7 @@ class AlertConfig(BaseModel):
     telegram_chat_id: Optional[str] = None
     discord_webhook_url: Optional[str] = None
     enabled: bool = True
+    cooldown_hours: int = 4
     created_at: Optional[str] = None
 
 
@@ -29,6 +30,8 @@ class Alert(BaseModel):
     data_json: Optional[str] = None
     status: Literal["new", "acknowledged", "resolved"] = "new"
     dedup_key: Optional[str] = None
+    last_delivered_at: Optional[str] = None
+    last_delivery_error: Optional[str] = None
     acknowledged_at: Optional[str] = None
     acknowledged_by: Optional[str] = None
     resolved_at: Optional[str] = None

@@ -17,6 +17,7 @@ class WorkflowRun(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
+    step_fingerprint: Optional[str] = None
     created_at: Optional[str] = None
 
 

@@ -23,6 +23,7 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 SCHEDULE_PRESETS: dict[str, str] = {
     "hourly": "0 * * * *",
     "daily": "0 6 * * *",
+    "twice-weekly": "0 6 * * 1,4",      # Monday + Thursday 06:00 UTC
     "weekly-monday": "0 22 * * 1",
     "weekly-tuesday": "0 22 * * 2",
     "weekly-wednesday": "0 22 * * 3",

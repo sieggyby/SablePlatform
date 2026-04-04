@@ -2,61 +2,49 @@
 
 Suite-level backbone for the Sable tool stack.
 
-SablePlatform extracts the shared `sable.platform` layer out of Sable_Slopper and adds a deterministic workflow engine, canonical data contracts, and adapter interfaces to all four Sable repos. Existing repos remain specialized workers. This repo becomes the single owner of cross-suite DB schema, migrations, and coordination logic.
+SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a deterministic workflow engine, subprocess adapters to all four Sable repos, and the `sable-platform` CLI.
 
-## What this replaces / fixes
+## Current scope (v0.4)
 
-| Before | After |
-|--------|-------|
-| `sable.platform` lives in Sable_Slopper | `sable_platform` is an installable package |
-| CultGrader/SableTracking need `SABLE_PROJECT_PATH` | Import directly from `sable_platform` |
-| Migration files scattered in Slopper | Owned here, resolved via `importlib.resources` |
-| No cross-suite workflow engine | Deterministic `WorkflowRunner` with durable step state |
-| No canonical Pydantic contracts | `sable_platform.contracts.*` |
-| No observability across the suite | `workflow_runs`, `workflow_steps`, `workflow_events` tables |
-
-## Current scope (v0.3)
-
-- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, all migrations (001–013), entity/tag/merge/jobs/cost/stale helpers
+- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 23 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks helpers
 - **`sable_platform.contracts`** — Lead, ProspectHandoff, DiagnosticRun, Entity, ContentItem, Artifact, SyncRun, WorkflowRun, Task, Outcome, Recommendation
-- **`sable_platform.workflows`** — deterministic `WorkflowRunner`, `registry`, 5 builtin workflows
+- **`sable_platform.workflows`** — deterministic `WorkflowRunner`, registry, 5 builtin workflows, 12 alert checks, alert delivery (Telegram/Discord with cooldown)
 - **`sable_platform.adapters`** — subprocess adapters for CultGrader, SableTracking, Slopper, LeadIdentifier
-- **`sable_platform.cli`** — `sable-platform workflow`, `sable-platform inspect`, `sable-platform alerts`, `sable-platform actions`, `sable-platform journey`, `sable-platform outcomes`, and `sable-platform org` commands
+- **`sable_platform.cli`** — full operator surface (see [CLI Reference](docs/CLI_REFERENCE.md))
 
 ## Installation
 
 ```bash
 pip install -e /path/to/SablePlatform
-# or in each repo's requirements.txt:
-# sable-platform @ file:///path/to/SablePlatform
 ```
 
 ## CLI quickstart
 
 ```bash
-# Initialize DB (first-time setup)
+# Initialize DB
 sable-platform init
 
 # Run a workflow
-sable-platform workflow run prospect_diagnostic_sync --org <org_id> --config prospect_yaml_path=/path/to/config.yaml
+sable-platform workflow run weekly_client_loop --org tig
 
-# Check status
-sable-platform workflow status <run_id>
+# Operator dashboard
+sable-platform dashboard
 
-# Resume after CultGrader finishes
-sable-platform workflow resume <run_id>
+# Health check
+sable-platform inspect health tig
 
-# Cancel a stuck run
-sable-platform workflow cancel <run_id>
+# Alerts
+sable-platform alerts list --severity critical --status new
+sable-platform alerts evaluate --org tig
 
-# List recent runs (machine-readable)
-sable-platform workflow list --org <org_id> --json
+# Inspect community graph
+sable-platform inspect decay tig --tier critical
+sable-platform inspect centrality tig --json
+sable-platform inspect interactions tig --type reply --min-count 3
 
-# Inspect freshness
-sable-platform inspect freshness <org_id>
-
-# List active alerts as JSON
-sable-platform alerts list --json
+# Playbook targets/outcomes
+sable-platform inspect playbook tig
+sable-platform inspect playbook tig --outcomes --json
 ```
 
 ## Environment variables
@@ -64,27 +52,34 @@ sable-platform alerts list --json
 | Variable | Purpose |
 |----------|---------|
 | `SABLE_DB_PATH` | Path to sable.db (default: `~/.sable/sable.db`) |
-| `SABLE_TELEGRAM_BOT_TOKEN` | Telegram bot token for alert delivery (optional; delivery skipped if unset) |
-| `SABLE_CULT_GRADER_PATH` | Path to Sable_Cult_Grader repo (required for CultGrader adapter) |
-| `SABLE_TRACKING_PATH` | Path to SableTracking repo (required for tracking adapter) |
-| `SABLE_SLOPPER_PATH` | Path to Sable_Slopper repo (required for Slopper adapter) |
-| `SABLE_LEAD_IDENTIFIER_PATH` | Path to Sable_Community_Lead_Identifier repo (required for lead adapter) |
+| `SABLE_HOME` | Root dir for config (default: `~/.sable`) |
+| `SABLE_TELEGRAM_BOT_TOKEN` | Telegram bot token for alert delivery (optional) |
+| `SABLE_CULT_GRADER_PATH` | Path to Sable_Cult_Grader repo |
+| `SABLE_SLOPPER_PATH` | Path to Sable_Slopper repo |
+| `SABLE_TRACKING_PATH` | Path to SableTracking repo |
+| `SABLE_LEAD_IDENTIFIER_PATH` | Path to Sable_Community_Lead_Identifier repo |
 
 ## Repo structure
 
 ```
 sable_platform/
 ├── contracts/      Canonical Pydantic models
-├── db/             DB layer + migrations
-├── workflows/      WorkflowRunner, registry, builtins
+├── db/             DB layer + 23 migrations
+├── workflows/      WorkflowRunner, registry, builtins, alert engine
 ├── adapters/       Subprocess adapters per repo
+├── webhooks/       HMAC-SHA256 webhook dispatch
+├── cron.py         Crontab scheduler
 └── cli/            sable-platform CLI
-tests/
+tests/              764 tests (in-memory SQLite, no ~/.sable modification)
 docs/
 ```
 
 ## Docs
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Migration Plan](docs/MIGRATION_PLAN.md)
-- [Workflows](docs/WORKFLOWS.md)
+- [Architecture](docs/ARCHITECTURE.md) — module map, DB ownership, engine design
+- [CLI Reference](docs/CLI_REFERENCE.md) — complete command reference
+- [Cross-Repo Integration](docs/CROSS_REPO_INTEGRATION.md) — adapter reference, data flows, direct commands
+- [End-to-End Workflows](docs/END_TO_END_WORKFLOWS.md) — operational runbooks
+- [Environment Setup](docs/ENVIRONMENT_SETUP.md) — full setup guide
+- [Workflows](docs/WORKFLOWS.md) — builtin workflow definitions and state machines
+- [SocialData Best Practices](docs/SOCIALDATA_BEST_PRACTICES.md) — cross-tool API reference

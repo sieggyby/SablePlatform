@@ -34,8 +34,18 @@ from sable_platform.workflows.models import (
 logger = logging.getLogger(__name__)
 
 
+_WORKFLOW_FINGERPRINT_VERSION = "v2"
+
+
 def _workflow_fingerprint(workflow_def: WorkflowDefinition) -> str:
-    """Compute an 8-char SHA-1 fingerprint of the workflow's step names."""
+    """Compute a versioned fingerprint of the workflow's ordered step names."""
+    names = "|".join(s.name for s in workflow_def.steps)
+    digest = hashlib.sha1(names.encode()).hexdigest()[:8]
+    return f"{_WORKFLOW_FINGERPRINT_VERSION}:{digest}"
+
+
+def _legacy_workflow_fingerprint(workflow_def: WorkflowDefinition) -> str:
+    """Reproduce the pre-v2 fingerprint that ignored step order."""
     names = "|".join(sorted(s.name for s in workflow_def.steps))
     return hashlib.sha1(names.encode()).hexdigest()[:8]
 
@@ -111,7 +121,11 @@ class WorkflowRunner:
                 stored_fp = run_row["step_fingerprint"]
                 if stored_fp is not None:
                     current_fp = _workflow_fingerprint(self.definition)
-                    if stored_fp != current_fp:
+                    if stored_fp.startswith(f"{_WORKFLOW_FINGERPRINT_VERSION}:"):
+                        fingerprint_matches = stored_fp == current_fp
+                    else:
+                        fingerprint_matches = stored_fp == _legacy_workflow_fingerprint(self.definition)
+                    if not fingerprint_matches:
                         raise SableError(
                             STEP_EXECUTION_ERROR,
                             f"Workflow definition changed since run was created "
@@ -223,6 +237,7 @@ class WorkflowRunner:
         conn: sqlite3.Connection,
     ) -> StepResult:
         last_error: str = ""
+        failed_output: dict = {}
 
         for attempt in range(step_def.max_retries + 1):
             start_workflow_step(conn, ctx.step_id)
@@ -232,16 +247,34 @@ class WorkflowRunner:
             )
             try:
                 result = step_def.fn(ctx)
-                complete_workflow_step(conn, ctx.step_id, result.output)
-                emit_workflow_event(
-                    conn, ctx.run_id, "step_completed", ctx.step_id,
-                    {"step": step_def.name},
+                if result.status == "completed":
+                    complete_workflow_step(conn, ctx.step_id, result.output)
+                    emit_workflow_event(
+                        conn, ctx.run_id, "step_completed", ctx.step_id,
+                        {"step": step_def.name},
+                    )
+                    logger.info("Step %s completed (attempt %d)", step_def.name, attempt)
+                    return result
+
+                if result.status == "skipped":
+                    skip_reason = result.error or "step returned skipped status"
+                    skip_workflow_step(conn, ctx.step_id, skip_reason)
+                    emit_workflow_event(
+                        conn, ctx.run_id, "step_skipped", ctx.step_id,
+                        {"step": step_def.name},
+                    )
+                    logger.info("Step %s skipped (attempt %d)", step_def.name, attempt)
+                    return result
+
+                failed_output = dict(result.output or {})
+                last_error = redact_error(
+                    result.error or f"Step '{step_def.name}' returned failed status"
                 )
-                logger.info("Step %s completed (attempt %d)", step_def.name, attempt)
-                return result
 
             except Exception as exc:
                 last_error = redact_error(str(exc))
+                failed_output = {}
+
                 fail_workflow_step(conn, ctx.step_id, last_error)
                 emit_workflow_event(
                     conn, ctx.run_id, "step_failed", ctx.step_id,
@@ -249,9 +282,17 @@ class WorkflowRunner:
                 )
                 logger.warning("Step %s failed (attempt %d): %s", step_def.name, attempt, last_error)
 
-                if attempt < step_def.max_retries:
-                    reset_workflow_step_for_retry(conn, ctx.step_id)
-                    if step_def.retry_delay_seconds > 0:
-                        time.sleep(step_def.retry_delay_seconds)
+            else:
+                fail_workflow_step(conn, ctx.step_id, last_error)
+                emit_workflow_event(
+                    conn, ctx.run_id, "step_failed", ctx.step_id,
+                    {"step": step_def.name, "error": last_error, "attempt": attempt},
+                )
+                logger.warning("Step %s failed (attempt %d): %s", step_def.name, attempt, last_error)
 
-        return StepResult(status="failed", output={}, error=last_error)
+            if attempt < step_def.max_retries:
+                reset_workflow_step_for_retry(conn, ctx.step_id)
+                if step_def.retry_delay_seconds > 0:
+                    time.sleep(step_def.retry_delay_seconds)
+
+        return StepResult(status="failed", output=failed_output, error=last_error)

@@ -13,6 +13,7 @@ from sable_platform.db.discord_pulse import get_discord_pulse_runs
 from sable_platform.db.decay import list_decay_scores
 from sable_platform.db.interactions import list_interactions
 from sable_platform.db.audit import list_audit_log
+from sable_platform.db.playbook import list_playbook_targets, list_playbook_outcomes
 from sable_platform.db.prospects import list_prospect_scores
 
 
@@ -479,6 +480,54 @@ def inspect_audit(org_id: str | None, actor: str | None, action_filter: str | No
         click.echo(
             f"{(r['timestamp'] or ''):<20}  {r['actor']:<20}  {r['action']:<20}  "
             f"{(r['org_id'] or ''):<16}  {(r['entity_id'] or ''):<16}  {detail_str}"
+        )
+
+
+@inspect.command("playbook")
+@click.argument("org_id")
+@click.option("--targets/--outcomes", "show_targets", default=True, help="Show targets (default) or outcomes")
+@click.option("--limit", default=10, show_default=True)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def inspect_playbook(org_id: str, show_targets: bool, limit: int, as_json: bool) -> None:
+    """Show playbook targets or outcomes for an org."""
+    conn = get_db()
+    try:
+        if show_targets:
+            rows = list_playbook_targets(conn, org_id, limit=limit)
+        else:
+            rows = list_playbook_outcomes(conn, org_id, limit=limit)
+    finally:
+        conn.close()
+
+    label = "targets" if show_targets else "outcomes"
+
+    if as_json:
+        click.echo(json.dumps([dict(r) for r in rows], indent=2))
+        return
+
+    if not rows:
+        click.echo(f"No playbook {label} found for org '{org_id}'.")
+        return
+
+    json_col = "targets_json" if show_targets else "outcomes_json"
+    click.echo(f"{'ID':<6}  {'CREATED':<20}  {'ARTIFACT':<16}  {label.upper()}")
+    click.echo("-" * 80)
+    for r in rows:
+        row_id = r["id"]
+        artifact = (r["artifact_id"] or "") if show_targets else (r["targets_artifact_id"] or "")
+        raw = r[json_col] or "{}"
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                summary = f"{len(parsed)} items"
+            elif isinstance(parsed, dict):
+                summary = ", ".join(list(parsed.keys())[:4])
+            else:
+                summary = str(parsed)[:60]
+        except (json.JSONDecodeError, TypeError):
+            summary = raw[:60]
+        click.echo(
+            f"{row_id:<6}  {(r['created_at'] or ''):<20}  {str(artifact):<16}  {summary}"
         )
 
 

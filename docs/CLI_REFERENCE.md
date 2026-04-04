@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. All commands operate on `s
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 19 migrations
+sable-platform init                      # Create sable.db + apply all 23 migrations
 sable-platform init --db-path /alt/path  # Use non-default DB location
 ```
 
@@ -29,11 +29,6 @@ sable-platform backup --max-backups 5                    # Keep only 5 most rece
 sable-platform backup --db-path /alt/sable.db            # Backup a non-default DB
 ```
 
-- Backups are named `sable_YYYYMMDDTHHMMSSz[_label].db`
-- Old backups beyond `--max-backups` are pruned automatically (oldest first)
-- On failure, partial backup files are cleaned up (no corrupt orphans)
-- Labels are sanitized to prevent path traversal
-
 ---
 
 ## cron — Scheduled Workflow Runs
@@ -44,6 +39,7 @@ Manages crontab entries for automated workflow execution. All inputs are validat
 # Add a scheduled workflow
 sable-platform cron add --org tig --workflow weekly_client_loop --schedule weekly-thursday
 sable-platform cron add --org tig --workflow alert_check --schedule "0 22 * * 4"
+sable-platform cron add --org tig --workflow weekly_client_loop --schedule twice-weekly
 sable-platform cron add --org tig --workflow prospect_diagnostic_sync --schedule daily \
   --extra-args "-c prospect_yaml_path=/path/to/tig.yaml"
 
@@ -57,7 +53,7 @@ sable-platform cron remove --org tig --workflow weekly_client_loop
 sable-platform cron presets
 ```
 
-**Presets:** `hourly`, `daily`, `weekly-monday` through `weekly-sunday`. Or pass any 5-field cron expression directly.
+**Presets:** `hourly`, `daily`, `twice-weekly`, `weekly-monday` through `weekly-sunday`. Or pass any 5-field cron expression directly.
 
 **Security:** `org` and `workflow` must be `[A-Za-z0-9_-]` only. All command values are shell-quoted via `shlex.quote()`. Newlines, colons, and shell metacharacters are rejected.
 
@@ -105,7 +101,7 @@ sable-platform workflow cancel <RUN_ID>
 sable-platform workflow status <RUN_ID>          # Single run status
 sable-platform workflow status <RUN_ID> --json
 sable-platform workflow list --org <ORG_ID>      # Recent runs
-sable-platform workflow list --org tig --workflow weekly_client_loop --limit 5  # default limit: 10
+sable-platform workflow list --org tig --workflow weekly_client_loop --limit 5
 sable-platform workflow list --org tig --json
 sable-platform workflow events <RUN_ID>          # Step-by-step event log
 ```
@@ -123,11 +119,11 @@ sable-platform workflow preflight             # Check all active orgs
 
 | Workflow | Purpose | Required Config |
 |----------|---------|-----------------|
-| `onboard_client` | Readiness check: verify org, adapters, create initial sync record | `prospect_yaml_path` |
-| `prospect_diagnostic_sync` | Diagnose → sync entities → register artifacts | `prospect_yaml_path` |
-| `weekly_client_loop` | Recurring: freshness check, refresh stale data, generate strategy | (none — `--org` provides `org_id`) |
-| `alert_check` | Evaluate all alert conditions | (none — `--org` provides `org_id`) |
-| `lead_discovery` | Run Lead Identifier → ingest results | — |
+| `onboard_client` | Readiness check: verify org, adapters, create initial sync record | — |
+| `prospect_diagnostic_sync` | Diagnose, sync entities, register artifacts | `prospect_yaml_path` |
+| `weekly_client_loop` | Recurring: freshness, refresh, strategy, alerts | — |
+| `alert_check` | Evaluate all alert conditions | — |
+| `lead_discovery` | Run Lead Identifier, sync scores, register artifacts | — |
 
 ---
 
@@ -156,6 +152,15 @@ sable-platform inspect decay <ORG_ID> [--min-score 0.5] [--tier critical|high|me
 sable-platform inspect centrality <ORG_ID> [--min-degree 0.1] [--limit 50] [--json]
 ```
 
+### Playbook
+
+```bash
+# Playbook targets (default) or outcomes
+sable-platform inspect playbook <ORG_ID> [--json]
+sable-platform inspect playbook <ORG_ID> --outcomes [--json]
+sable-platform inspect playbook <ORG_ID> --limit 5
+```
+
 ### Prospect Scores
 
 ```bash
@@ -170,7 +175,7 @@ sable-platform inspect prospects [--min-score 0.5] [--tier "Tier 1"|"Tier 2"|"Ti
 sable-platform inspect spend [--org <ORG_ID>] [--json]
 
 # Operator audit log
-sable-platform inspect audit [--org tig] [--actor operator] [--action tag_deactivated] [--since 2026-04-01T00:00:00] [--limit 100] [--json]
+sable-platform inspect audit [--org tig] [--actor operator] [--action tag_deactivate] [--since 2026-04-01T00:00:00] [--limit 100] [--json]
 ```
 
 ---
@@ -183,7 +188,7 @@ sable-platform inspect audit [--org tig] [--actor operator] [--action tag_deacti
 sable-platform alerts list [--org tig] [--severity critical|warning|info] [--status new|acknowledged|resolved] [--limit 20] [--json]
 # Note: --status defaults to "new" — use --status acknowledged or --status resolved to see past alerts
 sable-platform alerts acknowledge <ALERT_ID> [--operator sieggy]
-sable-platform alerts evaluate [--org tig]   # Run all 11 checks for one or all orgs
+sable-platform alerts evaluate [--org tig]   # Run all 12 checks for one or all orgs
 sable-platform alerts mute <ORG_ID>          # Suppress delivery for an org
 sable-platform alerts unmute <ORG_ID>        # Re-enable delivery
 ```
@@ -198,7 +203,7 @@ sable-platform alerts config set --org tig --disable
 sable-platform alerts config show --org tig
 ```
 
-### Alert Types
+### Alert Types (12 checks)
 
 | Check | Severity | Fires When |
 |-------|----------|------------|
@@ -207,12 +212,13 @@ sable-platform alerts config show --org tig
 | `sentiment_shift` | warning/critical | Entity sentiment change detected |
 | `mvl_score_change` | warning | MVL score change |
 | `unclaimed_actions` | info | Actions pending assignment |
-| `workflow_failures` | warning | Workflow run failures |
-| `discord_pulse_regression` | warning | Discord pulse metric regression |
-| `discord_pulse_stale` | warning | Discord pulse data stale |
-| `stuck_runs` | warning | Runs stuck in 'running' > threshold |
-| `member_decay` | warning/critical | Entity decay score ≥ 0.6 (critical if ≥ 0.8 + important tag) |
-| `bridge_decay` | warning/critical | Structural decay in bridge entities |
+| `workflow_failures` | warning | Workflow run failures (last 30 days) |
+| `discord_pulse_regression` | warning | Discord pulse retention delta < -0.05 |
+| `discord_pulse_stale` | warning | Discord pulse data older than 7 days |
+| `stuck_runs` | warning | Runs stuck in 'running' > 2 hours |
+| `member_decay` | warning/critical | Decay score >= 0.6 (critical if >= 0.8 + important tag) |
+| `bridge_decay` | critical | Bridge entity with high centrality + high decay |
+| `watchlist_changes` | warning/critical | Watched entity state changed between snapshots |
 
 ---
 
@@ -289,7 +295,7 @@ sable-platform webhooks remove <SUBSCRIPTION_ID>
 sable-platform webhooks test <ORG_ID> <SUBSCRIPTION_ID>   # Send test event
 ```
 
-- Secrets must be ≥16 characters. Use `--generate-secret` for auto-generation.
+- Secrets must be >= 16 characters. Use `--generate-secret` for auto-generation.
 - Webhooks sign payloads with HMAC-SHA256 (`X-Sable-Signature` header).
 - Auto-disabled after 10 consecutive delivery failures.
 - SSRF-hardened: localhost, private IPs, IPv6 loopback, link-local addresses are blocked.

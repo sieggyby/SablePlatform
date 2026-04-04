@@ -4,7 +4,11 @@ from __future__ import annotations
 import pytest
 
 from sable_platform.errors import SableError, STEP_EXECUTION_ERROR
-from sable_platform.workflows.engine import WorkflowRunner, _workflow_fingerprint
+from sable_platform.workflows.engine import (
+    WorkflowRunner,
+    _legacy_workflow_fingerprint,
+    _workflow_fingerprint,
+)
 from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
 from sable_platform.db.workflow_store import get_workflow_run, get_workflow_steps, get_workflow_events
 
@@ -398,7 +402,6 @@ def test_null_version_skips_check(wf_db):
     # Insert a run directly with NULL step_fingerprint
     import uuid as _uuid
     run_id = _uuid.uuid4().hex
-    import json as _json
     wf_db.execute(
         """
         INSERT INTO workflow_runs (run_id, org_id, workflow_name, workflow_version, status, config_json, step_fingerprint)
@@ -452,6 +455,84 @@ def test_matching_version_resumes(wf_db):
     assert run["status"] == "completed"
 
 
+def test_legacy_fingerprint_still_resumes(wf_db):
+    """Old unversioned fingerprints remain resumable after the v2 fingerprint change."""
+    import uuid as _uuid
+
+    run_id = _uuid.uuid4().hex
+    wf_db.execute(
+        """
+        INSERT INTO workflow_runs
+            (run_id, org_id, workflow_name, workflow_version, status, config_json, step_fingerprint)
+        VALUES (?, 'wf_org', 'legacy_fp_test', '1.0', 'failed', '{}', ?)
+        """,
+        (run_id, _legacy_workflow_fingerprint(WorkflowDefinition(
+            name="legacy_fp_test",
+            version="1.0",
+            steps=[_ok_step("step_a"), _ok_step("step_b")],
+        ))),
+    )
+    wf_db.execute(
+        """
+        INSERT INTO workflow_steps
+            (step_id, run_id, step_name, step_index, status, input_json, output_json)
+        VALUES (?, ?, 'step_a', 0, 'completed', '{}', '{}')
+        """,
+        (_uuid.uuid4().hex, run_id),
+    )
+    wf_db.commit()
+
+    defn = WorkflowDefinition(
+        name="legacy_fp_test",
+        version="1.0",
+        steps=[_ok_step("step_a"), _ok_step("step_b")],
+    )
+    runner = WorkflowRunner(defn)
+    runner.resume(run_id, conn=wf_db)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_step_order_change_raises_version_mismatch(wf_db):
+    """Reordering steps must trip the version check because resume semantics depend on order."""
+    step_b_fail = {"fail": True}
+
+    def step_b_fn(ctx):
+        if step_b_fail["fail"]:
+            raise ValueError("intentional failure")
+        return StepResult("completed", {})
+
+    defn_original = WorkflowDefinition(
+        name="order_test", version="1.0",
+        steps=[
+            _ok_step("step_a"),
+            StepDefinition(name="step_b", fn=step_b_fn, max_retries=0),
+        ],
+    )
+    runner = WorkflowRunner(defn_original)
+    with pytest.raises(SableError):
+        runner.run("wf_org", {}, conn=wf_db)
+
+    run_row = wf_db.execute("SELECT run_id FROM workflow_runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    run_id = run_row["run_id"]
+
+    step_b_fail["fail"] = False
+    defn_reordered = WorkflowDefinition(
+        name="order_test", version="1.0",
+        steps=[
+            StepDefinition(name="step_b", fn=step_b_fn, max_retries=0),
+            _ok_step("step_a"),
+        ],
+    )
+    runner2 = WorkflowRunner(defn_reordered)
+    with pytest.raises(SableError) as exc_info:
+        runner2.resume(run_id, conn=wf_db)
+
+    assert exc_info.value.code == STEP_EXECUTION_ERROR
+    assert "changed" in str(exc_info.value)
+
+
 def test_ignore_version_check_bypasses_error(wf_db):
     """ignore_version_check=True allows resume even when fingerprint mismatches."""
     step_b_fail = {"fail": True}
@@ -490,6 +571,55 @@ def test_ignore_version_check_bypasses_error(wf_db):
 
     run = get_workflow_run(wf_db, run_id)
     assert run["status"] == "completed"
+
+
+def test_returned_failed_step_marks_step_failed_and_reruns_on_resume(wf_db):
+    """StepResult(status='failed') must persist as failed so resume retries the same step."""
+    call_log: list[str] = []
+    should_fail = {"value": True}
+
+    def step_a(ctx):
+        call_log.append("step_a")
+        return StepResult("completed", {})
+
+    def step_b(ctx):
+        call_log.append("step_b")
+        if should_fail["value"]:
+            return StepResult("failed", {"partial": True}, error="adapter output invalid")
+        return StepResult("completed", {"recovered": True})
+
+    defn = WorkflowDefinition(
+        name="returned_failed_resume",
+        version="1.0",
+        steps=[
+            StepDefinition(name="step_a", fn=step_a, max_retries=0),
+            StepDefinition(name="step_b", fn=step_b, max_retries=0),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+
+    with pytest.raises(SableError):
+        runner.run("wf_org", {}, conn=wf_db)
+
+    run_row = wf_db.execute("SELECT run_id FROM workflow_runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    run_id = run_row["run_id"]
+
+    failed_step = wf_db.execute(
+        """
+        SELECT status, error FROM workflow_steps
+        WHERE run_id=? AND step_name='step_b'
+        ORDER BY rowid DESC LIMIT 1
+        """,
+        (run_id,),
+    ).fetchone()
+    assert failed_step["status"] == "failed"
+    assert "adapter output invalid" in failed_step["error"]
+
+    should_fail["value"] = False
+    call_log.clear()
+    runner.resume(run_id, conn=wf_db)
+
+    assert call_log == ["step_b"]
 
 
 # ---------------------------------------------------------------------------

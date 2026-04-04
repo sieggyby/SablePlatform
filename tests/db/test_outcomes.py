@@ -203,6 +203,52 @@ class TestDiagnosticDelta:
         assert "fit_score" not in metric_names
         assert "momentum_score" in metric_names
 
+    def test_uses_latest_prior_completed_run(self, org_db, tmp_path):
+        conn, org_id = org_db
+
+        before_dir = tmp_path / "before"
+        before_dir.mkdir()
+        (before_dir / "computed_metrics.json").write_text(json.dumps({"fit_score": 0.5}))
+
+        after_dir = tmp_path / "after"
+        after_dir.mkdir()
+        (after_dir / "computed_metrics.json").write_text(json.dumps({"fit_score": 0.8}))
+
+        newer_dir = tmp_path / "newer"
+        newer_dir.mkdir()
+        (newer_dir / "computed_metrics.json").write_text(json.dumps({"fit_score": 9.0}))
+
+        conn.execute(
+            """
+            INSERT INTO diagnostic_runs (run_id, org_id, run_type, status, checkpoint_path, completed_at)
+            VALUES (1, ?, 'full', 'completed', ?, '2026-01-01 00:00:00')
+            """,
+            (org_id, str(before_dir)),
+        )
+        conn.execute(
+            """
+            INSERT INTO diagnostic_runs (run_id, org_id, run_type, status, checkpoint_path, completed_at)
+            VALUES (2, ?, 'full', 'completed', ?, '2026-02-01 00:00:00')
+            """,
+            (org_id, str(after_dir)),
+        )
+        conn.execute(
+            """
+            INSERT INTO diagnostic_runs (run_id, org_id, run_type, status, checkpoint_path, completed_at)
+            VALUES (3, ?, 'full', 'completed', ?, '2026-03-01 00:00:00')
+            """,
+            (org_id, str(newer_dir)),
+        )
+        conn.commit()
+
+        compute_and_store_diagnostic_delta(conn, org_id, 2)
+
+        deltas = get_diagnostic_deltas(conn, org_id, run_id_after=2)
+        fit = [d for d in deltas if d["metric_name"] == "fit_score"]
+        assert len(fit) == 1
+        assert fit[0]["run_id_before"] == 1
+        assert fit[0]["value_before"] == 0.5
+
 
 # ---------------------------------------------------------------------------
 # get_diagnostic_deltas

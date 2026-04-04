@@ -256,6 +256,43 @@ class TestReplaceTagHistory:
 # Edge case: add_tag on nonexistent entity
 # ---------------------------------------------------------------------------
 
+class TestTagHistorySuppression:
+    """_record_tag_history suppresses only OperationalError (missing table)."""
+
+    def test_missing_table_suppressed(self, org_db):
+        """OperationalError from missing entity_tag_history is silently ignored."""
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+
+        # Drop the history table to simulate pre-migration-008
+        conn.execute("DROP TABLE IF EXISTS entity_tag_history")
+        conn.commit()
+
+        # add_tag should succeed — history write silently skipped
+        add_tag(conn, eid, "cultist", source="test")
+        tags = get_active_tags(conn, eid)
+        assert any(t["tag"] == "cultist" for t in tags)
+
+    def test_integrity_error_not_suppressed(self, org_db):
+        """Non-OperationalError DB failures in history write propagate.
+
+        We verify this by adding a NOT NULL constraint violation: pass None
+        for change_type which is NOT NULL in the schema. Since we narrowed
+        the catch to OperationalError only, IntegrityError now propagates.
+        """
+        import sqlite3 as _sqlite3
+        from sable_platform.db.tags import _record_tag_history
+
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+
+        # _record_tag_history with a NULL required field should raise IntegrityError
+        # (entity_tag_history.change_type is NOT NULL per migration 008)
+        # Since we only catch OperationalError now, this propagates.
+        with pytest.raises(_sqlite3.IntegrityError):
+            _record_tag_history(conn, eid, org_id, None, "cultist")
+
+
 class TestAddTagEdgeCases:
     def test_add_tag_nonexistent_entity_fk_violation(self, org_db):
         """FK constraint prevents orphan tag row for nonexistent entity."""

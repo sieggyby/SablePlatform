@@ -108,7 +108,13 @@ trigger_tracking_sync     SableTrackingAdapter.run(org_id)
 trigger_strategy_generation   SlopperAdvisoryAdapter.run(org_id)
   │
   ▼
-register_artifacts        Write new artifact rows to DB
+register_artifacts        Count non-stale artifacts from DB
+  │
+  ▼
+register_actions          Parse playbook + strategy brief → create action rows
+  │
+  ▼
+evaluate_alerts           Run all alert checks for this org
   │
   ▼
 mark_complete             Return freshness summary
@@ -157,7 +163,7 @@ sable-platform workflow events <run_id>
 **Config:** None required.
 
 **Key details:**
-- Runs 9 `_check_*` functions covering: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs.
+- Runs 12 `_check_*` functions covering: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes.
 - Each check writes an alert row; delivery is gated by per-`dedup_key` cooldown (`cooldown_hours`, default 4).
 - Delivery channels: Telegram (`SABLE_TELEGRAM_BOT_TOKEN` + org `telegram_chat_id`) and Discord (webhook).
 - Alert DB records are always written; only external HTTP delivery is suppressed during cooldown.
@@ -180,7 +186,7 @@ org_id: str   # sable.db org_id
 
 **State transitions:**
 ```
-START → run_lead_identifier → sync_results → register_artifacts → mark_complete → COMPLETED
+START → run_lead_identifier → create_entities → sync_scores → register_artifacts → mark_complete → COMPLETED
 ```
 
 **CLI:**
@@ -249,7 +255,7 @@ sable-platform workflow run my_workflow --org <org_id>
 
 ---
 
-## Workflow DB tables (migrations 006–012)
+## Workflow DB tables (migrations 006–012, extended through 023)
 
 ```sql
 workflow_runs (run_id, org_id, workflow_name, workflow_version, status, config_json,

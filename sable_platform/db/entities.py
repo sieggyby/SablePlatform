@@ -136,6 +136,44 @@ def add_handle(
         )
 
 
+def add_entity_note(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    body: str,
+    source: str = "manual",
+) -> int:
+    """Add a note to an entity. Returns note_id.
+
+    Raises SableError if entity does not exist or is archived.
+    """
+    row = get_entity(conn, entity_id)
+    if row["status"] == "archived":
+        raise SableError(ENTITY_ARCHIVED, f"Entity '{entity_id}' is archived")
+
+    cur = conn.execute(
+        """
+        INSERT INTO entity_notes (entity_id, body, source)
+        VALUES (?, ?, ?)
+        """,
+        (entity_id, body, source),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_entity_notes(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    *,
+    limit: int = 50,
+) -> list[sqlite3.Row]:
+    """List notes for an entity, newest first."""
+    return conn.execute(
+        "SELECT * FROM entity_notes WHERE entity_id=? ORDER BY created_at DESC, note_id DESC LIMIT ?",
+        (entity_id, limit),
+    ).fetchall()
+
+
 def archive_entity(conn: sqlite3.Connection, entity_id: str) -> None:
     row = get_entity(conn, entity_id)
     conn.execute(
