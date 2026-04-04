@@ -35,6 +35,8 @@ EXPECTED_TABLES = {
     "webhook_subscriptions",
     # Migration 020: prospect scores
     "prospect_scores",
+    # Migration 022: playbook tagging
+    "playbook_targets", "playbook_outcomes",
 }
 
 
@@ -49,7 +51,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 20
+    assert row["version"] == 22
 
 
 def test_all_tables_exist():
@@ -68,7 +70,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 20
+    assert row["version"] == 22
 
 
 def test_workflow_tables_columns():
@@ -172,6 +174,44 @@ def test_step_fingerprint_is_null_on_new_run():
     conn.commit()
     row = conn.execute("SELECT step_fingerprint FROM workflow_runs WHERE run_id=?", (run_id,)).fetchone()
     assert row["step_fingerprint"] is None, "step_fingerprint must be NULL when not set (legacy run)"
+
+
+def test_run_summary_json_column():
+    """Migration 021: diagnostic_runs.run_summary_json exists."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(diagnostic_runs)").fetchall()}
+    assert "run_summary_json" in cols, "diagnostic_runs missing 'run_summary_json'"
+
+
+def test_playbook_tables_exist():
+    """Migration 022: playbook_targets and playbook_outcomes tables exist."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
+    assert "playbook_targets" in tables, "playbook_targets table not found"
+    assert "playbook_outcomes" in tables, "playbook_outcomes table not found"
+
+
+def test_playbook_targets_columns():
+    """Migration 022: playbook_targets has expected columns."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(playbook_targets)").fetchall()}
+    for expected in ("id", "org_id", "artifact_id", "targets_json", "created_at"):
+        assert expected in cols, f"playbook_targets missing column '{expected}'"
+
+
+def test_playbook_outcomes_columns():
+    """Migration 022: playbook_outcomes has expected columns."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(playbook_outcomes)").fetchall()}
+    for expected in ("id", "org_id", "targets_artifact_id", "outcomes_json", "created_at"):
+        assert expected in cols, f"playbook_outcomes missing column '{expected}'"
 
 
 def test_foreign_keys_enabled():

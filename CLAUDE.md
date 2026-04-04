@@ -18,7 +18,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 ## Current State
 
 **v0.4** is complete. Includes:
-- DB layer (020 migrations, all helpers)
+- DB layer (022 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
@@ -38,7 +38,9 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Database backup (SQLite online backup API, WAL-safe, atomic with orphan cleanup, timestamp-pattern pruning, label sanitization)
 - Cron scheduler (crontab-based, shell-injection hardened, preset schedules, add/list/remove/presets commands)
 - Prospect scoring table (migration 020 — Lead Identifier integration data layer)
-- 680/680 tests passing
+- Run summary JSON blob column on diagnostic_runs (migration 021 — SableWeb integration)
+- Playbook outcome tagging tables (migration 022 — playbook_targets + playbook_outcomes)
+- 702/702 tests passing
 
 ## Architecture Decisions
 
@@ -86,6 +88,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/cli/dashboard_cmds.py` | Operator dashboard — urgency-sorted attention view |
 | `sable_platform/cli/watchlist_cmds.py` | Watchlist CLI — add/remove/list/changes/snapshot |
 | `sable_platform/cli/webhook_cmds.py` | Webhook CLI — add/list/remove/test |
+| `sable_platform/db/playbook.py` | Playbook tagging CRUD — upsert_playbook_targets(), record_playbook_outcomes() |
 | `docs/MIGRATION_PLAN.md` | Step-by-step migration for each existing repo |
 
 ## Environment Variables

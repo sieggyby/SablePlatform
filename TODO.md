@@ -8,44 +8,25 @@ See CLAUDE.md for project architecture, key files, and working conventions.
 
 ## Feature: Run Summary JSON Blob for SableWeb (F-BLOB)
 
-**Status:** NOT STARTED — requires coordinated work across Cult Grader and SablePlatform.
-**Priority:** P1 — Unblocks all SableWeb dashboard rendering.
-**Cross-repo:** `Sable_Cult_Grader/TODO.md § F-BLOB` has the full spec.
+**SablePlatform side complete (2026-04-03):** Migration 021 adds `run_summary_json TEXT` column to `diagnostic_runs`.
 
-**Problem:** `platform_sync.py` writes only 7 scalar fields to `diagnostic_runs`. SableWeb cannot render rich dashboards without filesystem access to checkpoint files.
-
-**SablePlatform side:**
-- Migration 021: Add `run_summary_json TEXT` column to `diagnostic_runs`
-- No new DB helper needed — the column is written by Cult Grader's `_upsert_diagnostic_run()` in the existing INSERT/UPDATE
-
-**Cult Grader side (see their TODO for full spec):**
+**Remaining (Cult Grader side):**
 - Add `_build_run_summary()` to `platform_sync.py` — assembles versioned JSON blob (grades, scores, narratives, lists, classification, meta)
 - Modify `_upsert_diagnostic_run()` to pass `run_summary_json`
 - Size cap: 50KB
-
-**Cost:** $0/run. Pure Python + SQLite.
+- See `Sable_Cult_Grader/TODO.md § F-BLOB` for full spec
 
 ---
 
 ## Feature: Playbook Outcome Tagging Tables (F-PBTAG)
 
-**Status:** NOT STARTED — requires coordinated work across Cult Grader and SablePlatform.
-**Priority:** P2 — Closes the diagnostic-playbook-outcome feedback loop.
-**Cross-repo:** `Sable_Cult_Grader/TODO.md § F-PBTAG` has the full spec.
+**SablePlatform side complete (2026-04-03):** Migration 022 adds `playbook_targets` and `playbook_outcomes` tables. DB helpers in `db/playbook.py`: `upsert_playbook_targets()`, `get_latest_playbook_targets()`, `list_playbook_targets()`, `record_playbook_outcomes()`, `get_latest_playbook_outcomes()`, `list_playbook_outcomes()`.
 
-**Problem:** Playbook generates recommendations as unstructured markdown. Next diagnostic run cannot measure whether recommendations were acted on. The feedback loop is open.
-
-**SablePlatform side:**
-- Migration: Add `playbook_targets` table (`org_id, artifact_id, targets_json, created_at`)
-- Migration: Add `playbook_outcomes` table (`org_id, targets_artifact_id, outcomes_json, created_at`)
-- DB helpers for upsert and query
-
-**Cult Grader side (see their TODO for full spec):**
+**Remaining (Cult Grader side):**
 - `compute_playbook_targets()` extracts structured metric targets from playbook input
 - `measure_playbook_outcomes()` compares prior targets against current metrics
 - Non-fatal post-step in runner.py Stage 8
-
-**Cost:** $0/run for measurement. Pure Python.
+- See `Sable_Cult_Grader/TODO.md § F-PBTAG` for full spec
 
 ---
 

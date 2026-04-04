@@ -27,6 +27,8 @@ _MIGRATIONS = [
     ("018_audit_log.sql", 18),
     ("019_webhooks.sql", 19),
     ("020_prospect_scores.sql", 20),
+    ("021_run_summary_blob.sql", 21),
+    ("022_playbook_tagging.sql", 22),
 ]
 
 
