@@ -6,7 +6,9 @@ import logging
 import sqlite3
 
 from sable_platform.db.alerts import create_alert
+from sable_platform.db.centrality import BRIDGE_CENTRALITY_THRESHOLD, BRIDGE_DECAY_THRESHOLD
 from sable_platform.db.decay import DECAY_WARNING_THRESHOLD, DECAY_CRITICAL_THRESHOLD
+from sable_platform.db.watchlist import take_all_snapshots, get_watchlist_changes
 from sable_platform.workflows.alert_delivery import _deliver
 
 log = logging.getLogger(__name__)
@@ -460,6 +462,108 @@ def _check_member_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
             label = "CRITICAL" if severity == "critical" else "WARNING"
             _deliver(conn, org_id, severity,
                      f"[{label}] Member decay for {org_id}: {entity_id[:16]} score={score:.2f}",
+                     dedup_key=dedup_key)
+            created.append(alert_id)
+    return created
+
+
+def _check_bridge_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
+    """Critical: high-centrality bridge node with high decay score."""
+    centrality_threshold = BRIDGE_CENTRALITY_THRESHOLD
+    decay_threshold = BRIDGE_DECAY_THRESHOLD
+    try:
+        org_row = conn.execute(
+            "SELECT config_json FROM orgs WHERE org_id=?", (org_id,),
+        ).fetchone()
+        if org_row and org_row["config_json"]:
+            cfg = json.loads(org_row["config_json"])
+            centrality_threshold = cfg.get("bridge_centrality_threshold", centrality_threshold)
+            decay_threshold = cfg.get("bridge_decay_threshold", decay_threshold)
+    except Exception:
+        pass
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT c.entity_id, c.betweenness_centrality, d.decay_score
+            FROM entity_centrality_scores c
+            JOIN entity_decay_scores d ON c.org_id = d.org_id AND c.entity_id = d.entity_id
+            WHERE c.org_id = ? AND c.betweenness_centrality >= ? AND d.decay_score >= ?
+            """,
+            (org_id, centrality_threshold, decay_threshold),
+        ).fetchall()
+    except Exception as e:
+        log.warning("Alert check bridge_decay failed: %s", e)
+        return []
+
+    created = []
+    for r in rows:
+        entity_id = r["entity_id"]
+        dedup_key = f"bridge_decay:{org_id}:{entity_id}"
+        alert_id = create_alert(
+            conn,
+            alert_type="bridge_decay",
+            severity="critical",
+            title=f"Bridge node at risk: {entity_id[:16]} (centrality {r['betweenness_centrality']:.2f}, decay {r['decay_score']:.2f})",
+            org_id=org_id,
+            body=f"High-centrality bridge node {entity_id} has decay score {r['decay_score']:.2f}.",
+            dedup_key=dedup_key,
+        )
+        if alert_id:
+            _deliver(conn, org_id, "critical",
+                     f"[CRITICAL] Bridge node decay for {org_id}: {entity_id[:16]}",
+                     dedup_key=dedup_key)
+            created.append(alert_id)
+    return created
+
+
+def _check_watchlist_changes(conn: sqlite3.Connection, org_id: str) -> list[str]:
+    """Warning/Critical: watched entity state changed."""
+    try:
+        take_all_snapshots(conn, org_id)
+        changes = get_watchlist_changes(conn, org_id)
+    except Exception as e:
+        log.warning("Alert check watchlist_changes failed: %s", e)
+        return []
+
+    created = []
+    for entry in changes:
+        entity_id = entry["entity_id"]
+        change_list = entry["changes"]
+
+        # Skip "newly watched" entries
+        if change_list == ["newly watched"]:
+            continue
+
+        # Determine severity — critical if decay increased by >= 0.1
+        severity = "warning"
+        for ch in change_list:
+            if ch.startswith("decay_score:"):
+                try:
+                    parts = ch.split("->")
+                    old_val = parts[0].split(":")[1].strip()
+                    new_val = parts[1].strip()
+                    if old_val != "None" and new_val != "None":
+                        if float(new_val) - float(old_val) >= 0.1:
+                            severity = "critical"
+                except (ValueError, IndexError):
+                    pass
+
+        changes_summary = "; ".join(change_list[:3])
+        dedup_key = f"watchlist_change:{org_id}:{entity_id}"
+        alert_id = create_alert(
+            conn,
+            alert_type="watchlist_change",
+            severity=severity,
+            title=f"Watched member {entity_id[:16]} changed: {changes_summary}",
+            org_id=org_id,
+            body=f"Changes detected: {'; '.join(change_list)}",
+            dedup_key=dedup_key,
+        )
+        if alert_id:
+            label = "CRITICAL" if severity == "critical" else "WARNING"
+            _deliver(conn, org_id, severity,
+                     f"[{label}] Watchlist change for {org_id}: {entity_id[:16]}",
                      dedup_key=dedup_key)
             created.append(alert_id)
     return created

@@ -79,6 +79,17 @@ def _deliver(
 
     log.warning("ALERT %s [%s]: %s", severity.upper(), org_id, message)
 
+    # Dispatch to webhooks (best-effort)
+    try:
+        from sable_platform.webhooks.dispatch import dispatch_event
+        dispatch_event(conn, "alert.created", org_id, {
+            "severity": severity,
+            "title": message,
+            "dedup_key": dedup_key,
+        })
+    except Exception:
+        pass  # webhook failure must never block alerting
+
     if dedup_key:
         if delivery_error:
             mark_delivery_failed(conn, dedup_key, delivery_error)

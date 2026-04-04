@@ -25,6 +25,16 @@ EXPECTED_TABLES = {
     "entity_interactions",
     # Migration 015: entity decay scores
     "entity_decay_scores",
+    # Migration 016: entity centrality
+    "entity_centrality_scores",
+    # Migration 017: entity watchlist
+    "entity_watchlist", "watchlist_snapshots",
+    # Migration 018: audit log
+    "audit_log",
+    # Migration 019: webhooks
+    "webhook_subscriptions",
+    # Migration 020: prospect scores
+    "prospect_scores",
 }
 
 
@@ -39,7 +49,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 15
+    assert row["version"] == 20
 
 
 def test_all_tables_exist():
@@ -58,7 +68,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 15
+    assert row["version"] == 20
 
 
 def test_workflow_tables_columns():

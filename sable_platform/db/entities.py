@@ -137,9 +137,12 @@ def add_handle(
 
 
 def archive_entity(conn: sqlite3.Connection, entity_id: str) -> None:
-    get_entity(conn, entity_id)
+    row = get_entity(conn, entity_id)
     conn.execute(
         "UPDATE entities SET status='archived', updated_at=datetime('now') WHERE entity_id=?",
         (entity_id,),
     )
     conn.commit()
+    from sable_platform.db.audit import log_audit
+    log_audit(conn, "system", "entity_archive",
+              org_id=row["org_id"], entity_id=entity_id, source="system")

@@ -17,21 +17,28 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.3** is complete. Includes:
-- DB layer (015 migrations, all helpers)
+**v0.4** is complete. Includes:
+- DB layer (020 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
 - Subprocess adapters for all 4 repos
-- CLI (workflow run/resume/cancel/status/list/events/gc; inspect orgs/entities/artifacts/freshness/health/interactions/decay; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; all list commands support --json; sable-platform init bootstraps DB)
+- CLI (workflow run/resume/cancel/status/list/events/gc/preflight; inspect orgs/entities/artifacts/freshness/health/interactions/decay/centrality/spend/audit; alerts list/acknowledge/evaluate/mute/unmute/config; actions, outcomes, journey, org; dashboard; watchlist add/remove/list/changes/snapshot; webhooks add/list/remove/test; all list commands support --json; sable-platform init bootstraps DB; sable-platform backup creates SQLite online backups)
 - Entity interaction edge table (directional handle-to-handle edges for relationship web visualization)
-- Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay
+- Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes
 - Entity decay scores table (churn prediction data layer — receives scores from Cult Grader, alerts on at-risk members)
+- Entity centrality scores table (graph centrality metrics from Cult Grader, bridge decay alerting)
+- Entity watchlist (operator-curated monitoring with snapshot-based change detection)
+- Operator audit log (append-only, instrumented at 5 mutation sites + CLI watchlist ops)
+- Workflow event webhooks (HMAC-SHA256 signed, SSRF-hardened, auto-disable on failure)
 - Alert delivery cooldown (4h default, configurable per org, dedup_key-scoped)
 - Alert delivery failure tracking (last_delivery_error stamped on failed HTTP calls; queryable via list_alerts)
 - Per-org failure isolation in evaluate_alerts() (one bad org does not abort remaining orgs)
 - Workflow config versioning (step-name fingerprint on create; mismatch blocks resume)
-- 275/275 tests passing
+- Database backup (SQLite online backup API, WAL-safe, atomic with orphan cleanup, timestamp-pattern pruning, label sanitization)
+- Cron scheduler (crontab-based, shell-injection hardened, preset schedules, add/list/remove/presets commands)
+- Prospect scoring table (migration 020 — Lead Identifier integration data layer)
+- 680/680 tests passing
 
 ## Architecture Decisions
 
@@ -47,7 +54,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
 - All new workflows go in `sable_platform/workflows/builtins/` and self-register.
-- Run the test suite with `python3 -m pytest tests/ -q`; all 275 tests must pass before merging.
+- Run the test suite with `python3 -m pytest tests/ -q`; all 680 tests must pass before merging.
 - `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 3; set 0 for steps that must not retry), and `retry_delay_seconds` (default 5). Declare only when the step has a genuine transient failure mode or conditional path — defensive retry logic obscures determinism.
 - To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{entity_id}"` as the dedup_key.
 - New alert tests must cover both the fire case and the cooldown suppression case.
@@ -56,18 +63,29 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 | File | Purpose |
 |------|---------|
-| `sable_platform/db/connection.py` | DB entry point — get_db(), ensure_schema() |
+| `sable_platform/db/connection.py` | DB entry point — get_db(), ensure_schema(), sable_db_path() |
+| `sable_platform/db/backup.py` | SQLite online backup — backup_database(), _prune_old_backups() |
+| `sable_platform/cron.py` | Crontab scheduler — add_entry(), remove_entry(), list_entries() |
 | `sable_platform/db/workflow_store.py` | All workflow table CRUD |
 | `sable_platform/db/alerts.py` | Alert CRUD — list_alerts(), mark_delivered(), mark_delivery_failed(), acknowledge_alert() |
 | `sable_platform/db/interactions.py` | Interaction edge CRUD — sync_interaction_edges(), list_interactions(), get_interaction_summary() |
 | `sable_platform/db/decay.py` | Decay score CRUD — sync_decay_scores(), list_decay_scores(), get_decay_summary() |
+| `sable_platform/db/prospects.py` | Prospect score CRUD — sync_prospect_scores(), list_prospect_scores(), get_prospect_summary() |
 | `sable_platform/db/cost.py` | Cost tracking — log_cost(), check_budget(), get_weekly_spend() |
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
 | `sable_platform/workflows/alert_evaluator.py` | evaluate_alerts() — thin orchestrator |
-| `sable_platform/workflows/alert_checks.py` | All 9 `_check_*` condition functions |
+| `sable_platform/workflows/alert_checks.py` | All 11 `_check_*` condition functions |
 | `sable_platform/workflows/alert_delivery.py` | `_deliver()`, `_send_telegram()`, `_send_discord()` — HTTP delivery + cooldown gate |
-| `sable_platform/cli/workflow_cmds.py` | CLI surface for operators |
+| `sable_platform/db/centrality.py` | Centrality score CRUD — sync_centrality_scores(), list_centrality_scores(), get_centrality_summary() |
+| `sable_platform/db/watchlist.py` | Watchlist CRUD + snapshot-based change detection |
+| `sable_platform/db/audit.py` | Audit log — log_audit(), list_audit_log() |
+| `sable_platform/db/webhooks.py` | Webhook subscription CRUD — SSRF validation, secret masking, auto-disable |
+| `sable_platform/webhooks/dispatch.py` | Webhook dispatch — HMAC-SHA256 signing, fire-and-forget delivery |
+| `sable_platform/cli/workflow_cmds.py` | CLI surface for operators (includes preflight gate) |
+| `sable_platform/cli/dashboard_cmds.py` | Operator dashboard — urgency-sorted attention view |
+| `sable_platform/cli/watchlist_cmds.py` | Watchlist CLI — add/remove/list/changes/snapshot |
+| `sable_platform/cli/webhook_cmds.py` | Webhook CLI — add/list/remove/test |
 | `docs/MIGRATION_PLAN.md` | Step-by-step migration for each existing repo |
 
 ## Environment Variables

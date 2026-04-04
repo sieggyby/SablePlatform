@@ -141,7 +141,7 @@ def cancel_workflow_run(conn: sqlite3.Connection, run_id: str) -> None:
     row = conn.execute("SELECT status FROM workflow_runs WHERE run_id=?", (run_id,)).fetchone()
     if row is None:
         raise SableError(WORKFLOW_NOT_FOUND, f"Workflow run '{run_id}' not found")
-    if row["status"] in ("completed", "cancelled", "timed_out"):
+    if row["status"] in ("completed", "failed", "cancelled", "timed_out"):
         raise SableError(STEP_EXECUTION_ERROR, f"Cannot cancel run '{run_id}': already {row['status']}")
     conn.execute(
         "UPDATE workflow_runs SET status='cancelled', completed_at=datetime('now') WHERE run_id=?",
@@ -174,6 +174,21 @@ def emit_workflow_event(
         (event_id, run_id, step_id, event_type, json.dumps(payload or {})),
     )
     conn.commit()
+
+    # Dispatch to webhooks (best-effort, never blocks)
+    try:
+        run_row = conn.execute(
+            "SELECT org_id, workflow_name FROM workflow_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if run_row and run_row["org_id"]:
+            from sable_platform.webhooks.dispatch import dispatch_event
+            webhook_payload = dict(payload or {})
+            webhook_payload["run_id"] = run_id
+            webhook_payload["workflow_name"] = run_row["workflow_name"]
+            dispatch_event(conn, f"workflow.{event_type}", run_row["org_id"], webhook_payload)
+    except Exception:
+        pass  # webhook failure must never block the engine
 
 
 def get_workflow_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:

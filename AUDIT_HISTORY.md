@@ -133,3 +133,48 @@ Completed work, moved from TODO.md to keep the roadmap forward-looking only.
 >
 > **Note:** Data layer + alerting only. Cult Grader DECAY-0 through DECAY-7 must ship before this
 > table has data. Slopper CHURN-1/CHURN-2 generate interventions. Integration call site remains in TODO.
+
+### Feature: Network Centrality Scores — Data Layer + Bridge Decay Alert
+> **Resolved:** Migration 016 creates `entity_centrality_scores` table with degree, betweenness,
+> eigenvector centrality. `db/centrality.py` provides `sync_centrality_scores()` (upsert, handle
+> resolution), `list_centrality_scores()`, `get_centrality_summary()`. Alert check
+> `_check_bridge_decay()` fires critical when betweenness >= 0.3 AND decay >= 0.6 (both thresholds
+> configurable via `orgs.config_json`). CLI: `sable-platform inspect centrality ORG [--min-degree]
+> [--limit] [--json]`. 14 tests pass (centrality DB + bridge decay alert).
+>
+> **Dependency:** Cult Grader must compute centrality from reply-pair data (NetworkX or equivalent).
+
+### Feature: Entity Watchlist — Snapshot-Based Change Detection + Alert
+> **Resolved:** Migration 017 creates `entity_watchlist` and `watchlist_snapshots` tables.
+> `db/watchlist.py` provides `add_to_watchlist()`, `remove_from_watchlist()`, `list_watchlist()`,
+> `_take_snapshot()` (captures decay score, active tags, interaction count), `take_all_snapshots()`,
+> `get_watchlist_changes()` (compares two most recent snapshots). Alert check `_check_watchlist_changes()`
+> fires warning for any change, critical for decay increase >= 0.1. CLI: `sable-platform watchlist
+> add|remove|list|changes|snapshot`. 18 tests pass (watchlist DB + alert + CLI).
+
+### Feature: Operator Audit Log
+> **Resolved:** Migration 018 creates `audit_log` table (append-only, no FK constraints — survives
+> entity deletion). `db/audit.py` provides `log_audit()` and `list_audit_log()`. Instrumented at
+> 5 mutation sites: `acknowledge_alert()`, `resolve_alert()`, `deactivate_tag()`, `archive_entity()`,
+> `execute_merge()`. Watchlist add/remove audited at CLI layer. CLI: `sable-platform inspect audit
+> [--org] [--actor] [--action] [--since] [--json]`. 14 tests pass (audit DB + integration + CLI).
+
+### Feature: Workflow Event Webhooks
+> **Resolved:** Migration 019 creates `webhook_subscriptions` table with SSRF prevention
+> (`_is_private_url()` using `ipaddress` module for IPv4/IPv6/hex/octal/link-local blocking),
+> secret validation (>= 16 chars), subscription cap (5 per org), auto-disable after 10 failures.
+> `webhooks/dispatch.py` provides `dispatch_event()` with HMAC-SHA256 signing (deterministic
+> JSON serialization). Integrated at alert delivery and workflow event emission (try/except wrapped).
+> CLI: `sable-platform webhooks add|list|remove|test`. 19 tests pass (webhooks DB + dispatch + CLI).
+>
+> **QA hardened:** SSRF check upgraded from string prefix matching to `ipaddress.ip_address()` parsing
+> per QA audit. Covers IPv6 loopback, link-local, IPv4-mapped IPv6, and all RFC 1918 ranges.
+
+### Feature: Operator Dashboard + Inspect Spend + Preflight Gate
+> **Resolved:** Three CLI-only features (no new migrations):
+> - `sable-platform dashboard [--org] [--json]` — urgency-sorted per-org view of alerts, stale data,
+>   stuck runs, pending actions, budget, decay risk.
+> - `sable-platform inspect spend [--org] [--json]` — weekly spend, budget cap, headroom, pct_used.
+> - `sable-platform workflow preflight [--org]` — machine-friendly health gate (exit 0/1) checking
+>   org_active, stuck_runs, budget >= 90%, critical_alerts.
+> 16 tests pass (dashboard + spend + preflight CLI).

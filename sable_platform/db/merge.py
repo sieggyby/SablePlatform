@@ -169,6 +169,14 @@ def execute_merge(
 
         conn.execute("COMMIT")
 
+        from sable_platform.db.audit import log_audit
+        log_audit(conn, merged_by or "system", "entity_merge",
+                  org_id=source_row["org_id"],
+                  entity_id=target_entity_id,
+                  detail={"source_entity_id": source_entity_id,
+                          "target_entity_id": target_entity_id},
+                  source="system")
+
     except Exception:
         conn.execute("ROLLBACK")
         raise

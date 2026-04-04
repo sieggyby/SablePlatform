@@ -6,6 +6,7 @@ import sqlite3
 
 from sable_platform.workflows.alert_checks import (
     _check_actions_unclaimed,
+    _check_bridge_decay,
     _check_cultist_tag_expiring,
     _check_discord_pulse_regression,
     _check_discord_pulse_stale,
@@ -14,6 +15,7 @@ from sable_platform.workflows.alert_checks import (
     _check_sentiment_shift,
     _check_stuck_runs,
     _check_tracking_stale,
+    _check_watchlist_changes,
     _check_workflow_failures,
 )
 
@@ -44,6 +46,8 @@ def evaluate_alerts(
             created.extend(_check_discord_pulse_stale(conn, oid))
             created.extend(_check_stuck_runs(conn, oid))
             created.extend(_check_member_decay(conn, oid))
+            created.extend(_check_bridge_decay(conn, oid))
+            created.extend(_check_watchlist_changes(conn, oid))
         except Exception as exc:
             log.error("evaluate_alerts: unexpected error for org %s, skipping: %s", oid, exc)
 

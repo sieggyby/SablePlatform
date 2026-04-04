@@ -147,6 +147,10 @@ def deactivate_tag(
         (entity_id,),
     )
     conn.commit()
+    from sable_platform.db.audit import log_audit
+    log_audit(conn, source or "system", "tag_deactivate",
+              entity_id=entity_id,
+              detail={"tag": tag, "reason": reason}, source="system")
     return True
 
 

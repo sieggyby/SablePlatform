@@ -194,6 +194,83 @@ def workflow_gc(hours: int) -> None:
         conn.close()
 
 
+@workflow.command("preflight")
+@click.option("--org", "org_id", default=None, help="Check a specific org (default: all active orgs)")
+def workflow_preflight(org_id: str | None) -> None:
+    """Health gate — exit 0 if ready, exit 1 with diagnostics if not."""
+    from sable_platform.db.cost import get_weekly_spend
+
+    conn = get_db()
+    try:
+        if org_id:
+            org_ids = [org_id]
+        else:
+            rows = conn.execute("SELECT org_id FROM orgs WHERE status='active'").fetchall()
+            org_ids = [r["org_id"] for r in rows]
+
+        any_fail = False
+        for oid in org_ids:
+            failures: list[str] = []
+
+            # 1. Org exists and is active
+            org_row = conn.execute(
+                "SELECT status FROM orgs WHERE org_id=?", (oid,)
+            ).fetchone()
+            if not org_row:
+                failures.append(f"org_exists — org '{oid}' not found")
+            elif org_row["status"] != "active":
+                failures.append(f"org_active — org '{oid}' status is '{org_row['status']}'")
+
+            # 2. No stuck runs
+            stuck = conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM workflow_runs
+                WHERE org_id=? AND status='running'
+                  AND started_at < datetime('now', '-2 hours')
+                """,
+                (oid,),
+            ).fetchone()
+            if stuck and stuck["cnt"] > 0:
+                failures.append(f"stuck_runs — {stuck['cnt']} run(s) stuck > 2 hours")
+
+            # 3. Budget headroom
+            spend = get_weekly_spend(conn, oid)
+            cap = 5.0
+            try:
+                cfg_row = conn.execute(
+                    "SELECT config_json FROM orgs WHERE org_id=?", (oid,)
+                ).fetchone()
+                if cfg_row and cfg_row["config_json"]:
+                    import json as _json
+                    cfg = _json.loads(cfg_row["config_json"])
+                    cap = cfg.get("max_ai_usd_per_org_per_week", cap)
+            except Exception:
+                pass
+            if cap > 0 and spend >= cap * 0.90:
+                failures.append(f"budget — ${spend:.2f} / ${cap:.2f} ({spend/cap*100:.0f}% used, >= 90%)")
+
+            # 4. No critical alerts
+            crit = conn.execute(
+                "SELECT COUNT(*) as cnt FROM alerts WHERE org_id=? AND severity='critical' AND status='new'",
+                (oid,),
+            ).fetchone()
+            if crit and crit["cnt"] > 0:
+                failures.append(f"critical_alerts — {crit['cnt']} open critical alert(s)")
+
+            if failures:
+                any_fail = True
+                for f in failures:
+                    click.echo(f"FAIL: {oid} — {f}")
+            else:
+                click.echo(f"OK: {oid} ready")
+
+    finally:
+        conn.close()
+
+    if any_fail:
+        sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------

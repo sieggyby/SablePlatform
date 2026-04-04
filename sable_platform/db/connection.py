@@ -22,14 +22,24 @@ _MIGRATIONS = [
     ("013_alert_delivery_error.sql", 13),
     ("014_entity_interactions.sql", 14),
     ("015_entity_decay_scores.sql", 15),
+    ("016_entity_centrality.sql", 16),
+    ("017_entity_watchlist.sql", 17),
+    ("018_audit_log.sql", 18),
+    ("019_webhooks.sql", 19),
+    ("020_prospect_scores.sql", 20),
 ]
 
 
-def _sable_db_path() -> Path:
+def sable_db_path() -> Path:
+    """Return the resolved path to sable.db (from ``SABLE_DB_PATH`` or default)."""
     env = os.environ.get("SABLE_DB_PATH")
     if env:
         return Path(env)
     return Path.home() / ".sable" / "sable.db"
+
+
+# Keep private alias for any internal callers.
+_sable_db_path = sable_db_path
 
 
 def get_db(db_path: str | Path | None = None) -> sqlite3.Connection:

@@ -99,6 +99,7 @@ def create_alert(
 
 
 def acknowledge_alert(conn: sqlite3.Connection, alert_id: str, operator: str) -> None:
+    row = conn.execute("SELECT org_id FROM alerts WHERE alert_id=?", (alert_id,)).fetchone()
     conn.execute(
         """
         UPDATE alerts
@@ -108,14 +109,23 @@ def acknowledge_alert(conn: sqlite3.Connection, alert_id: str, operator: str) ->
         (operator, alert_id),
     )
     conn.commit()
+    from sable_platform.db.audit import log_audit
+    log_audit(conn, operator, "alert_acknowledge",
+              org_id=row["org_id"] if row else None,
+              detail={"alert_id": alert_id})
 
 
 def resolve_alert(conn: sqlite3.Connection, alert_id: str) -> None:
+    row = conn.execute("SELECT org_id FROM alerts WHERE alert_id=?", (alert_id,)).fetchone()
     conn.execute(
         "UPDATE alerts SET status='resolved', resolved_at=datetime('now') WHERE alert_id=?",
         (alert_id,),
     )
     conn.commit()
+    from sable_platform.db.audit import log_audit
+    log_audit(conn, "system", "alert_resolve",
+              org_id=row["org_id"] if row else None,
+              detail={"alert_id": alert_id}, source="system")
 
 
 def get_last_delivered_at(conn: sqlite3.Connection, dedup_key: str) -> str | None:
