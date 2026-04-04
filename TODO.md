@@ -30,43 +30,34 @@ See CLAUDE.md for project architecture, key files, and working conventions.
 
 ---
 
-## Feature: Entity Interaction Edge Table — remaining sync wiring
+## Feature: Entity Interaction Edge Table — SYNC COMPLETE
 
-**Data layer complete:** Migration 014, `db/interactions.py`, `inspect interactions` CLI command — all landed. See CLAUDE.md § Entity Interaction Edges.
+**Data layer:** Migration 014, `db/interactions.py`, `inspect interactions` CLI — all landed.
 
-**Upstream complete (2026-04-02):** Cult Grader DECAY-0 shipped. Stage 4 now extracts reply pairs into `TweetMetrics.reply_pairs` in `computed_metrics.json`.
+**Sync wired (2026-04-03):** Cult Grader `platform_sync.py:_sync_interaction_edges()` calls `sync_interaction_edges()` with pre-aggregated reply pairs (deduped by `(src, tgt)`, counts accumulated, timestamp ranges tracked). Non-fatal. 17 tests in Cult Grader.
 
 **Remaining:**
-- **sync call site:** Add a call to `sync_interaction_edges()` inside `platform_sync.py` (Cult Grader repo) when `reply_pairs` is present in computed metrics. The data is available — it just isn't wired to the sync path yet.
 - **SableWeb relationship web:** Graph rendering lives in SableWeb. See `SableWeb/docs/TODO_product_review.md` — Session 4 Addendum.
 
 ---
 
-## Feature: Churn Prediction — remaining sync wiring
+## Feature: Churn Prediction — SYNC COMPLETE
 
-**Data layer + alerting complete:** Migration 015, `db/decay.py`, `_check_member_decay()` alert, `inspect decay` CLI command — all landed. See CLAUDE.md § Entity Decay Scores.
+**Data layer + alerting:** Migration 015, `db/decay.py`, `_check_member_decay()` alert, `inspect decay` CLI — all landed.
 
-**Upstream complete (2026-04-03):** Cult Grader DECAY-0 through DECAY-7 all shipped. `member_decay` dict (per-member decay scores, risk tiers, pattern classifications) is merged into `diagnostic.json` as a non-fatal post-pipeline step. Slopper CHURN-1 and CHURN-2 (intervention playbook generation) also shipped.
+**Sync wired (2026-04-03):** Cult Grader `platform_sync.py:_sync_decay_scores()` calls `sync_decay_scores()` with risk level mapping (`stable`→`low`, `at_risk`→`medium`, `high_churn_risk`→`high`). Includes `factors_json` with pattern, confidence, and posting_slope. Non-fatal. Slopper CHURN-1/CHURN-2 also shipped.
 
 **Remaining:**
-- **sync call site:** Add a call to `sync_decay_scores()` in `platform_sync.py` (Cult Grader repo) when `member_decay` is present in `diagnostic.json`. The data is available — it just isn't wired to the sync path yet. Decay scores live in `diagnostic.member_decay.members[].weighted_decay_score` and `risk_level`.
 - **SableWeb decay dashboard:** Visualization of at-risk members lives in SableWeb.
 
 ---
 
-## Feature: Network Centrality — schema mismatch resolution
+## Feature: Network Centrality — remaining sync wiring
 
-**Data layer complete:** Migration 016, `db/centrality.py`, `_check_bridge_decay()` alert, `inspect centrality` CLI command — all landed.
+**Schema aligned (2026-04-03):** Migration 023 adds `in_centrality`/`out_centrality` columns matching Cult Grader output. `degree_centrality` computed as average of in+out. Bridge decay alert uses `degree_centrality`. Betweenness/eigenvector columns retained (legacy, unused — SQLite can't drop columns).
 
-**Upstream partial (2026-04-02):** Cult Grader DECAY-2 (`analysis/interaction_graph.py`) computes `in_centrality` and `out_centrality` (degree-based, BFS connected components) per member. However, it does NOT compute `betweenness_centrality` or `eigenvector_centrality` — only degree centrality. Either:
-- (a) Extend Cult Grader's `interaction_graph.py` to compute betweenness/eigenvector, or
-- (b) Simplify this migration to use `degree_centrality` (combined in/out) only and drop betweenness/eigenvector columns.
-
-Option (b) is recommended — betweenness/eigenvector are expensive on large graphs and the current degree + cluster_id metrics already identify bridge nodes adequately.
-
-**Remaining:**
-- Resolve schema alignment (option a or b above)
-- Add `sync_centrality_scores()` call in `platform_sync.py` (Cult Grader repo) alongside interaction edges and decay scores
+**Remaining (Cult Grader side):**
+- Add `sync_centrality_scores()` call in `platform_sync.py` alongside interaction edges and decay scores. Pass `in_centrality`/`out_centrality` from `interaction_graph.build_interaction_graph()` output.
 
 ---
 

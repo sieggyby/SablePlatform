@@ -48,7 +48,7 @@ def test_entity_centrality_scores_table_columns():
     cols = {row[1] for row in conn.execute("PRAGMA table_info(entity_centrality_scores)").fetchall()}
     for expected in (
         "id", "org_id", "entity_id", "degree_centrality",
-        "betweenness_centrality", "eigenvector_centrality", "scored_at", "run_date",
+        "in_centrality", "out_centrality", "scored_at", "run_date",
     ):
         assert expected in cols, f"entity_centrality_scores missing column '{expected}'"
 
@@ -57,18 +57,40 @@ def test_sync_inserts_new_scores():
     conn = _make_conn()
     org_id = _insert_org(conn)
     scores = [
-        {"handle": "alice", "degree": 0.8, "betweenness": 0.5, "eigenvector": 0.3},
-        {"handle": "bob", "degree": 0.4, "betweenness": 0.1, "eigenvector": 0.2},
+        {"handle": "alice", "in_centrality": 0.6, "out_centrality": 0.4},
+        {"handle": "bob", "in_centrality": 0.2, "out_centrality": 0.3},
     ]
     n = sync_centrality_scores(conn, org_id, scores, "2026-04-01")
     assert n == 2
 
     rows = conn.execute(
-        "SELECT * FROM entity_centrality_scores WHERE org_id=? ORDER BY betweenness_centrality DESC",
+        "SELECT * FROM entity_centrality_scores WHERE org_id=? ORDER BY degree_centrality DESC",
         (org_id,),
     ).fetchall()
     assert len(rows) == 2
-    assert rows[0]["betweenness_centrality"] == 0.5
+    assert rows[0]["in_centrality"] == 0.6
+    assert rows[0]["out_centrality"] == 0.4
+    assert rows[0]["degree_centrality"] == 0.5  # (0.6 + 0.4) / 2
+
+
+def test_sync_computes_degree_as_average():
+    conn = _make_conn()
+    org_id = _insert_org(conn)
+    sync_centrality_scores(conn, org_id, [
+        {"handle": "alice", "in_centrality": 0.8, "out_centrality": 0.2},
+    ], "2026-04-01")
+    row = conn.execute("SELECT degree_centrality FROM entity_centrality_scores WHERE org_id=?", (org_id,)).fetchone()
+    assert row["degree_centrality"] == 0.5
+
+
+def test_sync_defaults_to_zero():
+    conn = _make_conn()
+    org_id = _insert_org(conn)
+    sync_centrality_scores(conn, org_id, [{"handle": "alice"}], "2026-04-01")
+    row = conn.execute("SELECT * FROM entity_centrality_scores WHERE org_id=?", (org_id,)).fetchone()
+    assert row["in_centrality"] == 0.0
+    assert row["out_centrality"] == 0.0
+    assert row["degree_centrality"] == 0.0
 
 
 def test_sync_upserts_existing():
@@ -76,16 +98,16 @@ def test_sync_upserts_existing():
     org_id = _insert_org(conn)
 
     sync_centrality_scores(conn, org_id, [
-        {"handle": "alice", "degree": 0.5, "betweenness": 0.3, "eigenvector": 0.1},
+        {"handle": "alice", "in_centrality": 0.3, "out_centrality": 0.2},
     ], "2026-03-15")
 
     sync_centrality_scores(conn, org_id, [
-        {"handle": "alice", "degree": 0.8, "betweenness": 0.6, "eigenvector": 0.4},
+        {"handle": "alice", "in_centrality": 0.7, "out_centrality": 0.5},
     ], "2026-04-01")
 
     rows = conn.execute("SELECT * FROM entity_centrality_scores WHERE org_id=?", (org_id,)).fetchall()
     assert len(rows) == 1
-    assert rows[0]["betweenness_centrality"] == 0.6
+    assert rows[0]["in_centrality"] == 0.7
     assert rows[0]["run_date"] == "2026-04-01"
 
 
@@ -95,7 +117,7 @@ def test_sync_resolves_handle_to_entity_id():
     _insert_entity_with_handle(conn, org_id, "ent_alice_123", "alice")
 
     sync_centrality_scores(conn, org_id, [
-        {"handle": "alice", "degree": 0.5, "betweenness": 0.3, "eigenvector": 0.1},
+        {"handle": "alice", "in_centrality": 0.5, "out_centrality": 0.3},
     ], "2026-04-01")
 
     row = conn.execute("SELECT entity_id FROM entity_centrality_scores WHERE org_id=?", (org_id,)).fetchone()
@@ -107,7 +129,7 @@ def test_sync_falls_back_to_handle():
     org_id = _insert_org(conn)
 
     sync_centrality_scores(conn, org_id, [
-        {"handle": "Unknown_User", "degree": 0.5, "betweenness": 0.3, "eigenvector": 0.1},
+        {"handle": "Unknown_User", "in_centrality": 0.5, "out_centrality": 0.3},
     ], "2026-04-01")
 
     row = conn.execute("SELECT entity_id FROM entity_centrality_scores WHERE org_id=?", (org_id,)).fetchone()
@@ -118,7 +140,7 @@ def test_sync_rejects_unknown_org():
     conn = _make_conn()
     with pytest.raises(SableError) as exc:
         sync_centrality_scores(conn, "nonexistent", [
-            {"handle": "x", "degree": 0.5, "betweenness": 0.3, "eigenvector": 0.1},
+            {"handle": "x", "in_centrality": 0.5, "out_centrality": 0.3},
         ], "2026-04-01")
     assert exc.value.code == ORG_NOT_FOUND
 
@@ -130,27 +152,27 @@ def test_sync_empty_list():
     assert n == 0
 
 
-def test_list_sorted_by_betweenness():
+def test_list_sorted_by_degree():
     conn = _make_conn()
     org_id = _insert_org(conn)
     sync_centrality_scores(conn, org_id, [
-        {"handle": "a", "degree": 0.3, "betweenness": 0.1, "eigenvector": 0.1},
-        {"handle": "b", "degree": 0.5, "betweenness": 0.9, "eigenvector": 0.5},
-        {"handle": "c", "degree": 0.7, "betweenness": 0.5, "eigenvector": 0.3},
+        {"handle": "a", "in_centrality": 0.1, "out_centrality": 0.1},  # degree 0.1
+        {"handle": "b", "in_centrality": 0.8, "out_centrality": 0.6},  # degree 0.7
+        {"handle": "c", "in_centrality": 0.4, "out_centrality": 0.4},  # degree 0.4
     ], "2026-04-01")
 
     rows = list_centrality_scores(conn, org_id)
-    assert rows[0]["betweenness_centrality"] == 0.9
-    assert rows[1]["betweenness_centrality"] == 0.5
-    assert rows[2]["betweenness_centrality"] == 0.1
+    assert rows[0]["degree_centrality"] == 0.7
+    assert rows[1]["degree_centrality"] == 0.4
+    assert abs(rows[2]["degree_centrality"] - 0.1) < 0.001
 
 
 def test_list_min_degree_filter():
     conn = _make_conn()
     org_id = _insert_org(conn)
     sync_centrality_scores(conn, org_id, [
-        {"handle": "a", "degree": 0.2, "betweenness": 0.5, "eigenvector": 0.1},
-        {"handle": "b", "degree": 0.8, "betweenness": 0.3, "eigenvector": 0.5},
+        {"handle": "a", "in_centrality": 0.1, "out_centrality": 0.1},  # degree 0.1
+        {"handle": "b", "in_centrality": 0.7, "out_centrality": 0.5},  # degree 0.6
     ], "2026-04-01")
 
     rows = list_centrality_scores(conn, org_id, min_degree=0.5)
@@ -162,14 +184,14 @@ def test_centrality_summary():
     conn = _make_conn()
     org_id = _insert_org(conn)
     sync_centrality_scores(conn, org_id, [
-        {"handle": "a", "degree": 0.4, "betweenness": 0.2, "eigenvector": 0.1},
-        {"handle": "b", "degree": 0.8, "betweenness": 0.6, "eigenvector": 0.5},
+        {"handle": "a", "in_centrality": 0.3, "out_centrality": 0.1},  # degree 0.2
+        {"handle": "b", "in_centrality": 0.7, "out_centrality": 0.5},  # degree 0.6
     ], "2026-04-01")
 
     s = get_centrality_summary(conn, org_id)
     assert s["scored_entities"] == 2
-    assert s["avg_degree"] == 0.6
-    assert s["max_betweenness_entity"] == "b"
+    assert s["avg_degree"] == 0.4
+    assert s["max_degree_entity"] == "b"
 
 
 def test_centrality_summary_empty():
@@ -178,4 +200,4 @@ def test_centrality_summary_empty():
     s = get_centrality_summary(conn, org_id)
     assert s["scored_entities"] == 0
     assert s["avg_degree"] == 0.0
-    assert s["max_betweenness_entity"] is None
+    assert s["max_degree_entity"] is None

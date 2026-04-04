@@ -18,7 +18,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 ## Current State
 
 **v0.4** is complete. Includes:
-- DB layer (022 migrations, all helpers)
+- DB layer (023 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
@@ -27,7 +27,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Entity interaction edge table (directional handle-to-handle edges for relationship web visualization)
 - Proactive alerting: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes
 - Entity decay scores table (churn prediction data layer — receives scores from Cult Grader, alerts on at-risk members)
-- Entity centrality scores table (graph centrality metrics from Cult Grader, bridge decay alerting)
+- Entity centrality scores table (in/out degree centrality from Cult Grader, bridge decay alerting)
 - Entity watchlist (operator-curated monitoring with snapshot-based change detection)
 - Operator audit log (append-only, instrumented at 5 mutation sites + CLI watchlist ops)
 - Workflow event webhooks (HMAC-SHA256 signed, SSRF-hardened, auto-disable on failure)
@@ -40,7 +40,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Prospect scoring table (migration 020 — Lead Identifier integration data layer)
 - Run summary JSON blob column on diagnostic_runs (migration 021 — SableWeb integration)
 - Playbook outcome tagging tables (migration 022 — playbook_targets + playbook_outcomes)
-- 702/702 tests passing
+- 704/704 tests passing
 
 ## Architecture Decisions
 

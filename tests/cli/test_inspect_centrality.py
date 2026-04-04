@@ -35,7 +35,7 @@ def test_inspect_centrality_empty(tmp_path, monkeypatch):
 def test_inspect_centrality_with_data(tmp_path, monkeypatch):
     db_path, conn = _setup_db(tmp_path)
     sync_centrality_scores(conn, "t", [
-        {"handle": "alice", "degree": 0.8, "betweenness": 0.5, "eigenvector": 0.3},
+        {"handle": "alice", "in_centrality": 0.6, "out_centrality": 0.4},
     ], "2026-04-01")
     conn.close()
     monkeypatch.setenv("SABLE_DB_PATH", db_path)
@@ -48,7 +48,7 @@ def test_inspect_centrality_with_data(tmp_path, monkeypatch):
 def test_inspect_centrality_json(tmp_path, monkeypatch):
     db_path, conn = _setup_db(tmp_path)
     sync_centrality_scores(conn, "t", [
-        {"handle": "alice", "degree": 0.8, "betweenness": 0.5, "eigenvector": 0.3},
+        {"handle": "alice", "in_centrality": 0.6, "out_centrality": 0.4},
     ], "2026-04-01")
     conn.close()
     monkeypatch.setenv("SABLE_DB_PATH", db_path)
@@ -58,3 +58,4 @@ def test_inspect_centrality_json(tmp_path, monkeypatch):
     data = json.loads(result.output)
     assert len(data) == 1
     assert data[0]["entity_id"] == "alice"
+    assert data[0]["in_centrality"] == 0.6

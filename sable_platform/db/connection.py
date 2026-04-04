@@ -29,6 +29,7 @@ _MIGRATIONS = [
     ("020_prospect_scores.sql", 20),
     ("021_run_summary_blob.sql", 21),
     ("022_playbook_tagging.sql", 22),
+    ("023_centrality_schema_align.sql", 23),
 ]
 
 

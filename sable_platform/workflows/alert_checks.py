@@ -485,10 +485,10 @@ def _check_bridge_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
     try:
         rows = conn.execute(
             """
-            SELECT c.entity_id, c.betweenness_centrality, d.decay_score
+            SELECT c.entity_id, c.degree_centrality, d.decay_score
             FROM entity_centrality_scores c
             JOIN entity_decay_scores d ON c.org_id = d.org_id AND c.entity_id = d.entity_id
-            WHERE c.org_id = ? AND c.betweenness_centrality >= ? AND d.decay_score >= ?
+            WHERE c.org_id = ? AND c.degree_centrality >= ? AND d.decay_score >= ?
             """,
             (org_id, centrality_threshold, decay_threshold),
         ).fetchall()
@@ -504,7 +504,7 @@ def _check_bridge_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
             conn,
             alert_type="bridge_decay",
             severity="critical",
-            title=f"Bridge node at risk: {entity_id[:16]} (centrality {r['betweenness_centrality']:.2f}, decay {r['decay_score']:.2f})",
+            title=f"Bridge node at risk: {entity_id[:16]} (centrality {r['degree_centrality']:.2f}, decay {r['decay_score']:.2f})",
             org_id=org_id,
             body=f"High-centrality bridge node {entity_id} has decay score {r['decay_score']:.2f}.",
             dedup_key=dedup_key,

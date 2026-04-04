@@ -366,12 +366,12 @@ def inspect_centrality(org_id: str, min_degree: float, limit: int, as_json: bool
         click.echo(f"No centrality scores found for org '{org_id}'.")
         return
 
-    click.echo(f"{'ENTITY':<24}  {'DEGREE':>8}  {'BETWEENNESS':>12}  {'EIGENVECTOR':>12}  RUN_DATE")
-    click.echo("-" * 80)
+    click.echo(f"{'ENTITY':<24}  {'DEGREE':>8}  {'IN':>8}  {'OUT':>8}  RUN_DATE")
+    click.echo("-" * 68)
     for r in rows:
         click.echo(
             f"{r['entity_id']:<24}  {r['degree_centrality']:>8.4f}  "
-            f"{r['betweenness_centrality']:>12.4f}  {r['eigenvector_centrality']:>12.4f}  "
+            f"{r['in_centrality']:>8.4f}  {r['out_centrality']:>8.4f}  "
             f"{r['run_date'] or ''}"
         )
 

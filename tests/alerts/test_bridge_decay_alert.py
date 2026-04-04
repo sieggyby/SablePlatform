@@ -9,12 +9,12 @@ from sable_platform.workflows.alert_checks import _check_bridge_decay
 from sable_platform.workflows.alert_evaluator import evaluate_alerts
 
 
-def _insert_centrality(conn, org_id, entity_id, betweenness, degree=0.5, eigenvector=0.2):
+def _insert_centrality(conn, org_id, entity_id, degree, in_cent=0.3, out_cent=0.2):
     conn.execute(
         "INSERT OR REPLACE INTO entity_centrality_scores "
-        "(org_id, entity_id, degree_centrality, betweenness_centrality, eigenvector_centrality, run_date) "
+        "(org_id, entity_id, degree_centrality, in_centrality, out_centrality, run_date) "
         "VALUES (?, ?, ?, ?, ?, '2026-04-01')",
-        (org_id, entity_id, degree, betweenness, eigenvector),
+        (org_id, entity_id, degree, in_cent, out_cent),
     )
     conn.commit()
 
@@ -32,7 +32,7 @@ def _insert_decay(conn, org_id, entity_id, score, tier="high"):
 @patch("sable_platform.workflows.alert_checks._deliver")
 def test_bridge_decay_fires_critical(mock_deliver, org_db):
     conn, org_id = org_db
-    _insert_centrality(conn, org_id, "alice", betweenness=0.5)
+    _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.7)
 
     alerts = _check_bridge_decay(conn, org_id)
@@ -45,7 +45,7 @@ def test_bridge_decay_fires_critical(mock_deliver, org_db):
 @patch("sable_platform.workflows.alert_checks._deliver")
 def test_low_centrality_no_alert(mock_deliver, org_db):
     conn, org_id = org_db
-    _insert_centrality(conn, org_id, "alice", betweenness=0.1)
+    _insert_centrality(conn, org_id, "alice", degree=0.1)
     _insert_decay(conn, org_id, "alice", 0.8)
 
     alerts = _check_bridge_decay(conn, org_id)
@@ -55,7 +55,7 @@ def test_low_centrality_no_alert(mock_deliver, org_db):
 @patch("sable_platform.workflows.alert_checks._deliver")
 def test_low_decay_no_alert(mock_deliver, org_db):
     conn, org_id = org_db
-    _insert_centrality(conn, org_id, "alice", betweenness=0.5)
+    _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.3)
 
     alerts = _check_bridge_decay(conn, org_id)
@@ -65,7 +65,7 @@ def test_low_decay_no_alert(mock_deliver, org_db):
 @patch("sable_platform.workflows.alert_checks._deliver")
 def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
     conn, org_id = org_db
-    _insert_centrality(conn, org_id, "alice", betweenness=0.5)
+    _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.7)
 
     alerts1 = _check_bridge_decay(conn, org_id)
@@ -78,7 +78,7 @@ def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
 @patch("sable_platform.workflows.alert_checks._deliver")
 def test_config_override_thresholds(mock_deliver, org_db):
     conn, org_id = org_db
-    _insert_centrality(conn, org_id, "alice", betweenness=0.2)
+    _insert_centrality(conn, org_id, "alice", degree=0.2)
     _insert_decay(conn, org_id, "alice", 0.5)
 
     # Default thresholds: centrality 0.3, decay 0.6 — should not fire
@@ -100,7 +100,7 @@ def test_config_override_thresholds(mock_deliver, org_db):
 @patch("sable_platform.workflows.alert_delivery._send_discord")
 def test_bridge_decay_in_evaluate_alerts(mock_discord, mock_telegram, org_db):
     conn, org_id = org_db
-    _insert_centrality(conn, org_id, "alice", betweenness=0.5)
+    _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.7)
 
     evaluate_alerts(conn, org_id)

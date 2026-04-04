@@ -3,6 +3,9 @@
 Centrality scores are computed by Cult Grader and synced here via
 sync_centrality_scores(). Platform stores and alerts on them — it does
 not compute them.
+
+Cult Grader emits in_centrality and out_centrality (degree-based).
+degree_centrality is the average of the two.
 """
 from __future__ import annotations
 
@@ -23,7 +26,9 @@ def sync_centrality_scores(
 ) -> int:
     """Upsert centrality scores from Cult Grader output.
 
-    Each score dict must have: handle, degree, betweenness, eigenvector.
+    Each score dict must have: handle.
+    Optional: in_centrality, out_centrality (default 0.0).
+    degree_centrality is computed as average of in + out.
 
     Returns number of scores upserted.
     """
@@ -34,9 +39,9 @@ def sync_centrality_scores(
     upserted = 0
     for score in scores:
         handle = score["handle"]
-        degree = score["degree"]
-        betweenness = score["betweenness"]
-        eigenvector = score["eigenvector"]
+        in_cent = score.get("in_centrality", 0.0)
+        out_cent = score.get("out_centrality", 0.0)
+        degree = (in_cent + out_cent) / 2.0
 
         # Resolve handle to entity_id when possible
         entity_row = conn.execute(
@@ -52,17 +57,17 @@ def sync_centrality_scores(
         conn.execute(
             """
             INSERT INTO entity_centrality_scores
-                (org_id, entity_id, degree_centrality, betweenness_centrality,
-                 eigenvector_centrality, run_date)
+                (org_id, entity_id, degree_centrality, in_centrality,
+                 out_centrality, run_date)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (org_id, entity_id) DO UPDATE SET
                 degree_centrality = excluded.degree_centrality,
-                betweenness_centrality = excluded.betweenness_centrality,
-                eigenvector_centrality = excluded.eigenvector_centrality,
+                in_centrality = excluded.in_centrality,
+                out_centrality = excluded.out_centrality,
                 scored_at = datetime('now'),
                 run_date = excluded.run_date
             """,
-            (org_id, entity_id, degree, betweenness, eigenvector, run_date),
+            (org_id, entity_id, degree, in_cent, out_cent, run_date),
         )
         upserted += 1
 
@@ -77,12 +82,12 @@ def list_centrality_scores(
     min_degree: float = 0.0,
     limit: int = 50,
 ) -> list[sqlite3.Row]:
-    """List centrality scores for an org, sorted by betweenness DESC."""
+    """List centrality scores for an org, sorted by degree_centrality DESC."""
     return conn.execute(
         """
         SELECT * FROM entity_centrality_scores
         WHERE org_id=? AND degree_centrality >= ?
-        ORDER BY betweenness_centrality DESC
+        ORDER BY degree_centrality DESC
         LIMIT ?
         """,
         (org_id, min_degree, limit),
@@ -98,7 +103,8 @@ def get_centrality_summary(
         """
         SELECT COUNT(*) as scored_entities,
                AVG(degree_centrality) as avg_degree,
-               AVG(betweenness_centrality) as avg_betweenness
+               AVG(in_centrality) as avg_in,
+               AVG(out_centrality) as avg_out
         FROM entity_centrality_scores WHERE org_id=?
         """,
         (org_id,),
@@ -108,7 +114,7 @@ def get_centrality_summary(
         """
         SELECT entity_id FROM entity_centrality_scores
         WHERE org_id=?
-        ORDER BY betweenness_centrality DESC LIMIT 1
+        ORDER BY degree_centrality DESC LIMIT 1
         """,
         (org_id,),
     ).fetchone()
@@ -116,6 +122,7 @@ def get_centrality_summary(
     return {
         "scored_entities": row["scored_entities"],
         "avg_degree": round(row["avg_degree"], 4) if row["avg_degree"] else 0.0,
-        "avg_betweenness": round(row["avg_betweenness"], 4) if row["avg_betweenness"] else 0.0,
-        "max_betweenness_entity": max_row["entity_id"] if max_row else None,
+        "avg_in": round(row["avg_in"], 4) if row["avg_in"] else 0.0,
+        "avg_out": round(row["avg_out"], 4) if row["avg_out"] else 0.0,
+        "max_degree_entity": max_row["entity_id"] if max_row else None,
     }
