@@ -33,7 +33,7 @@ def _ts(days_ago: int) -> str:
 def _make_entity(conn, org_id):
     entity_id = uuid.uuid4().hex
     conn.execute(
-        "INSERT INTO entities (entity_id, org_id, display_name, source, status) VALUES (?, ?, 'X', 'cult_doctor', 'provisional')",
+        "INSERT INTO entities (entity_id, org_id, display_name, source, status) VALUES (?, ?, 'X', 'cult_doctor', 'confirmed')",
         (entity_id, org_id),
     )
     conn.commit()
@@ -66,8 +66,8 @@ def test_dedup_allows_after_resolve(org_db):
     assert aid2 is not None  # allowed — previous was resolved
 
 
-def test_dedup_allows_acknowledged_alert(org_db):
-    """Acknowledged alerts allow re-alerting — dedup only blocks status='new'."""
+def test_dedup_blocks_acknowledged_alert(org_db):
+    """Acknowledged alerts still block re-alerting — only resolved allows."""
     conn, org_id = org_db
     aid1 = create_alert(conn, "test_type", "info", "First",
                         org_id=org_id, dedup_key="test:ack_key")
@@ -76,7 +76,7 @@ def test_dedup_allows_acknowledged_alert(org_db):
 
     aid2 = create_alert(conn, "test_type", "info", "After ack",
                         org_id=org_id, dedup_key="test:ack_key")
-    assert aid2 is not None  # acknowledged ≠ new — re-alerting allowed
+    assert aid2 is None  # acknowledged still blocks — operator already aware
 
 
 def test_dedup_allows_no_key(org_db):
@@ -86,6 +86,29 @@ def test_dedup_allows_no_key(org_db):
     a2 = create_alert(conn, "t", "info", "No dedup 2", org_id=org_id)
     assert a1 is not None
     assert a2 is not None
+
+
+def test_dedup_full_lifecycle(org_db):
+    """End-to-end: new blocks → ack blocks → resolve unblocks."""
+    conn, org_id = org_db
+    key = "lifecycle:test"
+
+    # Create first alert
+    aid1 = create_alert(conn, "t", "info", "First", org_id=org_id, dedup_key=key)
+    assert aid1 is not None
+
+    # Duplicate blocked while status='new'
+    assert create_alert(conn, "t", "info", "Dup", org_id=org_id, dedup_key=key) is None
+
+    # Acknowledge — still blocked
+    acknowledge_alert(conn, aid1, "op")
+    assert create_alert(conn, "t", "info", "Post-ack", org_id=org_id, dedup_key=key) is None
+
+    # Resolve — now unblocked
+    resolve_alert(conn, aid1)
+    aid2 = create_alert(conn, "t", "info", "After resolve", org_id=org_id, dedup_key=key)
+    assert aid2 is not None
+    assert aid2 != aid1
 
 
 # ---------------------------------------------------------------------------
@@ -709,6 +732,30 @@ def test_deliver_clears_error_on_success(org_db):
     ).fetchone()
     assert row["last_delivery_error"] is None
     assert row["last_delivered_at"] is not None
+
+
+def test_workflow_failures_crash_does_not_abort_regression_check(org_db):
+    """A1: _check_workflow_failures crash must not prevent _check_discord_pulse_regression
+    from running. Both are individually try/except isolated in evaluate_alerts()."""
+    from unittest.mock import patch
+    conn, org_id = org_db
+
+    regression_called: list[bool] = []
+
+    def fake_regression(conn, oid):
+        regression_called.append(True)
+        return []
+
+    with patch(
+        "sable_platform.workflows.alert_evaluator._check_workflow_failures",
+        side_effect=RuntimeError("simulated crash"),
+    ), patch(
+        "sable_platform.workflows.alert_evaluator._check_discord_pulse_regression",
+        side_effect=fake_regression,
+    ):
+        evaluate_alerts(conn, org_id=org_id)
+
+    assert regression_called, "_check_discord_pulse_regression must run even when _check_workflow_failures crashes"
 
 
 def test_alerts_config_set_cooldown_hours(tmp_path, monkeypatch):

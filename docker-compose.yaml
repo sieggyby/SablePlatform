@@ -1,0 +1,38 @@
+services:
+  sable-platform:
+    build: .
+    volumes:
+      - sable-data:/data
+    environment:
+      - SABLE_DB_PATH=/data/sable.db
+      - SABLE_OPERATOR_ID=${SABLE_OPERATOR_ID:-docker}
+      - SABLE_TELEGRAM_BOT_TOKEN=${SABLE_TELEGRAM_BOT_TOKEN:-}
+    command: ["init"]
+    healthcheck:
+      test: ["CMD", "sable-platform", "inspect", "health", "--json"]
+      interval: 60s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # Alert evaluation on a 4-hour cron schedule (replaces sleep loop)
+  alerts-cron:
+    build: .
+    volumes:
+      - sable-data:/data
+    environment:
+      - SABLE_DB_PATH=/data/sable.db
+      - SABLE_OPERATOR_ID=cron
+      - SABLE_TELEGRAM_BOT_TOKEN=${SABLE_TELEGRAM_BOT_TOKEN:-}
+    entrypoint: ["sh", "-c"]
+    command: ["sable-platform cron add --preset alert_check 2>/dev/null; while true; do sable-platform cron run; sleep 3600; done"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sable-platform", "inspect", "health", "--json"]
+      interval: 300s
+      timeout: 5s
+      start_period: 30s
+      retries: 2
+
+volumes:
+  sable-data:

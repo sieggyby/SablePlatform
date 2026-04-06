@@ -293,6 +293,28 @@ class TestTagHistorySuppression:
             _record_tag_history(conn, eid, org_id, None, "cultist")
 
 
+    def test_non_missing_table_operational_error_propagates(self, org_db):
+        """OperationalError other than 'no such table' propagates."""
+        import sqlite3 as _sqlite3
+        from sable_platform.db.tags import _record_tag_history
+
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+
+        # Rename the table so the INSERT hits a trigger/constraint-style
+        # OperationalError, not the "no such table" variant.
+        # We create a broken view with the same name to trigger a different error.
+        conn.execute("DROP TABLE IF EXISTS entity_tag_history")
+        conn.execute(
+            "CREATE VIEW entity_tag_history AS SELECT 1 AS x"
+        )
+        conn.commit()
+
+        # INSERT into a view raises OperationalError but NOT "no such table"
+        with pytest.raises(_sqlite3.OperationalError):
+            _record_tag_history(conn, eid, org_id, "added", "cultist")
+
+
 class TestAddTagEdgeCases:
     def test_add_tag_nonexistent_entity_fk_violation(self, org_db):
         """FK constraint prevents orphan tag row for nonexistent entity."""

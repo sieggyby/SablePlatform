@@ -23,7 +23,9 @@ from sable_platform.db.workflow_store import (
     start_workflow_run,
     start_workflow_step,
 )
-from sable_platform.errors import SableError, STEP_EXECUTION_ERROR, WORKFLOW_NOT_FOUND, redact_error
+from sable_platform.errors import (
+    SableError, STEP_EXECUTION_ERROR, WORKFLOW_ALREADY_RUNNING, WORKFLOW_NOT_FOUND, redact_error,
+)
 from sable_platform.workflows.models import (
     StepContext,
     StepDefinition,
@@ -33,8 +35,18 @@ from sable_platform.workflows.models import (
 
 logger = logging.getLogger(__name__)
 
+# Stale lock threshold: if an in_progress run is older than this, auto-fail it
+_STALE_LOCK_HOURS = 4
 
 _WORKFLOW_FINGERPRINT_VERSION = "v2"
+
+
+def _is_active_run_lock_error(exc: sqlite3.IntegrityError) -> bool:
+    msg = str(exc)
+    return (
+        "idx_workflow_runs_active_lock" in msg
+        or "workflow_runs.org_id, workflow_runs.workflow_name" in msg
+    )
 
 
 def _workflow_fingerprint(workflow_def: WorkflowDefinition) -> str:
@@ -78,6 +90,9 @@ class WorkflowRunner:
                 from sable_platform.errors import ORG_NOT_FOUND
                 raise SableError(ORG_NOT_FOUND, f"Org '{org_id}' not found")
 
+            # --- Execution locking (SP-LOCK) ---
+            self._check_execution_lock(conn, org_id)
+
             fp = _workflow_fingerprint(self.definition)
             run_id = create_workflow_run(
                 conn,
@@ -116,6 +131,25 @@ class WorkflowRunner:
             if run_row["status"] in ("completed", "cancelled"):
                 raise SableError(WORKFLOW_NOT_FOUND, f"Workflow run '{run_id}' is already {run_row['status']}")
 
+            # Check for OTHER active runs on the same (org, workflow) — exclude
+            # the run being resumed since it will transition from failed→running.
+            org_id = run_row["org_id"]
+            other_active = conn.execute(
+                """
+                SELECT run_id FROM workflow_runs
+                WHERE org_id=? AND workflow_name=? AND status IN ('pending', 'running')
+                  AND run_id != ?
+                LIMIT 1
+                """,
+                (org_id, run_row["workflow_name"], run_id),
+            ).fetchone()
+            if other_active:
+                raise SableError(
+                    WORKFLOW_ALREADY_RUNNING,
+                    f"Cannot resume: another run ({other_active['run_id']}) "
+                    f"is already active for '{run_row['workflow_name']}' on org '{org_id}'.",
+                )
+
             # Workflow config versioning check
             if not ignore_version_check:
                 stored_fp = run_row["step_fingerprint"]
@@ -139,19 +173,50 @@ class WorkflowRunner:
             config = json.loads(run_row["config_json"] or "{}")
             accumulated = dict(config)
 
+            # C1: Reset any steps left in 'running' state from a prior crash.
+            # Without this they would be re-executed, creating orphaned rows.
+            for step_row in step_rows:
+                if step_row["status"] == "running":
+                    fail_workflow_step(
+                        conn, step_row["step_id"],
+                        "auto-failed during resume: was in running state at resume time",
+                    )
+                    logger.warning(
+                        "Auto-failed orphaned running step %s (%s) during resume of run %s",
+                        step_row["step_name"], step_row["step_id"], run_id,
+                        extra={"run_id": run_id, "org_id": org_id, "step_name": step_row["step_name"]},
+                    )
+
             completed_names: set[str] = set()
             for step_row in step_rows:
                 if step_row["status"] in ("completed", "skipped"):
                     completed_names.add(step_row["step_name"])
                     if step_row["output_json"]:
-                        accumulated.update(json.loads(step_row["output_json"]))
+                        # D2: Guard against corrupted output_json — skip the
+                        # update for that step and continue rather than crash.
+                        try:
+                            accumulated.update(json.loads(step_row["output_json"]))
+                        except json.JSONDecodeError:
+                            logger.warning(
+                                "Skipping corrupt output_json for step %s (%s) during resume of run %s",
+                                step_row["step_name"], step_row["step_id"], run_id,
+                                extra={"run_id": run_id, "org_id": org_id, "step_name": step_row["step_name"]},
+                            )
 
             # Reset run to running
-            conn.execute(
-                "UPDATE workflow_runs SET status='running', error=NULL WHERE run_id=?",
-                (run_id,),
-            )
-            conn.commit()
+            try:
+                conn.execute(
+                    "UPDATE workflow_runs SET status='running', error=NULL WHERE run_id=?",
+                    (run_id,),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError as exc:
+                if _is_active_run_lock_error(exc):
+                    raise SableError(
+                        WORKFLOW_ALREADY_RUNNING,
+                        f"Cannot resume: another active run exists for '{run_row['workflow_name']}' on org '{org_id}'.",
+                    ) from exc
+                raise
             emit_workflow_event(conn, run_id, "run_resumed", payload={"org_id": org_id})
 
             self._execute_steps(
@@ -162,6 +227,57 @@ class WorkflowRunner:
         finally:
             if _owns_conn:
                 conn.close()
+
+    # ------------------------------------------------------------------
+    # Execution locking
+    # ------------------------------------------------------------------
+
+    def _check_execution_lock(self, conn: sqlite3.Connection, org_id: str) -> None:
+        """Prevent concurrent runs of the same workflow on the same org.
+
+        If an existing in_progress run is found:
+        - If older than _STALE_LOCK_HOURS, auto-fail it (stale-lock recovery)
+        - Otherwise, raise WORKFLOW_ALREADY_RUNNING
+        """
+        row = conn.execute(
+            """
+            SELECT run_id, started_at, created_at FROM workflow_runs
+            WHERE org_id=? AND workflow_name=? AND status IN ('pending', 'running')
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (org_id, self.definition.name),
+        ).fetchone()
+
+        if row is None:
+            return
+
+        # Use started_at for running runs, created_at for pending (never-started) runs
+        age_reference = row["started_at"] or row["created_at"]
+        if age_reference:
+            age = conn.execute(
+                "SELECT (julianday('now') - julianday(?)) * 24 AS hours_old",
+                (age_reference,),
+            ).fetchone()
+            if age and age["hours_old"] is not None and age["hours_old"] >= _STALE_LOCK_HOURS:
+                # Auto-fail stale run
+                fail_workflow_run(conn, row["run_id"], "auto-failed: stale lock recovery")
+                emit_workflow_event(
+                    conn, row["run_id"], "run_failed", None,
+                    {"reason": "stale_lock_recovery", "age_hours": round(age["hours_old"], 1)},
+                )
+                logger.warning(
+                    "Auto-failed stale run %s (%.1fh old) for %s/%s",
+                    row["run_id"], age["hours_old"], org_id, self.definition.name,
+                    extra={"run_id": row["run_id"], "org_id": org_id},
+                )
+                return
+
+        raise SableError(
+            WORKFLOW_ALREADY_RUNNING,
+            f"Workflow '{self.definition.name}' already has an active run "
+            f"({row['run_id']}) for org '{org_id}'. "
+            f"Use 'sable-platform workflow unlock {row['run_id']}' to force-fail it.",
+        )
 
     # ------------------------------------------------------------------
     # Internal execution loop
@@ -200,13 +316,19 @@ class WorkflowRunner:
                 try:
                     should_skip = step_def.skip_if(ctx)
                 except Exception as exc:
-                    logger.warning("skip_if raised for step %s: %s", step_def.name, exc)
+                    logger.warning(
+                        "skip_if raised for step %s: %s", step_def.name, exc,
+                        extra={"run_id": run_id, "org_id": org_id, "step_name": step_def.name},
+                    )
                     should_skip = False
 
                 if should_skip:
                     skip_workflow_step(conn, step_id, "skip_if condition met")
                     emit_workflow_event(conn, run_id, "step_skipped", step_id, {"step": step_def.name})
-                    logger.info("Skipped step %s (skip_if)", step_def.name)
+                    logger.info(
+                        "Skipped step %s (skip_if)", step_def.name,
+                        extra={"run_id": run_id, "org_id": org_id, "step_name": step_def.name},
+                    )
                     continue
 
             # Execute with retry
@@ -228,7 +350,10 @@ class WorkflowRunner:
 
         complete_workflow_run(conn, run_id)
         emit_workflow_event(conn, run_id, "run_completed", payload={"run_id": run_id})
-        logger.info("Workflow '%s' run %s completed", self.definition.name, run_id)
+        logger.info(
+            "Workflow '%s' run %s completed", self.definition.name, run_id,
+            extra={"run_id": run_id, "org_id": org_id},
+        )
 
     def _execute_with_retry(
         self,
@@ -253,7 +378,10 @@ class WorkflowRunner:
                         conn, ctx.run_id, "step_completed", ctx.step_id,
                         {"step": step_def.name},
                     )
-                    logger.info("Step %s completed (attempt %d)", step_def.name, attempt)
+                    logger.info(
+                        "Step %s completed (attempt %d)", step_def.name, attempt,
+                        extra={"run_id": ctx.run_id, "org_id": ctx.org_id, "step_name": step_def.name},
+                    )
                     return result
 
                 if result.status == "skipped":
@@ -263,7 +391,10 @@ class WorkflowRunner:
                         conn, ctx.run_id, "step_skipped", ctx.step_id,
                         {"step": step_def.name},
                     )
-                    logger.info("Step %s skipped (attempt %d)", step_def.name, attempt)
+                    logger.info(
+                        "Step %s skipped (attempt %d)", step_def.name, attempt,
+                        extra={"run_id": ctx.run_id, "org_id": ctx.org_id, "step_name": step_def.name},
+                    )
                     return result
 
                 failed_output = dict(result.output or {})
@@ -280,7 +411,10 @@ class WorkflowRunner:
                     conn, ctx.run_id, "step_failed", ctx.step_id,
                     {"step": step_def.name, "error": last_error, "attempt": attempt},
                 )
-                logger.warning("Step %s failed (attempt %d): %s", step_def.name, attempt, last_error)
+                logger.warning(
+                    "Step %s failed (attempt %d): %s", step_def.name, attempt, last_error,
+                    extra={"run_id": ctx.run_id, "org_id": ctx.org_id, "step_name": step_def.name},
+                )
 
             else:
                 fail_workflow_step(conn, ctx.step_id, last_error)
@@ -288,7 +422,10 @@ class WorkflowRunner:
                     conn, ctx.run_id, "step_failed", ctx.step_id,
                     {"step": step_def.name, "error": last_error, "attempt": attempt},
                 )
-                logger.warning("Step %s failed (attempt %d): %s", step_def.name, attempt, last_error)
+                logger.warning(
+                    "Step %s failed (attempt %d): %s", step_def.name, attempt, last_error,
+                    extra={"run_id": ctx.run_id, "org_id": ctx.org_id, "step_name": step_def.name},
+                )
 
             if attempt < step_def.max_retries:
                 reset_workflow_step_for_retry(conn, ctx.step_id)

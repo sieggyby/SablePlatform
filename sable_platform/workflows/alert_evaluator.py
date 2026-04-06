@@ -54,10 +54,20 @@ def evaluate_alerts(
     try:
         created.extend(_check_workflow_failures(conn, org_id if (org_id and org_id != "_all") else None))
     except Exception as exc:
-        log.error("evaluate_alerts: unexpected error in workflow_failures check: %s", exc)
+        log.error("evaluate_alerts: unexpected error in workflow_failures check, skipping: %s", exc)
     for oid in org_ids:
         try:
             created.extend(_check_discord_pulse_regression(conn, oid))
         except Exception as exc:
             log.error("evaluate_alerts: unexpected error for org %s in regression check: %s", oid, exc)
+
+    try:
+        conn.execute(
+            "INSERT INTO platform_meta (key, value, updated_at) VALUES ('last_alert_eval_at', datetime('now'), datetime('now'))"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
+        )
+        conn.commit()
+    except Exception as exc:
+        log.warning("evaluate_alerts: failed to write heartbeat to platform_meta: %s", exc)
+
     return created

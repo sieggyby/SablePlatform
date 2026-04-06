@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "source_tool": "sable_tracking",
+  "url": "https://twitter.com/example/status/123456",
+  "canonical_author_handle": "@example",
+  "quality_score": 0.75,
+  "audience_annotation": "core_community",
+  "timing_annotation": "peak_hours",
+  "grok_status": "approved",
+  "engagement_score": 0.68,
+  "lexicon_adoption": 0.55,
+  "emotional_valence": "positive",
+  "subsquad_signal": "builders",
+  "format_type": "thread",
+  "intent_type": "education",
+  "topic_tags": ["defi", "infrastructure"],
+  "review_status": "reviewed",
+  "outcome_type": "amplification",
+  "is_reusable_template": false
+}

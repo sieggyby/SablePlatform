@@ -136,11 +136,12 @@ def _create_entities(ctx) -> StepResult:
 def _sync_scores(ctx) -> StepResult:
     """Sync parsed leads to prospect_scores table.
 
-    Maps Lead Identifier output fields to the prospect_scores schema.
-    Dimension inversion mirrors Lead Identifier's platform_sync.py:
-    community_gap → community_health (inverted), conversation_gap → language_signal (inverted).
+    Reads typed dimension scores from the Lead contract (populated by the
+    adapter with gap→health inversion already applied). Derives tier from
+    composite_score using the same 0.70/0.55 thresholds as platform_sync.py.
     """
     from sable_platform.db.prospects import sync_prospect_scores
+    from sable_platform.contracts.leads import PURSUE_THRESHOLD, MONITOR_THRESHOLD
 
     leads = ctx.input_data.get("leads", [])
     if not leads:
@@ -149,26 +150,31 @@ def _sync_scores(ctx) -> StepResult:
     run_date = datetime.date.today().isoformat()
     scores = []
     for lead in leads:
-        dims = lead.get("dimensions", {})
-        # Invert gap scores to positive signals (matches Lead Identifier's platform_sync.py)
-        dimensions = {}
-        if "community_gap" in dims:
-            dimensions["community_health"] = round(1.0 - dims["community_gap"], 4)
-        if "conversation_gap" in dims:
-            dimensions["language_signal"] = round(1.0 - dims["conversation_gap"], 4)
-        if "growth_trajectory" in dims:
-            dimensions["growth_trajectory"] = dims["growth_trajectory"]
-        if "content_quality" in dims:
-            dimensions["content_quality"] = dims["content_quality"]
-
         composite = lead.get("composite_score", 0.0)
-        tier = lead.get("tier", "monitor")
+
+        # Dimensions already populated by adapter (typed DimensionScores)
+        dims = lead.get("dimensions", {})
+        dimensions = {
+            "community_health": dims.get("community_health", 0.5),
+            "language_signal": dims.get("language_signal", 0.5),
+            "growth_trajectory": dims.get("growth_trajectory", 0.5),
+            "engagement_quality": dims.get("engagement_quality", 0.5),
+            "sable_fit": dims.get("sable_fit", 0.5),
+        }
+
+        # Derive tier from composite_score (canonical thresholds from contracts)
+        if composite >= PURSUE_THRESHOLD:
+            tier = "Tier 1"
+        elif composite >= MONITOR_THRESHOLD:
+            tier = "Tier 2"
+        else:
+            tier = "Tier 3"
 
         scores.append({
             "org_id": lead.get("project_id", lead.get("name", "unknown")),
             "composite_score": composite,
             "tier": tier,
-            "stage": lead.get("stage"),
+            "stage": lead.get("stage", "lead"),
             "dimensions": dimensions,
             "rationale": lead.get("rationale"),
             "enrichment": lead.get("enrichment"),

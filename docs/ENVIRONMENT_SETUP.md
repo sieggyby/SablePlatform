@@ -18,6 +18,8 @@ Complete setup guide for using SablePlatform as the orchestration hub for the Sa
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
+| `SABLE_OPERATOR_ID` | **Yes** | — | Your operator identity. Stamped on workflow runs and audit log. CLI exits 1 if unset (only `init` is exempt). |
+| `SABLE_HEALTH_TOKEN` | **Yes (health-server)** | — | Bearer token for the `/health` HTTP endpoint. Required before starting `sable-platform health-server`. Generate: `openssl rand -hex 32`. |
 | `SABLE_DB_PATH` | No | `~/.sable/sable.db` | Path to the shared SQLite database |
 | `SABLE_HOME` | No | `~/.sable` | Root dir for config files |
 | `SABLE_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for alert delivery. If unset, Telegram delivery is silently skipped |
@@ -61,6 +63,12 @@ These are NOT set in SablePlatform — they're set in each downstream repo's own
 Add to your `~/.zshrc` or `~/.bash_profile`:
 
 ```bash
+# Operator identity (required — CLI exits 1 without this)
+export SABLE_OPERATOR_ID="your_name"
+
+# Health server token (required if running sable-platform health-server)
+export SABLE_HEALTH_TOKEN="$(openssl rand -hex 32)"
+
 # Sable adapter paths
 export SABLE_CULT_GRADER_PATH="$HOME/Projects/Sable_Cult_Grader"
 export SABLE_SLOPPER_PATH="$HOME/Projects/Sable_Slopper"
@@ -81,7 +89,7 @@ export ANTHROPIC_API_KEY="your_key_here"
 cd ~/Projects/SablePlatform
 source .venv/bin/activate
 
-# 2. Initialize DB (creates ~/.sable/sable.db with all 23 migrations)
+# 2. Initialize DB (creates ~/.sable/sable.db with all 29 migrations)
 # Safe to run multiple times — migrations are append-only and idempotent
 sable-platform init
 
@@ -124,7 +132,7 @@ python3 -m pytest tests/ -q
 
 ```
 ~/.sable/
-├── sable.db          # Shared SQLite database (23 migrations)
+├── sable.db          # Shared SQLite database (29 migrations)
 ├── config.yaml       # Optional: budget cap overrides, platform config
 └── profiles/         # Slopper account profiles
     └── @handle/
@@ -143,6 +151,8 @@ python3 -m pytest tests/ -q
 ---
 
 ## Troubleshooting
+
+**"Error: SABLE_OPERATOR_ID is not set"** — Add `export SABLE_OPERATOR_ID=your_name` to your shell profile and re-source it. The CLI requires this for all commands except `init`.
 
 **"No module named sable_platform"** — Install in dev mode: `pip install -e .` from the SablePlatform root.
 

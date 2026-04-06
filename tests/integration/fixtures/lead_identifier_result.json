@@ -1,0 +1,27 @@
+{
+  "leads": [
+    {
+      "rank": 1,
+      "project": {
+        "project_id": "proj_alpha",
+        "name": "Alpha Protocol",
+        "twitter_handle": "@alpha",
+        "discord_invite": "https://discord.gg/alpha",
+        "total_raised_usd": 5000000.0
+      },
+      "scores": {
+        "composite": 0.82,
+        "community_gap": 0.15,
+        "conversation_gap": 0.20,
+        "tge_proximity": 0.75,
+        "engagement_gap": 0.18,
+        "recommended_action": "pursue",
+        "signal_gaps": [],
+        "rationale": {"summary": "Strong engagement metrics"}
+      },
+      "flags": [],
+      "enrichment": null,
+      "next_action": "schedule_call"
+    }
+  ]
+}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 from pathlib import Path
 from typing import Literal, Protocol
@@ -40,27 +41,48 @@ class SubprocessAdapterMixin:
         timeout: int = 1800,
         env: dict | None = None,
     ) -> subprocess.CompletedProcess:
-        """Run a subprocess synchronously. Raises SableError on failure or timeout."""
-        logger.debug("Adapter subprocess: %s (cwd=%s)", " ".join(cmd), cwd)
+        """Run a subprocess synchronously with process group isolation.
+
+        Uses start_new_session=True so the child gets its own process group.
+        On timeout, kills the entire process group (os.killpg) to prevent
+        orphaned grandchild processes.
+        """
+        adapter_name = getattr(self, "name", "unknown")
+        logger.info("Adapter subprocess start: %s (cwd=%s)", " ".join(cmd), cwd,
+                     extra={"adapter": adapter_name})
+        proc = None
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 cwd=str(cwd),
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 env=env,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired as exc:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the entire process group to prevent orphaned grandchild processes
+            if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass  # process group already exited
+                proc.wait()
+            logger.warning("Adapter subprocess timed out after %ds, process group killed: %s",
+                           timeout, " ".join(cmd), extra={"adapter": adapter_name})
             raise SableError(
                 STEP_EXECUTION_ERROR,
                 f"Subprocess timed out after {timeout}s: {' '.join(cmd)}",
-            ) from exc
+            )
         except FileNotFoundError as exc:
             raise SableError(
                 STEP_EXECUTION_ERROR,
                 f"Command not found: {cmd[0]}",
             ) from exc
+
+        result = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
         if result.returncode != 0:
             stderr_snippet = (result.stderr or "")[:500]

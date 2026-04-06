@@ -250,6 +250,36 @@ def test_skip_if_skips_step(wf_db):
     assert by_name["step_c"]["status"] == "completed"
 
 
+def test_skip_if_exception_executes_step(wf_db):
+    """A4: skip_if that raises (e.g. KeyError on missing key) must NOT skip the step.
+    Engine logs a warning and treats it as 'do not skip'."""
+    executed: list[str] = []
+
+    def run_step(ctx):
+        executed.append("ran")
+        return StepResult("completed", {})
+
+    defn = WorkflowDefinition(
+        name="test_skip_exc", version="1.0",
+        steps=[
+            StepDefinition(
+                name="step_a",
+                fn=run_step,
+                max_retries=0,
+                # Raises KeyError — key is not in ctx.input_data
+                skip_if=lambda ctx: ctx.input_data["nonexistent_key"],
+            ),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    # Step must execute, not be skipped
+    assert "ran" in executed
+    steps = get_workflow_steps(wf_db, run_id)
+    assert steps[0]["status"] == "completed"
+
+
 def test_skip_if_false_executes_step(wf_db):
     """skip_if returning False must NOT skip the step."""
     defn = WorkflowDefinition(

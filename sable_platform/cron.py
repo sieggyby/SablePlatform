@@ -34,6 +34,38 @@ SCHEDULE_PRESETS: dict[str, str] = {
 }
 
 
+@dataclass
+class WorkflowPreset:
+    """A bundled cron preset: schedule + command template + org/workflow identifiers."""
+    schedule: str
+    workflow: str
+    description: str
+    command_template: str  # {cli_bin} placeholder replaced at install time
+
+
+# Bundled presets — `sable-platform cron add --preset <name> --org <org>` installs these.
+WORKFLOW_PRESETS: dict[str, WorkflowPreset] = {
+    "backup": WorkflowPreset(
+        schedule="0 3 * * *",  # daily 03:00 UTC
+        workflow="backup",
+        description="Daily SQLite backup at 03:00 UTC",
+        command_template="{cli_bin} backup",
+    ),
+    "alert_check": WorkflowPreset(
+        schedule="0 */4 * * *",  # every 4 hours
+        workflow="alert_check",
+        description="Evaluate alerts every 4 hours",
+        command_template="{cli_bin} alerts evaluate --all-orgs",
+    ),
+    "gc": WorkflowPreset(
+        schedule="0 4 * * 0",  # Sunday 04:00 UTC
+        workflow="gc",
+        description="Weekly data retention GC on Sundays at 04:00 UTC",
+        command_template="{cli_bin} gc",
+    ),
+}
+
+
 def _validate_identifier(value: str, label: str) -> None:
     """Reject values that could inject shell commands or break crontab parsing."""
     if not value:
@@ -167,6 +199,46 @@ def add_entry(
     entry = CronEntry(schedule=resolved, command=cmd, org=org, workflow=workflow)
 
     # Ensure trailing newline so crontab is valid.
+    if current and not current.endswith("\n"):
+        current += "\n"
+    new_content = current + entry.to_line() + "\n"
+    _write_crontab(new_content)
+
+    return entry
+
+
+def add_preset(preset_name: str, org: str) -> CronEntry:
+    """Install a bundled workflow preset as a cron entry.
+
+    Args:
+        preset_name: Key in ``WORKFLOW_PRESETS``.
+        org: Org ID (used for the cron marker; some presets ignore it in the command).
+
+    Returns:
+        The created CronEntry.
+
+    Raises:
+        ValueError: If preset name is unknown, org is invalid, or entry already exists.
+    """
+    if preset_name not in WORKFLOW_PRESETS:
+        available = ", ".join(sorted(WORKFLOW_PRESETS))
+        raise ValueError(f"Unknown preset '{preset_name}'. Available: {available}")
+
+    _validate_identifier(org, "org")
+
+    wp = WORKFLOW_PRESETS[preset_name]
+    cli_bin = _find_cli_binary()
+    command = wp.command_template.format(cli_bin=shlex.quote(cli_bin))
+
+    current = _read_crontab()
+    for existing in _parse_entries(current):
+        if existing.org == org and existing.workflow == wp.workflow:
+            raise ValueError(
+                f"Entry already exists for {org}:{wp.workflow} — remove it first"
+            )
+
+    entry = CronEntry(schedule=wp.schedule, command=command, org=org, workflow=wp.workflow)
+
     if current and not current.endswith("\n"):
         current += "\n"
     new_content = current + entry.to_line() + "\n"

@@ -11,8 +11,8 @@ from sable_platform.db.workflow_store import get_workflow_run
 
 def test_onboard_client_completes_all_adapters_missing(wf_db):
     """Workflow completes even when all adapter env vars are missing."""
-    env_vars = ["SABLE_TRACKING_PATH", "SABLE_SLOPPER_PATH", "SABLE_CULT_GRADER_PATH"]
-    env_overrides = {v: "" for v in env_vars}
+    env_vars = ["SABLE_TRACKING_PATH", "SABLE_SLOPPER_PATH", "SABLE_CULT_GRADER_PATH",
+                "SABLE_LEAD_IDENTIFIER_PATH"]
 
     runner = WorkflowRunner(ONBOARD_CLIENT)
     # Unset env vars so adapter checks fail gracefully
@@ -27,14 +27,34 @@ def test_onboard_client_completes_all_adapters_missing(wf_db):
     run = get_workflow_run(wf_db, run_id)
     assert run["status"] == "completed"
 
-    # tools_failed should list all three adapters
+    # tools_failed should list all four adapters
     steps = wf_db.execute(
         "SELECT output_json FROM workflow_steps WHERE step_name='mark_complete'"
     ).fetchone()
     import json
     summary = json.loads(steps["output_json"])["summary"]
-    assert len(summary["tools_failed"]) == 3
+    assert len(summary["tools_failed"]) == 4
     assert summary["sync_run_id"] is not None
+
+
+def test_onboard_client_includes_lead_identifier_in_tools_failed(wf_db):
+    """lead_identifier must appear in tools_failed when SABLE_LEAD_IDENTIFIER_PATH is unset."""
+    env_vars = ["SABLE_TRACKING_PATH", "SABLE_SLOPPER_PATH", "SABLE_CULT_GRADER_PATH",
+                "SABLE_LEAD_IDENTIFIER_PATH"]
+    original = {v: os.environ.pop(v, None) for v in env_vars}
+    try:
+        run_id = WorkflowRunner(ONBOARD_CLIENT).run("wf_org", {}, conn=wf_db)
+    finally:
+        for v, val in original.items():
+            if val is not None:
+                os.environ[v] = val
+
+    import json
+    steps = wf_db.execute(
+        "SELECT output_json FROM workflow_steps WHERE step_name='mark_complete'"
+    ).fetchone()
+    summary = json.loads(steps["output_json"])["summary"]
+    assert "lead_identifier" in summary["tools_failed"]
 
 
 def test_onboard_client_creates_sync_run_row(wf_db):

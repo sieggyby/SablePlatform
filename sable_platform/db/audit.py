@@ -6,7 +6,15 @@ org or entity state.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+
+
+def _resolve_actor(actor: str) -> str:
+    """Use SABLE_OPERATOR_ID when caller passes 'unknown' (the unresolved default)."""
+    if actor == "unknown":
+        return os.environ.get("SABLE_OPERATOR_ID", actor)
+    return actor
 
 
 def log_audit(
@@ -20,13 +28,14 @@ def log_audit(
     source: str = "cli",
 ) -> int:
     """Record an audit event. Returns the row id."""
+    resolved_actor = _resolve_actor(actor)
     detail_json = json.dumps(detail) if detail else None
     cursor = conn.execute(
         """
         INSERT INTO audit_log (actor, action, org_id, entity_id, detail_json, source)
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (actor, action, org_id, entity_id, detail_json, source),
+        (resolved_actor, action, org_id, entity_id, detail_json, source),
     )
     conn.commit()
     return cursor.lastrowid

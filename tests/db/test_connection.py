@@ -80,11 +80,11 @@ class TestEnsureSchema:
         """Running ensure_schema twice should not raise or duplicate data."""
         ensure_schema(in_memory_db)
         row = in_memory_db.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] >= 23  # all 23 migrations applied
+        assert row[0] >= 27  # all migrations applied
 
     def test_applies_all_migrations(self, in_memory_db):
         row = in_memory_db.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 23
+        assert row[0] == 29
 
     def test_tables_exist(self, in_memory_db):
         """Spot-check that key tables were created."""

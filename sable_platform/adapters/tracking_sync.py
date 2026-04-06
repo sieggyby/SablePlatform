@@ -1,12 +1,16 @@
 """Adapter for SableTracking platform sync."""
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Literal
 
 from sable_platform.adapters.base import SubprocessAdapterMixin
+from sable_platform.contracts.sync import SyncRun
 from sable_platform.db.connection import get_db
-from sable_platform.errors import SableError, INVALID_CONFIG
+from sable_platform.errors import SableError, INVALID_CONFIG, STEP_EXECUTION_ERROR
+
+log = logging.getLogger(__name__)
 
 
 class SableTrackingAdapter(SubprocessAdapterMixin):
@@ -55,6 +59,11 @@ class SableTrackingAdapter(SubprocessAdapterMixin):
                 conn.close()
 
     def get_result(self, job_ref: str, conn=None) -> dict:
+        """Read latest tracking sync run for org.
+
+        Validates the sync run row against the SyncRun contract.
+        Raises SableError if the row is malformed.
+        """
         _owns = conn is None
         conn = conn or get_db()
         try:
@@ -68,7 +77,15 @@ class SableTrackingAdapter(SubprocessAdapterMixin):
             ).fetchone()
             if row is None:
                 return {}
-            return dict(row)
+            row_dict = dict(row)
+            try:
+                SyncRun.model_validate(row_dict)
+            except Exception as e:
+                raise SableError(
+                    STEP_EXECUTION_ERROR,
+                    f"SableTracking sync run validation failed for org '{job_ref}': {e}",
+                ) from e
+            return row_dict
         finally:
             if _owns:
                 conn.close()

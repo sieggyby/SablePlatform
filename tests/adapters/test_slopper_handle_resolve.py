@@ -89,18 +89,18 @@ def test_resolve_no_double_at_prefix(in_memory_db):
 
 def test_run_passes_handle_not_org_id(adapter_db):
     adapter = SlopperAdvisoryAdapter()
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = ""
-    mock_result.stderr = ""
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = ("", "")
+    mock_proc.returncode = 0
+    mock_proc.pid = 12345
 
     with patch("sable_platform.adapters.slopper.get_db", return_value=adapter_db), \
          patch.object(adapter, "_repo_path", return_value="/fake/slopper"), \
-         patch("subprocess.run", return_value=mock_result) as mock_run:
+         patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
         result = adapter.run({"org_id": "psy_protocol"})
 
     # Verify the subprocess was called with handle, not org_id
-    call_args = mock_run.call_args[0][0]
+    call_args = mock_popen.call_args[0][0]
     assert "@psyprotocol" in call_args
     assert "psy_protocol" not in call_args
     assert result["status"] == "completed"

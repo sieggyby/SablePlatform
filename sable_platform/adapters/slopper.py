@@ -1,12 +1,16 @@
 """Adapter for Sable_Slopper advisory / strategy generation."""
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Literal
 
 from sable_platform.adapters.base import SubprocessAdapterMixin
+from sable_platform.contracts.artifacts import Artifact
 from sable_platform.db.connection import get_db
-from sable_platform.errors import SableError, INVALID_CONFIG
+from sable_platform.errors import SableError, INVALID_CONFIG, STEP_EXECUTION_ERROR
+
+log = logging.getLogger(__name__)
 
 
 class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
@@ -100,6 +104,11 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
                 conn.close()
 
     def get_result(self, job_ref: str, conn=None) -> dict:
+        """Read latest non-stale artifacts for org.
+
+        Validates each artifact row against the Artifact contract.
+        Raises SableError if any artifact is malformed.
+        """
         _owns = conn is None
         conn = conn or get_db()
         try:
@@ -111,7 +120,18 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
                 """,
                 (job_ref,),
             ).fetchall()
-            return {"artifacts": [dict(r) for r in rows]}
+            artifacts = []
+            for r in rows:
+                row_dict = dict(r)
+                try:
+                    Artifact.model_validate(row_dict)
+                except Exception as e:
+                    raise SableError(
+                        STEP_EXECUTION_ERROR,
+                        f"SlopperAdvisory artifact validation failed for org '{job_ref}': {e}",
+                    ) from e
+                artifacts.append(row_dict)
+            return {"artifacts": artifacts}
         finally:
             if _owns:
                 conn.close()

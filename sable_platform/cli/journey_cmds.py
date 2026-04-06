@@ -1,12 +1,13 @@
 """CLI commands for member journey tracking."""
 from __future__ import annotations
 
+import json
 import sys
 
 import click
 
 from sable_platform.db.connection import get_db
-from sable_platform.db.journey import get_entity_journey, entity_funnel, first_seen_list
+from sable_platform.db.journey import get_entity_journey, entity_funnel, first_seen_list, get_key_journeys
 from sable_platform.errors import SableError
 
 
@@ -89,6 +90,51 @@ def journey_funnel(org: str) -> None:
             click.echo(f"  Avg days → cultist:      {f['avg_days_to_cultist']:>6.1f}")
         if f["avg_days_to_top_contributor"] is not None:
             click.echo(f"  Avg days → top contrib:  {f['avg_days_to_top_contributor']:>6.1f}")
+    except SableError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Unexpected error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        conn.close()
+
+
+@journey.command("top")
+@click.option("--org", required=True, help="Org ID")
+@click.option("--limit", default=5, show_default=True, help="Number of journeys to return")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def journey_top(org: str, limit: int, as_json: bool) -> None:
+    """Show the most event-rich entity journeys for an org."""
+    conn = get_db()
+    try:
+        results = get_key_journeys(conn, org, limit=limit)
+        if as_json:
+            click.echo(json.dumps(results, default=str))
+            return
+        if not results:
+            click.echo(f"No journey data found for org {org}.")
+            return
+        for item in results:
+            click.echo(
+                f"\n{'='*60}\n"
+                f"{item['display_name'] or item['entity_id']}  "
+                f"({item['event_count']} events)"
+            )
+            for ev in item["events"]:
+                ts = (ev.get("timestamp") or "")[:19]
+                etype = ev["type"]
+                if etype == "first_seen":
+                    click.echo(f"  {ts}  FIRST SEEN     status={ev.get('status', '?')}")
+                elif etype == "tag_change":
+                    ct = ev.get("change_type", "?").upper()
+                    click.echo(f"  {ts}  TAG {ct:<10} {ev.get('tag', '?')}")
+                elif etype == "action":
+                    click.echo(f"  {ts}  ACTION         {ev.get('action_type', '?')}  \"{(ev.get('title') or '')[:50]}\"")
+                elif etype == "action_completed":
+                    click.echo(f"  {ts}  ACTION DONE")
+                elif etype == "outcome":
+                    click.echo(f"  {ts}  OUTCOME        {ev.get('outcome_type', '?')}")
     except SableError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

@@ -86,7 +86,7 @@ SablePlatform never imports from downstream repos. All integration happens via s
 | Command | `python main.py run [--pass1-only]` |
 | Timeout | 3600s |
 | Input | Optional `pass1_only` flag (default: True) |
-| Output | Reads `output/sable_leads_latest.json`, filters to `recommended_action="pursue"` |
+| Output | Reads `output/sable_leads_latest.json`, filters out `"pass"` (keeps `pursue` + `monitor`) |
 
 **What flows back:** Lead prospects as entities.
 
@@ -116,6 +116,8 @@ operator_notes: |                           # Optional; injected into diagnostic
   Privacy-first ZK L1. Stage: testnet.
   Funding: ~$9-10M. Investors: Blockchain Capital.
 ```
+
+**Field naming:** `project_name` is the canonical field. `name` and `project_slug` are accepted as backward-compatible aliases — Platform normalizes them to `project_name` at validate time. New YAMLs should use `project_name` only.
 
 **Critical:** `sable_org` must exactly match the `org_id` you created in sable.db. Without it, Cult Grader's platform sync (Stage 8 post-step) is silently skipped and no data flows back to SablePlatform.
 
@@ -293,3 +295,49 @@ After a Cult Grader diagnostic completes, Stage 8 automatically syncs data to sa
 9. Writes `run_summary_json` blob (F-BLOB v1: grades, scores, narratives, classification, decay, funnel, roster)
 
 This is fire-and-forget — the Cult Grader run completes `"ok"` even if sync fails. Check `diagnostics/_error_log.jsonl` for sync errors.
+
+---
+
+## Cross-Repo Dependency: Importing from SablePlatform
+
+Downstream repos can import Pydantic contracts and DB helpers from `sable_platform` as a pip dependency.
+
+**Installation:**
+```bash
+# Editable install (development)
+pip install -e /path/to/SablePlatform
+
+# Or add to requirements.txt
+-e /path/to/SablePlatform
+```
+
+**Available contracts for import:**
+| Contract | Import path |
+|----------|-------------|
+| `TrackingMetadata` | `sable_platform.contracts.tracking` |
+| `Lead`, `DimensionScores` | `sable_platform.contracts.leads` |
+| `ProspectHandoff` | `sable_platform.contracts.leads` |
+| `Entity`, `EntityHandle`, `EntityTag` | `sable_platform.contracts.entities` |
+| `Alert` | `sable_platform.contracts.alerts` |
+| `Artifact` | `sable_platform.contracts.artifacts` |
+
+**Machine-readable JSON Schema:** Generated schemas for all 8 contracts live in `docs/schemas/`. Regenerate with:
+```bash
+SABLE_OPERATOR_ID=your_name sable-platform schema -o docs/schemas/
+```
+
+**Graceful import pattern (recommended):**
+```python
+try:
+    from sable_platform.contracts.tracking import TrackingMetadata
+    HAS_PLATFORM = True
+except ImportError:
+    HAS_PLATFORM = False
+```
+
+This pattern (used by Lead Identifier) lets the downstream repo function without SablePlatform installed — contract validation is a bonus, not a hard requirement.
+
+**Who uses this today:**
+- **Slopper:** Imports `sable_platform.db.connection`, `sable_platform.db.tags`, etc. (direct DB access for tag writes)
+- **Lead Identifier:** Conditional import of contracts for sync validation
+- **SableTracking:** Does not import from `sable_platform` yet (TRACK-5 pending)

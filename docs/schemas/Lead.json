@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "DimensionScores": {
+      "description": "Typed dimension scores for prospect evaluation.\n\nGap-to-health inversion happens at the adapter boundary:\ncommunity_gap \u2192 community_health (1.0 - gap), etc.",
+      "properties": {
+        "community_health": {
+          "default": 0.5,
+          "title": "Community Health",
+          "type": "number"
+        },
+        "language_signal": {
+          "default": 0.5,
+          "title": "Language Signal",
+          "type": "number"
+        },
+        "growth_trajectory": {
+          "default": 0.5,
+          "title": "Growth Trajectory",
+          "type": "number"
+        },
+        "engagement_quality": {
+          "default": 0.5,
+          "title": "Engagement Quality",
+          "type": "number"
+        },
+        "sable_fit": {
+          "default": 0.5,
+          "title": "Sable Fit",
+          "type": "number"
+        }
+      },
+      "title": "DimensionScores",
+      "type": "object"
+    }
+  },
+  "description": "A qualified prospect from the Lead Identifier pipeline.",
+  "properties": {
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "twitter_handle": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Twitter Handle"
+    },
+    "discord_invite": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Discord Invite"
+    },
+    "total_raised_usd": {
+      "default": 0.0,
+      "title": "Total Raised Usd",
+      "type": "number"
+    },
+    "composite_score": {
+      "default": 0.0,
+      "title": "Composite Score",
+      "type": "number"
+    },
+    "recommended_action": {
+      "default": "monitor",
+      "enum": [
+        "pursue",
+        "monitor",
+        "pass"
+      ],
+      "title": "Recommended Action",
+      "type": "string"
+    },
+    "signal_gaps": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Signal Gaps",
+      "type": "array"
+    },
+    "flags": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Flags",
+      "type": "array"
+    },
+    "tier": {
+      "default": "Tier 3",
+      "title": "Tier",
+      "type": "string"
+    },
+    "stage": {
+      "default": "lead",
+      "title": "Stage",
+      "type": "string"
+    },
+    "dimensions": {
+      "$ref": "#/$defs/DimensionScores",
+      "default": {
+        "community_health": 0.5,
+        "language_signal": 0.5,
+        "growth_trajectory": 0.5,
+        "engagement_quality": 0.5,
+        "sable_fit": 0.5
+      }
+    },
+    "rationale": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Rationale"
+    },
+    "enrichment": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Enrichment"
+    },
+    "next_action": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Action"
+    }
+  },
+  "required": [
+    "project_id",
+    "name"
+  ],
+  "title": "Lead",
+  "type": "object"
+}

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 
 import click
+
+log = logging.getLogger(__name__)
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
@@ -99,6 +102,27 @@ def workflow_resume(run_id: str, ignore_version_check: bool) -> None:
 
     click.echo("Resume completed.")
     _print_run_status(run_id)
+
+
+@workflow.command("unlock")
+@click.argument("run_id")
+def workflow_unlock(run_id: str) -> None:
+    """Force-fail a stuck workflow run to unblock new runs.
+
+    Use when a run is stuck in 'pending' or 'running' state (e.g., after a crash).
+    """
+    from sable_platform.db.workflow_store import unlock_workflow_run
+
+    conn = get_db()
+    try:
+        updated = unlock_workflow_run(conn, run_id)
+        if updated:
+            click.echo(f"Run {run_id} force-failed (unlocked).")
+        else:
+            click.echo(f"Run {run_id} is not in a lockable state (already completed/failed/cancelled).", err=True)
+            sys.exit(1)
+    finally:
+        conn.close()
 
 
 @workflow.command("cancel")
@@ -244,8 +268,8 @@ def workflow_preflight(org_id: str | None) -> None:
                     import json as _json
                     cfg = _json.loads(cfg_row["config_json"])
                     cap = cfg.get("max_ai_usd_per_org_per_week", cap)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("Failed to parse config_json for org %s: %s", oid, e)
             if cap > 0 and spend >= cap * 0.90:
                 failures.append(f"budget — ${spend:.2f} / ${cap:.2f} ({spend/cap*100:.0f}% used, >= 90%)")
 
@@ -263,6 +287,21 @@ def workflow_preflight(org_id: str | None) -> None:
                     click.echo(f"FAIL: {oid} — {f}")
             else:
                 click.echo(f"OK: {oid} ready")
+
+        # 5. Downstream adapter reachability (suite-level, checked once — not per-org)
+        import os
+        from pathlib import Path as _Path
+        _adapter_vars = [
+            ("SABLE_TRACKING_PATH", "tracking"),
+            ("SABLE_SLOPPER_PATH", "slopper"),
+            ("SABLE_CULT_GRADER_PATH", "cult_grader"),
+            ("SABLE_LEAD_IDENTIFIER_PATH", "lead_identifier"),
+        ]
+        for env_var, label in _adapter_vars:
+            val = os.environ.get(env_var, "")
+            if val and not _Path(val).exists():
+                any_fail = True
+                click.echo(f"FAIL: suite — adapter_{label} — {env_var}={val!r} path does not exist")
 
     finally:
         conn.close()

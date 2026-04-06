@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. All commands operate on `s
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 23 migrations
+sable-platform init                      # Create sable.db + apply all 29 migrations
 sable-platform init --db-path /alt/path  # Use non-default DB location
 ```
 
@@ -66,6 +66,50 @@ sable-platform org create <ORG_ID> --name "Display Name"   # Create org
 sable-platform org create <ORG_ID> --name "Name" --status inactive
 sable-platform org list                                      # List all orgs
 sable-platform org list --json                               # JSON output
+sable-platform org graduate <PROJECT_ID>                     # Mark prospect as graduated (converted to client)
+sable-platform org reject <PROJECT_ID> [--reason "bad fit"]  # Mark prospect as rejected
+```
+
+### org config — Per-Org Configuration
+
+Reads and writes `config_json` on the `orgs` row. No migration needed — the column already exists.
+
+```bash
+sable-platform org config set tig sector DeFi        # Set sector (validated enum)
+sable-platform org config set tig stage growth        # Set stage (validated enum)
+sable-platform org config set tig max_ai_usd_per_org_per_week 10.0  # Override cost cap
+sable-platform org config set tig decay_warning_threshold 0.6       # Override alert threshold
+
+sable-platform org config get tig                    # Show all config for org
+sable-platform org config get tig sector             # Show one key
+sable-platform org config get tig --json             # JSON output
+
+sable-platform org config list                       # Config for all orgs
+sable-platform org config list --json
+```
+
+**Valid sectors:** `DeFi`, `Gaming`, `Infrastructure`, `L1/L2`, `Social`, `DAO`, `NFT`, `AI`, `Other`
+
+**Valid stages:** `pre_launch`, `launch`, `growth`, `mature`, `declining`
+
+All other keys (cost caps, alert thresholds) pass through without validation. Numeric threshold keys are coerced to `float`. See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full list of supported threshold keys.
+
+---
+
+## schema — JSON Schema Export
+
+```bash
+sable-platform schema                          # Export JSON Schema for all 8 Pydantic contracts to docs/schemas/
+sable-platform schema --stdout                 # Print JSON Schema to stdout instead of writing files
+sable-platform schema --output-dir ./schemas   # Write individual .json files to a custom directory
+```
+
+---
+
+## gc — Data Retention
+
+```bash
+sable-platform gc --retention-days 90          # Delete records older than 90 days (FK-safe, audit log immune)
 ```
 
 ---
@@ -111,6 +155,7 @@ sable-platform workflow events <RUN_ID>          # Step-by-step event log
 ```bash
 sable-platform workflow gc                # Mark stuck runs (>6h) as timed_out
 sable-platform workflow gc --hours 12     # Custom threshold
+sable-platform workflow unlock <RUN_ID>  # Release execution lock (for stuck-lock recovery)
 sable-platform workflow preflight --org tig   # Health gate: exit 0=ready, exit 1=problems
 sable-platform workflow preflight             # Check all active orgs
 ```
@@ -256,7 +301,12 @@ sable-platform outcomes diagnostic-delta --org tig [--run RUN_ID]
 sable-platform journey show <ENTITY_ID>              # Full timeline for one entity
 sable-platform journey funnel --org tig               # Aggregate funnel
 sable-platform journey first-seen --org tig [--source cult_doctor|sable_tracking|pulse_meta|manual] [--limit 20]
+sable-platform journey top --org tig                  # Top 5 most event-rich entity journeys
+sable-platform journey top --org tig --limit 10       # Expand to top 10
+sable-platform journey top --org tig --json           # Machine-readable (entity_id, display_name, event_count, events[])
 ```
+
+`journey top` is the primary feed for SableWeb's `key_journeys` field. Entities are ranked by total event count (tag history + actions + outcomes). Returns full `get_entity_journey()` output for each.
 
 ---
 
@@ -299,3 +349,37 @@ sable-platform webhooks test <ORG_ID> <SUBSCRIPTION_ID>   # Send test event
 - Webhooks sign payloads with HMAC-SHA256 (`X-Sable-Signature` header).
 - Auto-disabled after 10 consecutive delivery failures.
 - SSRF-hardened: localhost, private IPs, IPv6 loopback, link-local addresses are blocked.
+
+---
+
+## health-server — Programmatic Health Endpoint
+
+Serves `GET /health` as JSON on a configurable port. Blocks until killed.
+
+```bash
+sable-platform health-server             # Listen on :8765 (default)
+sable-platform health-server --port 9000 # Custom port
+```
+
+Response body: `{"ok": true, "migration_version": 29, "org_count": 2, "last_alert_eval_age_hours": 1.2, "alert_eval_stale": false, ...}`
+
+Returns HTTP 200 on success, HTTP 404 for any path other than `/health`.
+
+---
+
+## metrics — Prometheus Metrics Export
+
+Prints Prometheus text format metrics to stdout. Pipe to a scrape endpoint or file.
+
+```bash
+sable-platform metrics                   # Print metrics to stdout
+```
+
+Metrics exported:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `sable_active_orgs` | gauge | Number of active orgs |
+| `sable_workflow_runs_total{status}` | counter | Total workflow runs by status |
+| `sable_alerts_total{severity,status}` | gauge | Current alerts by severity and status |
+| `sable_last_alert_eval_age_seconds` | gauge | Seconds since last alert evaluation (-1 if never run) |

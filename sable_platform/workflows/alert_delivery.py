@@ -5,6 +5,7 @@ import json as _json
 import logging
 import os
 import sqlite3
+import urllib.error
 import urllib.request
 
 from sable_platform.db.alerts import get_last_delivered_at, mark_delivered, mark_delivery_failed
@@ -34,7 +35,8 @@ def _deliver(
             "SELECT min_severity, enabled, telegram_chat_id, discord_webhook_url, cooldown_hours FROM alert_configs WHERE org_id=?",
             (org_id,),
         ).fetchone()
-    except Exception:
+    except Exception as e:
+        log.warning("Failed to load alert config for org %s: %s", org_id, e)
         config = None
 
     if config and not config["enabled"]:
@@ -87,8 +89,8 @@ def _deliver(
             "title": message,
             "dedup_key": dedup_key,
         })
-    except Exception:
-        pass  # webhook failure must never block alerting
+    except Exception as e:
+        log.warning("Webhook dispatch failed during alert delivery: %s", e)
 
     if dedup_key:
         if delivery_error:
@@ -108,6 +110,16 @@ def _send_telegram(token: str, chat_id: str, text: str) -> str | None:
         )
         urllib.request.urlopen(req, timeout=5)
         return None
+    except urllib.error.HTTPError as e:
+        # Log only the status code — never str(e) which could include the request URL
+        msg = f"HTTP {e.code}"
+        log.warning("Telegram delivery failed: %s", msg)
+        return msg
+    except urllib.error.URLError as e:
+        # Log the reason — never the full URL which contains the bot token
+        msg = f"URLError: {e.reason}"
+        log.warning("Telegram delivery failed: %s", msg)
+        return msg
     except Exception as e:
         log.warning("Telegram delivery failed: %s", e)
         return str(e)

@@ -27,7 +27,7 @@ sable_platform/
 ├── db/
 │   ├── connection.py       get_db(), ensure_schema() — importlib.resources migrations
 │   ├── backup.py           SQLite online backup — WAL-safe, atomic, pruning
-│   ├── migrations/         001–023 SQL files
+│   ├── migrations/         001–029 SQL files
 │   ├── entities.py         Entity CRUD + entity_notes
 │   ├── tags.py             Tag management (replace-current vs append semantics)
 │   ├── merge.py            Merge candidates + 9-step atomic merge
@@ -60,6 +60,8 @@ sable_platform/
 │       └── onboard_client.py             Workflow 5
 ├── webhooks/
 │   └── dispatch.py         HMAC-SHA256 webhook dispatch
+├── http_health.py          Bearer-authenticated /health HTTP server (serve_health())
+├── metrics.py              Prometheus text format export (export_metrics())
 ├── adapters/
 │   ├── base.py             AdapterBase Protocol + SubprocessAdapterMixin
 │   ├── cult_grader.py      CultGraderAdapter
@@ -67,7 +69,7 @@ sable_platform/
 │   ├── slopper.py          SlopperAdvisoryAdapter (handle resolution via entity_handles)
 │   └── lead_identifier.py  LeadIdentifierAdapter
 └── cli/
-    ├── main.py             sable-platform entry point; init, backup commands
+    ├── main.py             sable-platform entry point; init, backup, schema, gc, health-server, metrics
     ├── workflow_cmds.py    run / resume / cancel / status / list / events / gc / preflight
     ├── inspect_cmds.py     orgs / entities / artifacts / freshness / health / interactions / decay / centrality / spend / audit / playbook / prospects
     ├── alert_cmds.py       list / acknowledge / evaluate / mute / unmute / config
@@ -75,7 +77,7 @@ sable_platform/
     ├── dashboard_cmds.py   urgency-sorted operator dashboard
     ├── journey_cmds.py     entity lifecycle timeline + funnel
     ├── outcome_cmds.py     outcomes surface
-    ├── org_cmds.py         org create / list
+    ├── org_cmds.py         org create / list / graduate / reject
     ├── watchlist_cmds.py   add / remove / list / changes / snapshot
     ├── webhook_cmds.py     add / list / remove / test
     └── cron_cmds.py        add / remove / list / presets
@@ -83,14 +85,14 @@ sable_platform/
 
 ## DB schema ownership
 
-`sable_platform` owns `get_db()` and all 23 migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location.
+`sable_platform` owns `get_db()` and all 29 migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location.
 
 **Three separate SQLite databases exist in the suite — only sable.db is owned here:**
 - `~/.sable/sable.db` — platform cross-tool store (owned by SablePlatform)
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
-**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 23**.
+**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 29**.
 
 ## Workflow engine design
 
@@ -133,6 +135,8 @@ StepResult
 
 **Why synchronous:** CultGrader runs take 5–20 minutes. There is no background poller. `poll_diagnostic` step fails if CultGrader isn't done yet. Operator runs `sable-platform workflow resume <run_id>` when ready.
 
+See `docs/EXTENDING.md` § Adding a Workflow for step-by-step instructions.
+
 ## Adapter design
 
 All adapters use subprocess invocation as the boundary. Each adapter reads its repo path from an env var.
@@ -152,6 +156,8 @@ SubprocessAdapterMixin
 **SlopperAdvisoryAdapter note:** Resolves `org_id` to primary Twitter handle via `entity_handles` before passing to `sable advise`. Falls back to any non-archived Twitter handle if no primary. Raises `SableError(INVALID_CONFIG)` if no handle found.
 
 **Why subprocess:** No existing repo has a stable importable library API. Subprocess keeps the dependency boundary clean.
+
+See `docs/EXTENDING.md` § Adding an Adapter for step-by-step instructions.
 
 ## Jobs vs workflow tables
 

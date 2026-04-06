@@ -21,6 +21,15 @@ STUCK_RUN_THRESHOLD_HOURS = 2
 
 def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
     """Critical: tracking sync not completed in the last 14 days."""
+    stale_days = TRACKING_STALE_DAYS
+    try:
+        org_row = conn.execute("SELECT config_json FROM orgs WHERE org_id=?", (org_id,)).fetchone()
+        if org_row and org_row["config_json"]:
+            cfg = json.loads(org_row["config_json"])
+            stale_days = cfg.get("tracking_stale_days", stale_days)
+    except Exception as e:
+        log.warning("Failed to parse tracking_stale config for org %s, using defaults: %s", org_id, e)
+
     row = conn.execute(
         """
         SELECT completed_at FROM sync_runs
@@ -41,7 +50,7 @@ def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
         ).fetchone()
         if stale_check and stale_check["age_days"] is not None:
             age_days = int(stale_check["age_days"])
-            is_stale = age_days > TRACKING_STALE_DAYS
+            is_stale = age_days > stale_days
 
     if not is_stale:
         return []
@@ -196,7 +205,7 @@ def _check_actions_unclaimed(conn: sqlite3.Connection, org_id: str) -> list[str]
 
     created = []
     for r in rows:
-        dedup_key = f"unclaimed:{r['action_id']}"
+        dedup_key = f"unclaimed:{org_id}:{r['action_id']}"
         alert_id = create_alert(
             conn,
             alert_type="action_unclaimed",
@@ -232,7 +241,7 @@ def _check_workflow_failures(
 
     created = []
     for r in rows:
-        dedup_key = f"workflow_failed:{r['run_id']}"
+        dedup_key = f"workflow_failed:{r['org_id']}:{r['run_id']}"
         alert_id = create_alert(
             conn,
             alert_type="workflow_failed",
@@ -297,6 +306,15 @@ def _check_discord_pulse_regression(conn: sqlite3.Connection, org_id: str) -> li
 
 def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
     """Warning: no discord_pulse_run data in the last 7 days."""
+    stale_days = DISCORD_PULSE_STALE_DAYS
+    try:
+        org_row = conn.execute("SELECT config_json FROM orgs WHERE org_id=?", (org_id,)).fetchone()
+        if org_row and org_row["config_json"]:
+            cfg = json.loads(org_row["config_json"])
+            stale_days = cfg.get("discord_pulse_stale_days", stale_days)
+    except Exception as e:
+        log.warning("Failed to parse discord_pulse_stale config for org %s, using defaults: %s", org_id, e)
+
     try:
         row = conn.execute(
             """
@@ -321,7 +339,7 @@ def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[st
         ).fetchone()
         if stale_check and stale_check["age_days"] is not None:
             age_days = int(stale_check["age_days"])
-            is_stale = age_days > DISCORD_PULSE_STALE_DAYS
+            is_stale = age_days > stale_days
 
     if not is_stale:
         return []
@@ -346,6 +364,15 @@ def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[st
 
 def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
     """Warning: workflow_runs stuck in 'running' state for more than STUCK_RUN_THRESHOLD_HOURS."""
+    threshold_hours = STUCK_RUN_THRESHOLD_HOURS
+    try:
+        org_row = conn.execute("SELECT config_json FROM orgs WHERE org_id=?", (org_id,)).fetchone()
+        if org_row and org_row["config_json"]:
+            cfg = json.loads(org_row["config_json"])
+            threshold_hours = cfg.get("stuck_run_threshold_hours", threshold_hours)
+    except Exception as e:
+        log.warning("Failed to parse stuck_run config for org %s, using defaults: %s", org_id, e)
+
     try:
         rows = conn.execute(
             """
@@ -353,7 +380,7 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
             WHERE org_id=? AND status='running'
               AND started_at < datetime('now', ?)
             """,
-            (org_id, f'-{STUCK_RUN_THRESHOLD_HOURS} hours'),
+            (org_id, f'-{threshold_hours} hours'),
         ).fetchall()
     except Exception as e:
         log.warning("Alert check stuck_runs failed: %s", e)
@@ -361,7 +388,7 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
 
     created = []
     for r in rows:
-        dedup_key = f"stuck_run:{r['run_id']}"
+        dedup_key = f"stuck_run:{org_id}:{r['run_id']}"
         alert_id = create_alert(
             conn,
             alert_type="stuck_run",
@@ -370,7 +397,7 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
             org_id=org_id,
             run_id=r["run_id"],
             body=(
-                f"Run {r['run_id'][:12]} has been 'running' for >{STUCK_RUN_THRESHOLD_HOURS} hours. "
+                f"Run {r['run_id'][:12]} has been 'running' for >{threshold_hours} hours. "
                 f"Use 'sable-platform workflow gc' to mark as timed_out."
             ),
             dedup_key=dedup_key,
@@ -400,8 +427,8 @@ def _check_member_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
             cfg = json.loads(org_row["config_json"])
             warning_threshold = cfg.get("decay_warning_threshold", warning_threshold)
             critical_threshold = cfg.get("decay_critical_threshold", critical_threshold)
-    except Exception:
-        pass  # malformed config_json — fall back to defaults
+    except Exception as e:
+        log.warning("Failed to parse decay config for org %s, using defaults: %s", org_id, e)
 
     try:
         rows = conn.execute(
@@ -439,8 +466,8 @@ def _check_member_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
                     (entity_id, *_STRUCTURALLY_IMPORTANT_TAGS),
                 ).fetchone()
                 has_important_tag = tag_row is not None
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("Failed to check important tags for entity %s: %s", entity_id, e)
 
         if score >= critical_threshold and has_important_tag:
             severity = "critical"
@@ -479,8 +506,8 @@ def _check_bridge_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
             cfg = json.loads(org_row["config_json"])
             centrality_threshold = cfg.get("bridge_centrality_threshold", centrality_threshold)
             decay_threshold = cfg.get("bridge_decay_threshold", decay_threshold)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Failed to parse bridge decay config for org %s, using defaults: %s", org_id, e)
 
     try:
         rows = conn.execute(

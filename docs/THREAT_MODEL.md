@@ -137,7 +137,7 @@ What to test:
 
 What to check:
 - `dedup_key` format is `{alert_type}:{discriminator}` — no two alert types share a namespace
-- dedup query filters `status='new'` only — acknowledged alerts still block, resolved do not
+- dedup query filters `status IN ('new', 'acknowledged')` — both block re-alerting, only resolved allows
 - `create_alert()` returns `None` (not raises) when blocked by dedup
 
 ### 4. Tag history / entity_tag state divergence

@@ -1,8 +1,13 @@
 """Entity tag helpers for sable.db."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
+
+from sable_platform.db.audit import log_audit
+
+log = logging.getLogger(__name__)
 
 _REPLACE_CURRENT_TAGS: frozenset[str] = frozenset({
     "high_lift_account",
@@ -40,8 +45,12 @@ def _record_tag_history(
             (uuid.uuid4().hex, entity_id, org_id, change_type, tag,
              confidence, source, source_ref, expires_at),
         )
-    except sqlite3.OperationalError:
-        pass  # table absent before migration 008 — safe to skip
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            pass  # table absent before migration 008 — safe to skip
+        else:
+            log.warning("tag history write failed for entity %s: %s", entity_id, exc)
+            raise
 
 
 def _get_org_id(conn: sqlite3.Connection, entity_id: str) -> str | None:
@@ -147,7 +156,6 @@ def deactivate_tag(
         (entity_id,),
     )
     conn.commit()
-    from sable_platform.db.audit import log_audit
     log_audit(conn, source or "system", "tag_deactivate",
               entity_id=entity_id,
               detail={"tag": tag, "reason": reason}, source="system")

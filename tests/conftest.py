@@ -1,9 +1,13 @@
 """Shared fixtures for all tests."""
 from __future__ import annotations
 
+import os
 import sqlite3
 
 import pytest
+
+# Ensure SABLE_OPERATOR_ID is set so CLI tests don't see the "unknown" warning.
+os.environ.setdefault("SABLE_OPERATOR_ID", "test")
 
 from sable_platform.db.connection import ensure_schema
 

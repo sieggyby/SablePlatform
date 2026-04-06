@@ -112,3 +112,47 @@ def test_preflight_all_orgs_healthy(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["workflow", "preflight"])
     assert result.exit_code == 0
     assert "OK" in result.output
+
+
+def test_preflight_adapter_path_missing(tmp_path, monkeypatch):
+    """A configured adapter env var pointing to a non-existent path must fail preflight."""
+    db_path, conn = _setup_db(tmp_path)
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('t', 'T', 'active')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    monkeypatch.setenv("SABLE_CULT_GRADER_PATH", "/nonexistent/path/cult_grader")
+
+    result = CliRunner().invoke(cli, ["workflow", "preflight", "--org", "t"])
+    assert result.exit_code == 1
+    assert "adapter_cult_grader" in result.output
+
+
+def test_preflight_adapter_env_unset_is_ok(tmp_path, monkeypatch):
+    """Unset adapter env vars must not trigger a preflight failure."""
+    db_path, conn = _setup_db(tmp_path)
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('t', 'T', 'active')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    for var in ["SABLE_TRACKING_PATH", "SABLE_SLOPPER_PATH",
+                "SABLE_CULT_GRADER_PATH", "SABLE_LEAD_IDENTIFIER_PATH"]:
+        monkeypatch.delenv(var, raising=False)
+
+    result = CliRunner().invoke(cli, ["workflow", "preflight", "--org", "t"])
+    assert result.exit_code == 0, result.output
+
+
+def test_preflight_adapter_path_valid(tmp_path, monkeypatch):
+    """A configured adapter env var pointing to an existing directory must pass."""
+    db_path, conn = _setup_db(tmp_path)
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('t', 'T', 'active')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    adapter_dir = tmp_path / "fake_cult_grader"
+    adapter_dir.mkdir()
+    monkeypatch.setenv("SABLE_CULT_GRADER_PATH", str(adapter_dir))
+
+    result = CliRunner().invoke(cli, ["workflow", "preflight", "--org", "t"])
+    assert result.exit_code == 0, result.output

@@ -82,6 +82,31 @@ class TestSyncProspectScores:
         assert row["next_action"] is None
         assert json.loads(row["dimensions_json"]) == {}
 
+    def test_new_fields_stored_and_retrieved(self, in_memory_db):
+        """Migration 029: sync accepts and stores the four new Lead Identifier fields."""
+        score = _sample_score(
+            recommended_action="pursue",
+            score_band_low=0.67,
+            score_band_high=0.77,
+            timing_urgency="Launch window",
+        )
+        sync_prospect_scores(in_memory_db, [score], "2026-04-01")
+        row = in_memory_db.execute("SELECT * FROM prospect_scores WHERE org_id='zoth'").fetchone()
+        assert row["recommended_action"] == "pursue"
+        assert row["score_band_low"] == 0.67
+        assert row["score_band_high"] == 0.77
+        assert row["timing_urgency"] == "Launch window"
+
+    def test_new_fields_absent_backward_compat(self, in_memory_db):
+        """Older Lead Identifier payloads without new fields still work."""
+        score = {"org_id": "legacy", "composite_score": 0.55, "tier": "Tier 2"}
+        sync_prospect_scores(in_memory_db, [score], "2026-04-01")
+        row = in_memory_db.execute("SELECT * FROM prospect_scores WHERE org_id='legacy'").fetchone()
+        assert row["recommended_action"] is None
+        assert row["score_band_low"] is None
+        assert row["score_band_high"] is None
+        assert row["timing_urgency"] is None
+
     def test_enrichment_json_round_trip(self, in_memory_db):
         enrichment = {"sector": "AI", "follower_count": 50000, "confidence": "high"}
         score = _sample_score(enrichment=enrichment)
@@ -139,6 +164,22 @@ class TestListProspectScores:
         rows = list_prospect_scores(in_memory_db)
         scores = [r["composite_score"] for r in rows]
         assert scores == sorted(scores, reverse=True)
+
+    def test_new_fields_returned_by_list(self, in_memory_db):
+        """list_prospect_scores returns new fields when present."""
+        score = _sample_score(
+            recommended_action="monitor",
+            score_band_low=0.50,
+            score_band_high=0.60,
+            timing_urgency="Dormant audience",
+        )
+        sync_prospect_scores(in_memory_db, [score], "2026-04-01")
+        rows = list_prospect_scores(in_memory_db)
+        assert len(rows) == 1
+        assert rows[0]["recommended_action"] == "monitor"
+        assert rows[0]["score_band_low"] == 0.50
+        assert rows[0]["score_band_high"] == 0.60
+        assert rows[0]["timing_urgency"] == "Dormant audience"
 
     def test_respects_limit(self, in_memory_db):
         for i in range(5):

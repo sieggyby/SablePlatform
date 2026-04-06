@@ -1,0 +1,67 @@
+{
+  "description": "Input to the Cult Grader for a new diagnostic run.",
+  "properties": {
+    "org_id": {
+      "title": "Org Id",
+      "type": "string"
+    },
+    "prospect_yaml_path": {
+      "title": "Prospect Yaml Path",
+      "type": "string"
+    },
+    "project_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project Name"
+    },
+    "twitter_handle": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Twitter Handle"
+    },
+    "sable_org": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sable Org"
+    },
+    "lead_source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lead Source"
+    }
+  },
+  "required": [
+    "org_id",
+    "prospect_yaml_path"
+  ],
+  "title": "ProspectHandoff",
+  "type": "object"
+}

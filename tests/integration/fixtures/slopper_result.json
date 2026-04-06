@@ -1,0 +1,15 @@
+{
+  "artifacts": [
+    {
+      "artifact_id": 1,
+      "org_id": "test_org",
+      "job_id": "job_001",
+      "artifact_type": "twitter_strategy_brief",
+      "path": "/output/test_org/strategy_brief.md",
+      "metadata_json": "{\"source\": \"slopper\", \"version\": \"1.0\"}",
+      "stale": false,
+      "degraded": false,
+      "created_at": "2026-04-01T10:00:00"
+    }
+  ]
+}

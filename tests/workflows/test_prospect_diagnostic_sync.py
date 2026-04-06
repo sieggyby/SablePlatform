@@ -121,3 +121,128 @@ def test_workflow1_validate_unknown_org(tmp_path):
     from sable_platform.errors import SableError
     with pytest.raises(SableError):
         runner.run("nonexistent_org", {"prospect_yaml_path": str(p), "org_id": "nonexistent_org"}, conn=conn)
+
+
+# ---------------------------------------------------------------------------
+# DIAG-ORG: sable_org mismatch validation
+# ---------------------------------------------------------------------------
+
+def test_sable_org_mismatch_fails_before_diagnostic(wf_db, tmp_path):
+    """YAML sable_org that doesn't match ctx.org_id must raise SableError before adapter runs."""
+    from sable_platform.errors import SableError
+
+    p = tmp_path / "mismatch.yaml"
+    p.write_text(
+        "name: MismatchProject\nproject_slug: mismatch\ntwitter_handle: mismatch\nsable_org: wrong_org\n",
+        encoding="utf-8",
+    )
+
+    adapter_called = []
+
+    def mock_run(self, input_data):
+        adapter_called.append(True)
+        return {"status": "submitted", "job_ref": "/tmp/x", "checkpoint_path": "/tmp/x"}
+
+    with patch("sable_platform.adapters.cult_grader.CultGraderAdapter.run", mock_run):
+        with pytest.raises(SableError) as exc_info:
+            WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+                "wf_org",
+                {"prospect_yaml_path": str(p), "org_id": "wf_org"},
+                conn=wf_db,
+            )
+
+    assert "sable_org" in exc_info.value.message
+    assert "wrong_org" in exc_info.value.message
+    assert not adapter_called, "CultGraderAdapter.run must not be called when sable_org mismatches"
+
+
+def test_sable_org_absent_passes_through(wf_db, tmp_path, mock_cult_grader_adapter):
+    """YAML without sable_org field must pass validation and reach the adapter."""
+    p = tmp_path / "no_sable_org.yaml"
+    p.write_text(
+        "name: NoOrgProject\nproject_slug: noorg\ntwitter_handle: noorg\n",
+        encoding="utf-8",
+    )
+
+    run_id = WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+        "wf_org",
+        {"prospect_yaml_path": str(p), "org_id": "wf_org"},
+        conn=wf_db,
+    )
+
+    from sable_platform.db.workflow_store import get_workflow_run
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed", "Absent sable_org should not block the workflow"
+
+
+def test_sable_org_matches_passes_through(wf_db, tmp_path, mock_cult_grader_adapter):
+    """YAML sable_org matching ctx.org_id must pass validation without error."""
+    p = tmp_path / "match.yaml"
+    p.write_text(
+        "name: MatchProject\nproject_slug: match\ntwitter_handle: match\nsable_org: wf_org\n",
+        encoding="utf-8",
+    )
+
+    run_id = WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+        "wf_org",
+        {"prospect_yaml_path": str(p), "org_id": "wf_org"},
+        conn=wf_db,
+    )
+
+    from sable_platform.db.workflow_store import get_workflow_run
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# YAML contract normalization: project_name / name / project_slug aliases
+# ---------------------------------------------------------------------------
+
+def test_project_name_canonical_field_accepted(wf_db, tmp_path, mock_cult_grader_adapter):
+    """YAML using 'project_name' (canonical) must pass validation."""
+    p = tmp_path / "canon.yaml"
+    p.write_text("project_name: CanonProject\ntwitter_handle: canon\n", encoding="utf-8")
+
+    run_id = WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+        "wf_org", {"prospect_yaml_path": str(p), "org_id": "wf_org"}, conn=wf_db,
+    )
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_project_name_alias_name(wf_db, tmp_path, mock_cult_grader_adapter):
+    """YAML using 'name' alias must be accepted and normalized to project_name."""
+    p = tmp_path / "alias_name.yaml"
+    p.write_text("name: AliasNameProject\ntwitter_handle: aliasname\n", encoding="utf-8")
+
+    run_id = WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+        "wf_org", {"prospect_yaml_path": str(p), "org_id": "wf_org"}, conn=wf_db,
+    )
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_project_name_alias_project_slug(wf_db, tmp_path, mock_cult_grader_adapter):
+    """YAML using 'project_slug' alias must be accepted and normalized to project_name."""
+    p = tmp_path / "alias_slug.yaml"
+    p.write_text("project_slug: alias_slug_proj\ntwitter_handle: aliasslug\n", encoding="utf-8")
+
+    run_id = WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+        "wf_org", {"prospect_yaml_path": str(p), "org_id": "wf_org"}, conn=wf_db,
+    )
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_project_name_missing_all_raises(wf_db, tmp_path):
+    """YAML with none of project_name, name, project_slug must raise SableError."""
+    from sable_platform.errors import SableError
+
+    p = tmp_path / "no_name.yaml"
+    p.write_text("twitter_handle: noname\n", encoding="utf-8")
+
+    with pytest.raises(SableError) as exc_info:
+        WorkflowRunner(PROSPECT_DIAGNOSTIC_SYNC).run(
+            "wf_org", {"prospect_yaml_path": str(p), "org_id": "wf_org"}, conn=wf_db,
+        )
+    assert "project_name" in exc_info.value.message

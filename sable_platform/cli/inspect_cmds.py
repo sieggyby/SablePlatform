@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 
 import click
+
+log = logging.getLogger(__name__)
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.centrality import list_centrality_scores
@@ -403,8 +406,8 @@ def inspect_spend(org_id: str | None, as_json: bool) -> None:
                 if cfg_row and cfg_row["config_json"]:
                     cfg = json.loads(cfg_row["config_json"])
                     cap = cfg.get("max_ai_usd_per_org_per_week", cap)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("Failed to parse config_json for org %s: %s", oid, e)
 
             headroom = cap - spend if cap > 0 else 0
             pct = (spend / cap * 100) if cap > 0 else None

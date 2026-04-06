@@ -37,6 +37,8 @@ EXPECTED_TABLES = {
     "prospect_scores",
     # Migration 022: playbook tagging
     "playbook_targets", "playbook_outcomes",
+    # Migration 028: platform metadata
+    "platform_meta",
 }
 
 
@@ -51,7 +53,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 23
+    assert row["version"] == 29
 
 
 def test_all_tables_exist():
@@ -70,7 +72,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 23
+    assert row["version"] == 29
 
 
 def test_workflow_tables_columns():
@@ -212,6 +214,41 @@ def test_playbook_outcomes_columns():
     cols = {row[1] for row in conn.execute("PRAGMA table_info(playbook_outcomes)").fetchall()}
     for expected in ("id", "org_id", "targets_artifact_id", "outcomes_json", "created_at"):
         assert expected in cols, f"playbook_outcomes missing column '{expected}'"
+
+
+def test_prospect_rejected_at_column():
+    """Migration 026: prospect_scores.rejected_at exists and is NULL by default."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(prospect_scores)").fetchall()}
+    assert "rejected_at" in cols, "prospect_scores missing 'rejected_at'"
+
+
+def test_prospect_score_fields_columns():
+    """Migration 029: prospect_scores has four new Lead Identifier contract fields."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(prospect_scores)").fetchall()}
+    for expected in ("recommended_action", "score_band_low", "score_band_high", "timing_urgency"):
+        assert expected in cols, f"prospect_scores missing column '{expected}'"
+
+
+def test_platform_meta_table_exists():
+    """Migration 028: platform_meta key-value table exists with correct columns."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(platform_meta)").fetchall()}
+    for expected in ("key", "value", "updated_at"):
+        assert expected in cols, f"platform_meta missing column '{expected}'"
+
+
+def test_workflow_active_lock_index_exists():
+    """Migration 027: workflow_runs has a unique partial index for active runs."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    rows = conn.execute("PRAGMA index_list(workflow_runs)").fetchall()
+    names = {row[1] for row in rows}
+    assert "idx_workflow_runs_active_lock" in names
 
 
 def test_foreign_keys_enabled():

@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import importlib.resources
+import logging
 import os
 import sqlite3
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 _MIGRATIONS = [
     ("001_initial.sql", 1),
@@ -30,6 +33,12 @@ _MIGRATIONS = [
     ("021_run_summary_blob.sql", 21),
     ("022_playbook_tagging.sql", 22),
     ("023_centrality_schema_align.sql", 23),
+    ("024_operator_identity_and_indexes.sql", 24),
+    ("025_prospect_graduation.sql", 25),
+    ("026_prospect_rejection.sql", 26),
+    ("027_workflow_active_lock.sql", 27),
+    ("028_platform_meta.sql", 28),
+    ("029_prospect_score_fields.sql", 29),
 ]
 
 
@@ -79,3 +88,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                     (target_version,),
                 )
             current = target_version
+            if target_version == 27:
+                _warn_migration_027_autofails(conn)
+
+
+def _warn_migration_027_autofails(conn: sqlite3.Connection) -> None:
+    """Emit a log warning if migration 027 auto-failed any duplicate active runs."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM workflow_runs WHERE error LIKE 'auto-failed by migration 027%'"
+        ).fetchone()
+        n = row[0] if row else 0
+        if n > 0:
+            log.warning(
+                "Migration 027: auto-failed %d duplicate active workflow run(s) — "
+                "query workflow_runs WHERE error LIKE 'auto-failed by migration 027%%' for details",
+                n,
+            )
+    except sqlite3.OperationalError:
+        pass  # workflow_runs table absent — migration applied to empty DB

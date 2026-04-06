@@ -116,6 +116,28 @@ def test_parse_latest_run_fallback_to_dated_dir(tmp_path):
     assert result["checkpoint_path"] == str(dated_dir)
 
 
+def test_run_uses_checkpoint_path_as_job_ref(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prospect_yaml = tmp_path / "prospect.yaml"
+    prospect_yaml.write_text("name: Test\nproject_slug: myslug\n")
+
+    adapter = CultGraderAdapter()
+    with patch.dict("os.environ", {"SABLE_CULT_GRADER_PATH": str(repo)}), \
+         patch("pathlib.Path.is_dir", return_value=True), \
+         patch.object(adapter, "_run_subprocess") as mock_sub, \
+         patch.object(
+             adapter,
+             "_parse_latest_run",
+             return_value={"run_id": "run_abc", "checkpoint_path": "/tmp/checkpoint"},
+         ):
+        mock_sub.return_value = MagicMock(returncode=0)
+        result = adapter.run({"org_id": "test_org", "prospect_yaml_path": str(prospect_yaml)})
+
+    assert result["job_ref"] == "/tmp/checkpoint"
+    assert result["run_id"] == "run_abc"
+
+
 def test_parse_latest_run_yaml_not_found_raises(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -126,3 +148,28 @@ def test_parse_latest_run_yaml_not_found_raises(tmp_path):
         adapter._parse_latest_run(repo, handoff)
 
     assert exc_info.value.code == INVALID_CONFIG
+
+
+def test_parse_latest_run_project_name_fallback(tmp_path):
+    """_parse_latest_run uses project_name as slug when project_slug/slug/name are absent.
+
+    This exercises the fix for the canonical-field gap: YAMLs that follow the current
+    CROSS_REPO_INTEGRATION.md docs (project_name only) must still resolve the checkpoint.
+    """
+    repo = tmp_path / "repo"
+    slug = "canonical_proj"
+    checkpoint = repo / "diagnostics" / slug / "runs" / "latest"
+    checkpoint.mkdir(parents=True)
+    run_meta = {"run_id": "run_canon", "fit_score": 0.75, "recommended_action": "pursue"}
+    (checkpoint / "run_meta.json").write_text(json.dumps(run_meta))
+
+    # YAML uses project_name only — no project_slug, no slug, no name
+    prospect_yaml = tmp_path / "canon_prospect.yaml"
+    prospect_yaml.write_text(yaml.dump({"project_name": slug, "twitter_handle": "canon"}))
+    handoff = _handoff(str(prospect_yaml))
+
+    adapter = CultGraderAdapter()
+    result = adapter._parse_latest_run(repo, handoff)
+
+    assert result["run_id"] == "run_canon"
+    assert result["checkpoint_path"] == str(checkpoint)

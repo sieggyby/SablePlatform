@@ -20,11 +20,27 @@ from sable_platform.cli.cron_cmds import cron
 
 
 @click.group()
+@click.pass_context
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
-def cli(verbose: bool) -> None:
+@click.option("--json-log", is_flag=True, default=False, help="Emit structured JSON logs")
+def cli(ctx: click.Context, verbose: bool, json_log: bool) -> None:
     """Sable Platform — suite-level workflow and inspection CLI."""
+    import os
+    from sable_platform.logging_config import configure_logging
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(format="%(levelname)s %(name)s: %(message)s", level=level)
+    configure_logging(json_mode=json_log, level=level)
+
+    # init is the bootstrap command — exempt from operator identity requirement.
+    if ctx.invoked_subcommand not in (None, "init"):
+        _op = os.environ.get("SABLE_OPERATOR_ID", "")
+        if not _op or _op == "unknown":
+            click.echo(
+                "Error: SABLE_OPERATOR_ID is not set or is 'unknown'. "
+                "Set it to your operator identity before running commands: "
+                "export SABLE_OPERATOR_ID=<your_id>",
+                err=True,
+            )
+            sys.exit(1)
 
 
 @cli.command("init")
@@ -88,3 +104,77 @@ cli.add_command(dashboard)
 cli.add_command(watchlist)
 cli.add_command(webhooks)
 cli.add_command(cron)
+
+
+@cli.command("schema")
+@click.option("--output-dir", "-o", default=None, type=click.Path(),
+              help="Directory to write JSON Schema files. Defaults to docs/schemas/.")
+@click.option("--stdout", "to_stdout", is_flag=True, default=False,
+              help="Print schemas to stdout instead of writing files.")
+def schema(output_dir: str | None, to_stdout: bool) -> None:
+    """Export JSON Schema from canonical Pydantic models."""
+    import json as _json
+    from pathlib import Path
+    from sable_platform.contracts.export import export_schemas
+
+    if to_stdout:
+        schemas = export_schemas()
+        click.echo(_json.dumps(schemas, indent=2))
+    else:
+        out = Path(output_dir) if output_dir else Path("docs/schemas")
+        schemas = export_schemas(out)
+        click.echo(f"Exported {len(schemas)} schemas to {out}/")
+
+
+@cli.command("health-server")
+@click.option("--port", default=8765, show_default=True, help="Port to listen on.")
+def health_server(port: int) -> None:
+    """Serve GET /health as JSON on the given port (blocks forever)."""
+    from sable_platform.http_health import serve_health
+    click.echo(f"Health server on :{port} — GET /health")
+    serve_health(port)
+
+
+@cli.command("metrics")
+def metrics_cmd() -> None:
+    """Print Prometheus-format platform metrics to stdout."""
+    from sable_platform.db.connection import get_db
+    from sable_platform.metrics import export_metrics
+    conn = get_db()
+    try:
+        click.echo(export_metrics(conn), nl=False)
+    finally:
+        conn.close()
+
+
+@cli.command("gc")
+@click.option("--retention-days", default=90, show_default=True, type=int,
+              help="Delete records older than this many days.")
+def gc(retention_days: int) -> None:
+    """Purge old workflow events, cost events, and resolved alerts.
+
+    Audit log is NEVER purged.
+    """
+    from sable_platform.db.connection import get_db
+    from sable_platform.db.gc import run_gc
+
+    try:
+        conn = get_db()
+    except Exception as e:
+        click.echo(f"GC failed: {e}", err=True)
+        sys.exit(1)
+    try:
+        counts = run_gc(conn, retention_days=retention_days)
+        total = sum(counts.values())
+        if total == 0:
+            click.echo("Nothing to purge.")
+        else:
+            for table, count in counts.items():
+                if count > 0:
+                    click.echo(f"  {table}: {count} rows deleted")
+            click.echo(f"Total: {total} rows purged (retention: {retention_days} days).")
+    except Exception as e:
+        click.echo(f"GC failed: {e}", err=True)
+        sys.exit(1)
+    finally:
+        conn.close()

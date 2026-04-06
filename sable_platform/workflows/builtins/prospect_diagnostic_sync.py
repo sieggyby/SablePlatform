@@ -36,21 +36,35 @@ def _validate_prospect(ctx) -> StepResult:
     with p.open() as f:
         prospect = yaml.safe_load(f)
 
-    if not prospect.get("name") and not prospect.get("project_slug"):
-        raise SableError(INVALID_CONFIG, "Prospect YAML must have 'name' or 'project_slug'")
+    # Normalize aliases: project_name is canonical; accept name and project_slug as aliases.
+    if "project_name" not in prospect and "name" in prospect:
+        prospect["project_name"] = prospect["name"]
+    if "project_name" not in prospect and "project_slug" in prospect:
+        prospect["project_name"] = prospect["project_slug"]
+
+    if not prospect.get("project_name"):
+        raise SableError(INVALID_CONFIG, "Prospect YAML must have 'project_name' (or alias 'name' / 'project_slug')")
 
     org_id = ctx.org_id
     row = ctx.db.execute("SELECT 1 FROM orgs WHERE org_id=?", (org_id,)).fetchone()
     if not row:
         raise SableError(INVALID_CONFIG, f"Org '{org_id}' not found in DB")
 
+    sable_org = prospect.get("sable_org", "")
+    if sable_org and sable_org != org_id:
+        raise SableError(
+            INVALID_CONFIG,
+            f"Prospect YAML sable_org '{sable_org}' does not match workflow org_id '{org_id}'. "
+            f"Platform sync will be skipped by Cult Grader unless these match exactly.",
+        )
+
     return StepResult(
         status="completed",
         output={
             "prospect_yaml_path": str(p),
-            "project_name": prospect.get("name") or prospect.get("project_slug", ""),
+            "project_name": prospect.get("project_name", ""),
             "twitter_handle": prospect.get("twitter_handle", ""),
-            "sable_org": prospect.get("sable_org", ""),
+            "sable_org": sable_org,
         },
     )
 

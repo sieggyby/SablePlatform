@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import datetime
+from dataclasses import dataclass
 from unittest.mock import patch
 
 import pytest
 
 from sable_platform.workflows.engine import WorkflowRunner
-from sable_platform.workflows.builtins.weekly_client_loop import WEEKLY_CLIENT_LOOP
+from sable_platform.workflows.builtins.weekly_client_loop import (
+    WEEKLY_CLIENT_LOOP,
+    _register_artifacts,
+    _parse_actions_from_artifact,
+)
 from sable_platform.db.workflow_store import get_workflow_run, get_workflow_steps
 
 
@@ -100,3 +105,96 @@ def test_freshness_output_in_step(wf_db, mock_adapters):
 
     assert output["tracking_fresh"] is True
     assert output["tracking_age_days"] <= 3
+
+
+# ---------------------------------------------------------------------------
+# Run-scoped artifact isolation
+# ---------------------------------------------------------------------------
+
+def test_register_artifacts_scoped_to_current_run(wf_db):
+    """_register_artifacts only counts artifacts created after the current run started."""
+    import json
+    import uuid
+
+    org_id = "wf_org"
+
+    # Simulate a completed first run that produced artifacts 2 hours ago
+    old_run_id = uuid.uuid4().hex
+    two_hours_ago = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    wf_db.execute(
+        "INSERT INTO workflow_runs (run_id, org_id, workflow_name, status, started_at, completed_at) "
+        "VALUES (?, ?, 'weekly_client_loop', 'completed', ?, ?)",
+        (old_run_id, org_id, two_hours_ago, two_hours_ago),
+    )
+    # Insert an artifact from that old run
+    wf_db.execute(
+        "INSERT INTO artifacts (org_id, artifact_type, path, created_at) VALUES (?, 'pulse_report', '/tmp/old.md', ?)",
+        (org_id, two_hours_ago),
+    )
+    wf_db.commit()
+
+    # Create a new "current" run that just started
+    new_run_id = uuid.uuid4().hex
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    wf_db.execute(
+        "INSERT INTO workflow_runs (run_id, org_id, workflow_name, status, started_at) "
+        "VALUES (?, ?, 'weekly_client_loop', 'running', ?)",
+        (new_run_id, org_id, now),
+    )
+    wf_db.commit()
+
+    # Build a minimal StepContext
+    ctx = type("Ctx", (), {
+        "run_id": new_run_id,
+        "org_id": org_id,
+        "db": wf_db,
+        "input_data": {},
+    })()
+
+    result = _register_artifacts(ctx)
+    assert result.output["artifact_count"] == 0, (
+        "Second run should not see artifacts from the first run"
+    )
+
+
+def test_parse_actions_scoped_to_current_run(wf_db, tmp_path):
+    """_parse_actions_from_artifact ignores artifacts from before the current run."""
+    import uuid
+
+    org_id = "wf_org"
+
+    two_hours_ago = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Create an old artifact with actionable content
+    playbook = tmp_path / "old_playbook.md"
+    playbook.write_text("## Actions\n- Do the old thing\n- Do another old thing\n")
+
+    wf_db.execute(
+        "INSERT INTO artifacts (org_id, artifact_type, path, created_at) VALUES (?, 'discord_playbook', ?, ?)",
+        (org_id, str(playbook), two_hours_ago),
+    )
+    wf_db.commit()
+
+    # Create a current run that started after the artifact was created
+    new_run_id = uuid.uuid4().hex
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    wf_db.execute(
+        "INSERT INTO workflow_runs (run_id, org_id, workflow_name, status, started_at) "
+        "VALUES (?, ?, 'weekly_client_loop', 'running', ?)",
+        (new_run_id, org_id, now),
+    )
+    wf_db.commit()
+
+    ctx = type("Ctx", (), {
+        "run_id": new_run_id,
+        "org_id": org_id,
+        "db": wf_db,
+        "input_data": {},
+    })()
+
+    action_ids = _parse_actions_from_artifact(ctx, "discord_playbook", "playbook", "general")
+    assert action_ids == [], "Should not parse actions from pre-run artifacts"

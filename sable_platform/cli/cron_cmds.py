@@ -13,13 +13,31 @@ def cron() -> None:
 
 @cron.command("add")
 @click.option("--org", required=True, help="Org ID")
-@click.option("--workflow", required=True, help="Workflow name")
-@click.option("--schedule", required=True,
+@click.option("--workflow", default=None, help="Workflow name (not needed with --preset)")
+@click.option("--schedule", default=None,
               help="Cron expression (5 fields) or preset: hourly, daily, weekly-thursday, etc.")
+@click.option("--preset", "preset_name", default=None,
+              help="Bundled preset (backup, alert_check, gc). Sets workflow + schedule automatically.")
 @click.option("--extra-args", default="", help="Additional CLI args after --org")
-def add(org: str, workflow: str, schedule: str, extra_args: str) -> None:
+def add(org: str, workflow: str | None, schedule: str | None, preset_name: str | None, extra_args: str) -> None:
     """Add a scheduled workflow run to crontab."""
-    from sable_platform.cron import add_entry, SCHEDULE_PRESETS
+    from sable_platform.cron import add_entry, add_preset, SCHEDULE_PRESETS
+
+    if preset_name:
+        if workflow or schedule:
+            click.echo("Error: --preset cannot be combined with --workflow/--schedule", err=True)
+            sys.exit(1)
+        try:
+            entry = add_preset(preset_name, org)
+            click.echo(f"Added preset '{preset_name}': {entry.to_line()}")
+        except (ValueError, FileNotFoundError) as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        return
+
+    if not workflow or not schedule:
+        click.echo("Error: --workflow and --schedule are required (or use --preset)", err=True)
+        sys.exit(1)
 
     try:
         entry = add_entry(org, workflow, schedule, extra_args=extra_args)
@@ -61,8 +79,14 @@ def remove(org: str, workflow: str) -> None:
 
 @cron.command("presets")
 def presets() -> None:
-    """Show available schedule presets."""
-    from sable_platform.cron import SCHEDULE_PRESETS
+    """Show available schedule and workflow presets."""
+    from sable_platform.cron import SCHEDULE_PRESETS, WORKFLOW_PRESETS
 
+    click.echo("Schedule presets (use with --schedule):")
     for name, expr in sorted(SCHEDULE_PRESETS.items()):
         click.echo(f"  {name:25s} {expr}")
+
+    click.echo()
+    click.echo("Workflow presets (use with --preset):")
+    for name, wp in sorted(WORKFLOW_PRESETS.items()):
+        click.echo(f"  {name:25s} {wp.schedule}  — {wp.description}")

@@ -1,0 +1,32 @@
+{
+  "description": "Typed dimension scores for prospect evaluation.\n\nGap-to-health inversion happens at the adapter boundary:\ncommunity_gap \u2192 community_health (1.0 - gap), etc.",
+  "properties": {
+    "community_health": {
+      "default": 0.5,
+      "title": "Community Health",
+      "type": "number"
+    },
+    "language_signal": {
+      "default": 0.5,
+      "title": "Language Signal",
+      "type": "number"
+    },
+    "growth_trajectory": {
+      "default": 0.5,
+      "title": "Growth Trajectory",
+      "type": "number"
+    },
+    "engagement_quality": {
+      "default": 0.5,
+      "title": "Engagement Quality",
+      "type": "number"
+    },
+    "sable_fit": {
+      "default": 0.5,
+      "title": "Sable Fit",
+      "type": "number"
+    }
+  },
+  "title": "DimensionScores",
+  "type": "object"
+}

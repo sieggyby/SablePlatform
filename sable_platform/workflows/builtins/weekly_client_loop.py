@@ -159,21 +159,38 @@ def _trigger_strategy_generation(ctx) -> StepResult:
     )
 
 
+def _get_run_started_at(ctx) -> str | None:
+    """Return the started_at timestamp for the current workflow run."""
+    row = ctx.db.execute(
+        "SELECT started_at FROM workflow_runs WHERE run_id = ?",
+        (ctx.run_id,),
+    ).fetchone()
+    return row["started_at"] if row else None
+
+
 def _register_artifacts(ctx) -> StepResult:
     """Count non-stale artifacts produced for this org during the workflow run.
 
     The Slopper adapter's run() returns {status, job_ref, org_id} — it does NOT
     return artifact paths. Slopper writes artifacts directly to sable.db via
     log_cost/artifact registration in generate_advise(). So we query the
-    artifacts table for recent non-stale entries rather than parsing adapter output.
+    artifacts table for recent non-stale entries created since this run started.
     """
+    started_at = _get_run_started_at(ctx)
+    if not started_at:
+        log.warning("run %s has no started_at — cannot scope artifact query", ctx.run_id)
+        return StepResult(
+            status="completed",
+            output={"artifact_ids": [], "artifact_count": 0},
+        )
+
     rows = ctx.db.execute(
         """
         SELECT artifact_id FROM artifacts
-        WHERE org_id = ? AND stale = 0
+        WHERE org_id = ? AND stale = 0 AND created_at >= ?
         ORDER BY created_at DESC LIMIT 20
         """,
-        (ctx.org_id,),
+        (ctx.org_id, started_at),
     ).fetchall()
 
     artifact_ids = [r["artifact_id"] for r in rows]
@@ -185,23 +202,32 @@ def _register_artifacts(ctx) -> StepResult:
 
 
 def _parse_actions_from_artifact(ctx, artifact_type: str, source: str, action_type: str) -> list[str]:
-    """Parse action items from the latest artifact of a given type.
+    """Parse action items from the latest artifact of a given type created during this run.
 
     Returns list of created action_ids.
     """
     import re
     from sable_platform.db.actions import create_action
 
+    started_at = _get_run_started_at(ctx)
+    if not started_at:
+        log.warning("run %s has no started_at — cannot scope action query", ctx.run_id)
+        return []
+
     row = ctx.db.execute(
         """
         SELECT artifact_id, path FROM artifacts
-        WHERE org_id=? AND artifact_type=?
+        WHERE org_id=? AND artifact_type=? AND created_at >= ?
         ORDER BY created_at DESC LIMIT 1
         """,
-        (ctx.org_id, artifact_type),
+        (ctx.org_id, artifact_type, started_at),
     ).fetchone()
 
     if not row or not row["path"]:
+        log.warning(
+            "No artifact path for %s (org %s, run %s) — zero actions registered",
+            artifact_type, ctx.org_id, ctx.run_id,
+        )
         return []
 
     artifact_path = row["path"]

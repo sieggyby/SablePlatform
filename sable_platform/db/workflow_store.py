@@ -2,10 +2,35 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import uuid
 
-from sable_platform.errors import redact_error, SableError, STEP_EXECUTION_ERROR, WORKFLOW_NOT_FOUND
+from sable_platform.errors import (
+    redact_error,
+    SableError,
+    STEP_EXECUTION_ERROR,
+    WORKFLOW_ALREADY_RUNNING,
+    WORKFLOW_NOT_FOUND,
+)
+from sable_platform.webhooks.dispatch import dispatch_event
+
+log = logging.getLogger(__name__)
+_ACTIVE_RUN_LOCK_INDEX = "idx_workflow_runs_active_lock"
+
+
+def _get_operator_id() -> str:
+    """Read operator identity from env. Returns 'unknown' if unset."""
+    return os.environ.get("SABLE_OPERATOR_ID", "unknown")
+
+
+def _is_active_run_lock_error(exc: sqlite3.IntegrityError) -> bool:
+    msg = str(exc)
+    return (
+        _ACTIVE_RUN_LOCK_INDEX in msg
+        or "workflow_runs.org_id, workflow_runs.workflow_name" in msg
+    )
 
 
 def create_workflow_run(
@@ -17,14 +42,23 @@ def create_workflow_run(
     step_fingerprint: str | None = None,
 ) -> str:
     run_id = uuid.uuid4().hex
-    conn.execute(
-        """
-        INSERT INTO workflow_runs
-            (run_id, org_id, workflow_name, workflow_version, status, config_json, step_fingerprint)
-        VALUES (?, ?, ?, ?, 'pending', ?, ?)
-        """,
-        (run_id, org_id, workflow_name, workflow_version, json.dumps(config), step_fingerprint),
-    )
+    operator_id = _get_operator_id()
+    try:
+        conn.execute(
+            """
+            INSERT INTO workflow_runs
+                (run_id, org_id, workflow_name, workflow_version, status, config_json, step_fingerprint, operator_id)
+            VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (run_id, org_id, workflow_name, workflow_version, json.dumps(config), step_fingerprint, operator_id),
+        )
+    except sqlite3.IntegrityError as exc:
+        if _is_active_run_lock_error(exc):
+            raise SableError(
+                WORKFLOW_ALREADY_RUNNING,
+                f"Workflow '{workflow_name}' already has an active run for org '{org_id}'.",
+            ) from exc
+        raise
     conn.commit()
     return run_id
 
@@ -51,6 +85,20 @@ def fail_workflow_run(conn: sqlite3.Connection, run_id: str, error: str) -> None
         (redact_error(error), run_id),
     )
     conn.commit()
+
+
+def unlock_workflow_run(conn: sqlite3.Connection, run_id: str) -> bool:
+    """Force-fail a stuck workflow run. Returns True if a row was updated."""
+    cursor = conn.execute(
+        """
+        UPDATE workflow_runs SET status='failed', completed_at=datetime('now'),
+               error='manually unlocked via CLI'
+        WHERE run_id=? AND status IN ('pending', 'running')
+        """,
+        (run_id,),
+    )
+    conn.commit()
+    return cursor.rowcount > 0
 
 
 def create_workflow_step(
@@ -182,13 +230,12 @@ def emit_workflow_event(
             (run_id,),
         ).fetchone()
         if run_row and run_row["org_id"]:
-            from sable_platform.webhooks.dispatch import dispatch_event
             webhook_payload = dict(payload or {})
             webhook_payload["run_id"] = run_id
             webhook_payload["workflow_name"] = run_row["workflow_name"]
             dispatch_event(conn, f"workflow.{event_type}", run_row["org_id"], webhook_payload)
-    except Exception:
-        pass  # webhook failure must never block the engine
+    except Exception as e:
+        log.warning("Webhook dispatch failed during workflow event: %s", e)
 
 
 def get_workflow_run(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row | None:

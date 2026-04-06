@@ -192,6 +192,60 @@ def entity_funnel(conn: sqlite3.Connection, org_id: str) -> dict:
     }
 
 
+def get_key_journeys(
+    conn: sqlite3.Connection,
+    org_id: str,
+    limit: int = 5,
+) -> list[dict]:
+    """Return the N most event-rich entity journeys for an org.
+
+    Scores entities by total event count (tag history + actions + outcomes),
+    then returns the top N with their full journey via get_entity_journey().
+    """
+    entity_rows = conn.execute(
+        "SELECT entity_id, display_name FROM entities WHERE org_id=? AND status != 'archived'",
+        (org_id,),
+    ).fetchall()
+
+    scored: list[tuple[int, str, str]] = []
+    for r in entity_rows:
+        eid = r["entity_id"]
+        count = 0
+        try:
+            count += conn.execute(
+                "SELECT COUNT(*) FROM entity_tag_history WHERE entity_id=?", (eid,)
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            count += conn.execute(
+                "SELECT COUNT(*) FROM actions WHERE entity_id=?", (eid,)
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+        try:
+            count += conn.execute(
+                "SELECT COUNT(*) FROM outcomes WHERE entity_id=?", (eid,)
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+        scored.append((count, eid, r["display_name"] or ""))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:limit]
+
+    results = []
+    for event_count, eid, display_name in top:
+        events = get_entity_journey(conn, eid)
+        results.append({
+            "entity_id": eid,
+            "display_name": display_name,
+            "event_count": event_count,
+            "events": events,
+        })
+    return results
+
+
 def first_seen_list(
     conn: sqlite3.Connection,
     org_id: str,

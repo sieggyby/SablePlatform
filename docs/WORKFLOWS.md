@@ -173,6 +173,8 @@ sable-platform workflow events <run_id>
 sable-platform workflow run alert_check --org <org_id>
 ```
 
+See `docs/ALERT_SYSTEM.md` for the full alert lifecycle, all 12 check descriptions, dedup key formats, per-org threshold overrides, and delivery channel setup.
+
 ---
 
 ## Workflow 4: `lead_discovery`

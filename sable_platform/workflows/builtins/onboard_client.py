@@ -1,6 +1,7 @@
 """Workflow: onboard_client — verify all adapters and create initial sync record."""
 from __future__ import annotations
 
+import sqlite3
 import uuid
 
 from sable_platform.errors import SableError, INVALID_CONFIG
@@ -49,18 +50,33 @@ def _verify_cult_grader_adapter(ctx) -> StepResult:
         return StepResult("completed", {"cult_grader_adapter": f"fail: {e.message}"})
 
 
+def _verify_lead_identifier_adapter(ctx) -> StepResult:
+    """Read-only env check for LeadIdentifierAdapter."""
+    import os
+    from pathlib import Path
+    path = os.environ.get("SABLE_LEAD_IDENTIFIER_PATH", "")
+    if not path:
+        return StepResult("completed", {"lead_identifier_adapter": "fail: SABLE_LEAD_IDENTIFIER_PATH not set"})
+    if not Path(path).exists():
+        return StepResult("completed", {"lead_identifier_adapter": f"fail: path does not exist: {path}"})
+    return StepResult("completed", {"lead_identifier_adapter": "ok"})
+
+
 def _create_initial_sync_record(ctx) -> StepResult:
     """Insert a sync_runs row with status='pending' and sync_type='onboarding'."""
     cult_run_id = uuid.uuid4().hex
-    ctx.db.execute(
-        """
-        INSERT INTO sync_runs (org_id, sync_type, cult_run_id, started_at, status, records_synced)
-        VALUES (?, 'onboarding', ?, datetime('now'), 'pending', 0)
-        """,
-        (ctx.org_id, cult_run_id),
-    )
-    ctx.db.commit()
-    sync_run_id = ctx.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    try:
+        ctx.db.execute(
+            """
+            INSERT INTO sync_runs (org_id, sync_type, cult_run_id, started_at, status, records_synced)
+            VALUES (?, 'onboarding', ?, datetime('now'), 'pending', 0)
+            """,
+            (ctx.org_id, cult_run_id),
+        )
+        ctx.db.commit()
+        sync_run_id = ctx.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    except sqlite3.Error as exc:
+        raise SableError(INVALID_CONFIG, f"sync_run insert failed: {exc}") from exc
     return StepResult("completed", {"sync_run_id": sync_run_id})
 
 
@@ -72,6 +88,7 @@ def _mark_complete(ctx) -> StepResult:
         ("tracking_adapter", "tracking"),
         ("slopper_adapter", "slopper"),
         ("cult_grader_adapter", "cult_grader"),
+        ("lead_identifier_adapter", "lead_identifier"),
     ]:
         val = ctx.input_data.get(key, "")
         if val == "ok":
@@ -99,6 +116,7 @@ ONBOARD_CLIENT = WorkflowDefinition(
         StepDefinition(name="verify_tracking_adapter", fn=_verify_tracking_adapter, max_retries=0),
         StepDefinition(name="verify_slopper_adapter", fn=_verify_slopper_adapter, max_retries=0),
         StepDefinition(name="verify_cult_grader_adapter", fn=_verify_cult_grader_adapter, max_retries=0),
+        StepDefinition(name="verify_lead_identifier_adapter", fn=_verify_lead_identifier_adapter, max_retries=0),
         StepDefinition(name="create_initial_sync_record", fn=_create_initial_sync_record, max_retries=0),
         StepDefinition(name="mark_complete", fn=_mark_complete, max_retries=0),
     ],

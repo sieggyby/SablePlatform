@@ -17,8 +17,8 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.4** is complete. Includes:
-- DB layer (023 migrations, all helpers)
+**v0.5** is complete. Includes:
+- DB layer (026 migrations, all helpers)
 - Contracts (all cross-suite Pydantic models)
 - WorkflowRunner (synchronous, deterministic, retry/resume/skip_if, config versioning)
 - 5 builtin workflows (prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client)
@@ -40,7 +40,22 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Prospect scoring table (migration 020 — Lead Identifier integration data layer)
 - Run summary JSON blob column on diagnostic_runs (migration 021 — SableWeb integration)
 - Playbook outcome tagging tables (migration 022 — playbook_targets + playbook_outcomes)
-- 764/764 tests passing
+- Network centrality schema alignment (migration 023 — in/out centrality columns)
+- Operator identity + entity_tags compound index (migration 024)
+- Prospect graduation (migration 025 — graduated_at column)
+- Prospect rejection (migration 026 — rejected_at column, `org reject` CLI)
+- Workflow execution locking (concurrent run prevention, 4h stale-lock recovery, `workflow unlock` CLI)
+- Operator identity via `SABLE_OPERATOR_ID` env var (stamps workflow_runs + audit_log)
+- Structured JSON logging (`--json-log` flag, StructuredFormatter)
+- Synchronous inline webhook dispatch (caller's DB connection, timeout=1s per delivery; alert eval latency bounded by N_subs × 1s)
+- Data retention GC (`sable-platform gc --retention-days N`, FK-safe, audit log immune)
+- Programmatic health check (`db/health.py:check_db_health()`)
+- JSON Schema export (`sable-platform schema`, 8 Pydantic models)
+- TrackingMetadata contract (`contracts/tracking.py`, 17 versioned fields)
+- Schema contracts documentation (`docs/SCHEMA_CONTRACTS.md`)
+- Dockerfile + docker-compose.yaml
+- CI pipeline (`.github/workflows/ci.yml` — ruff + pytest)
+- 858/898 tests passing
 
 ## Architecture Decisions
 
@@ -56,9 +71,9 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
 - All new workflows go in `sable_platform/workflows/builtins/` and self-register.
-- Run the test suite with `python3 -m pytest tests/ -q`; all 757 tests must pass before merging.
+- Run the test suite with `python3 -m pytest tests/ -q`; all 898 tests must pass before merging.
 - `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 3; set 0 for steps that must not retry), and `retry_delay_seconds` (default 5). Declare only when the step has a genuine transient failure mode or conditional path — defensive retry logic obscures determinism.
-- To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{entity_id}"` as the dedup_key.
+- To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py`; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) use `"{alert_type}:{org_id}:{entity_or_run_id}"` as the dedup_key. Always include `org_id` to prevent cross-org collision. Org-scoped alerts with no per-entity key use `"{alert_type}:{org_id}"` (2 parts). Never omit org_id.
 - New alert tests must cover both the fire case and the cooldown suppression case.
 
 ## Key Files
@@ -89,8 +104,21 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/cli/watchlist_cmds.py` | Watchlist CLI — add/remove/list/changes/snapshot |
 | `sable_platform/cli/webhook_cmds.py` | Webhook CLI — add/list/remove/test |
 | `sable_platform/db/playbook.py` | Playbook tagging CRUD — upsert_playbook_targets(), record_playbook_outcomes() |
+| `sable_platform/db/gc.py` | Data retention GC — run_gc(), FK-safe deletion, audit log immune |
+| `sable_platform/db/health.py` | Programmatic health check — check_db_health() |
+| `sable_platform/logging_config.py` | Structured JSON logging — StructuredFormatter, configure_logging() |
+| `sable_platform/contracts/export.py` | JSON Schema export — export_schemas() for 8 Pydantic models |
+| `sable_platform/contracts/tracking.py` | TrackingMetadata contract — 17 versioned fields for SableTracking |
+| `sable_platform/contracts/leads.py` | Lead + DimensionScores contracts, PURSUE/MONITOR threshold constants |
+| `sable_platform/cli/main.py` | Top-level CLI: init, backup, schema, gc |
+| `sable_platform/cli/org_cmds.py` | Org CLI: create, list, graduate, reject |
+| `sable_platform/db/entities.py` | Entity CRUD + add_entity_note(), list_entity_notes() |
 | `docs/CLI_REFERENCE.md` | Complete CLI command reference |
 | `docs/CROSS_REPO_INTEGRATION.md` | Adapter reference, data flows, direct commands |
+| `docs/SCHEMA_CONTRACTS.md` | Cross-suite data contracts — entity status, tiers, dimensions, cost models, artifacts, outcomes |
+| `docs/ALERT_SYSTEM.md` | Alert lifecycle, all 12 checks, dedup key formats, delivery channels, threshold overrides |
+| `docs/EXTENDING.md` | How to add a workflow, adapter, alert check, or migration |
+| `docs/schemas/` | Generated JSON Schema files for all 8 Pydantic contracts |
 
 ## Environment Variables
 
@@ -99,93 +127,44 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `SABLE_DB_PATH` | No | Path to `sable.db`. Defaults to `~/.sable/sable.db` |
 | `SABLE_TELEGRAM_BOT_TOKEN` | No | Telegram bot token for alert delivery. If unset, Telegram delivery is silently skipped even when `telegram_chat_id` is configured on an org. |
 | `SABLE_HOME` | No | Root dir for Sable config. Defaults to `~/.sable`. Used by `db/cost.py` to locate `config.yaml` for budget cap overrides. |
+| `SABLE_OPERATOR_ID` | **Yes** | Operator identity stamped on `workflow_runs.operator_id` and `audit_log.actor`. CLI fails closed (exit 1) if unset or `"unknown"` for all commands except `init`. |
+| `SABLE_HEALTH_TOKEN` | **Yes (health-server)** | Bearer token for the `/health` HTTP endpoint. `health-server` refuses to start if unset. Generate with `openssl rand -hex 32`. |
+| `SABLE_CULT_GRADER_PATH` | No | Path to Cult Grader repo. Required by `CultGraderAdapter`. |
+| `SABLE_TRACKING_PATH` | No | Path to SableTracking repo. Required by `SableTrackingAdapter`. |
+| `SABLE_SLOPPER_PATH` | No | Path to Slopper repo. Required by `SlopperAdvisoryAdapter`. |
+| `SABLE_LEAD_IDENTIFIER_PATH` | No | Path to Lead Identifier repo. Required by `LeadIdentifierAdapter`. |
 
-## Alert Delivery Cooldown
+## Alert Dedup & Delivery
 
-`_deliver()` in `alert_delivery.py` gates HTTP delivery (Telegram/Discord) by a per-`dedup_key`
-cooldown window. After a successful delivery, `alerts.last_delivered_at` is stamped. On the next
-`evaluate_alerts()` invocation, if the same `dedup_key` was delivered within `cooldown_hours`
-(default: 4), the HTTP notification is suppressed. The alert DB record is always written; only
-the external delivery is gated.
+- **Dedup policy:** `create_alert()` blocks when existing alert with same `dedup_key` has `status IN ('new', 'acknowledged')`. Only `resolved` allows re-alerting.
+- **Dedup key format:** `"{alert_type}:{org_id}:{entity_or_run_id}"` (3 parts) for entity/run-scoped alerts; `"{alert_type}:{org_id}"` (2 parts) for org-scoped alerts. Always include org_id — omitting it causes cross-org alert suppression collisions.
+- **Cooldown:** 4h default per `dedup_key`. `cooldown_hours=0` disables. Does NOT reset on ack/resolve.
+- **Delivery failure:** `last_delivery_error` stamped on HTTP failure, cleared on next success.
 
-Rules:
-- Cooldown scopes to `dedup_key`, not alert type or org.
-- `last_delivered_at IS NULL` → treat as never delivered → fire.
-- `cooldown_hours = 0` in `alert_configs` → cooldown disabled, always deliver.
-- Cooldown does NOT reset on acknowledge/resolve — ages out naturally.
-- Default: `cooldown_hours = 4` (set via `sable-platform alerts config set --org ORG cooldown-hours N`).
-
-**Delivery failure tracking:** When HTTP delivery fails, `_deliver()` calls
-`mark_delivery_failed(conn, dedup_key, error)` which stamps `alerts.last_delivery_error`
-(truncated to 500 chars). On a subsequent successful delivery, `mark_delivered()` clears
-`last_delivery_error = NULL`. Failures are queryable via `list_alerts()`.
-
-**Dedup key format convention:** All checks in `alert_checks.py` must use
-`"{alert_type}:{entity_or_run_id}"` as the dedup_key — e.g. `"stuck_run:{run_id}"`,
-`"stale_tracking:{org_id}"`. Deviating silently breaks cooldown scoping: the key lookup will not
-match prior records, and the same alert will re-fire every evaluation cycle.
+See `docs/THREAT_MODEL.md` § Alert Dedup and `docs/SCHEMA_CONTRACTS.md` § Alert Severity & Status for full enum values.
 
 ## Workflow Config Versioning
 
-`WorkflowRunner.run()` computes a fingerprint of the workflow's step names
-(`sha1(sorted_names)[:8]`) and stores it in `workflow_runs.step_fingerprint`.
+Step-name SHA1 fingerprint stored on `run()`, checked on `resume()`. Mismatch blocks resume. `--ignore-version-check` bypasses. NULL fingerprint (pre-migration-012) skips check.
 
-`WorkflowRunner.resume()` recomputes the fingerprint for the current definition. If the stored
-fingerprint is non-NULL and mismatches, resume raises `SableError(STEP_EXECUTION_ERROR)` with a
-message naming both fingerprints.
+## Prospect Scores Schema Note
 
-**Escape hatch:** `sable-platform workflow resume <run_id> --ignore-version-check` bypasses the
-check. Use this only for emergency resumes when you have confirmed the structural change is safe
-to apply to the in-flight run (e.g., a new step was added at the end, not renamed mid-run).
+`prospect_scores.org_id` stores the **prospect's project_id** (the external crypto community being evaluated by Lead Identifier), NOT the Sable client org_id. This column was named `org_id` to match SQLite FK conventions but is semantically a prospect identifier. `graduate_prospect(conn, project_id)` and `reject_prospect(conn, project_id)` use it as a project_id; `list_prospect_scores()` has no Sable client filter (returns all prospects globally — single-operator assumption). If multi-tenant support is added, a migration will be needed to add a `client_org_id` column.
 
-NULL stored fingerprint (runs created before migration 012) → validation is skipped silently.
+## Org config_json Convention
 
-## Entity Interaction Edges
+`orgs.config_json` is a JSON blob used for three purposes: (1) cost cap overrides, (2) alert threshold overrides, (3) org metadata (sector/stage). Set via `sable-platform org config set ORG KEY VALUE`.
 
-`entity_interactions` table (migration 014) stores directional interaction edges between community
-member handles. Designed as the data layer for SableWeb's relationship web visualization.
+**Sector** (validated enum): `DeFi`, `Gaming`, `Infrastructure`, `L1/L2`, `Social`, `DAO`, `NFT`, `AI`, `Other`
 
-**Schema:** Each row is an aggregate edge: `(org_id, source_handle, target_handle, interaction_type)`
-with a running `count`, `first_seen`, and `last_seen`. Types: `reply`, `mention`, `co_mention`.
+**Stage** (validated enum): `pre_launch`, `launch`, `growth`, `mature`, `declining`
 
-**Sync:** `sync_interaction_edges(conn, org_id, edges, run_date)` upserts edges from Cult Grader's
-`computed_metrics.json` when `reply_pairs` data is present. Idempotent: accumulates count, preserves
-earliest `first_seen`, updates `last_seen` and `run_date`.
+SableWeb reads `sector` and `stage` from this field. Alert checks read threshold override keys at evaluation time (no restart needed). See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full threshold key list.
 
-**CLI:** `sable-platform inspect interactions ORG [--type reply|mention|co_mention] [--min-count N] [--json]`
+## Key Journeys
 
-**Dependency:** Cult Grader Stage 4 must extract individual reply pairs before this table has data.
-
-## Entity Decay Scores (Churn Prediction)
-
-`entity_decay_scores` table (migration 015) stores per-entity decay scores received from
-Cult Grader diagnostic output. Platform stores and alerts — it does not compute scores.
-
-**Schema:** Each row is a latest-wins upsert on `(org_id, entity_id)`: `decay_score` (float 0–1),
-`risk_tier` (low/medium/high/critical), `scored_at`, `run_date`, `factors_json` (nullable).
-
-**Sync:** `sync_decay_scores(conn, org_id, scores, run_date)` resolves handles to entity_ids via
-`entity_handles` when possible; falls back to normalized handle (`lower().lstrip("@")`). Idempotent upsert.
-
-**Alert:** `_check_member_decay()` in `alert_checks.py` fires:
-- `warning` when `decay_score >= 0.6` (default, configurable via `orgs.config_json.decay_warning_threshold`)
-- `critical` when `decay_score >= 0.8` AND entity has a structurally important tag (cultist, voice, mvl, top_contributor)
-- `dedup_key`: `"member_decay:{org_id}:{entity_id}"` — includes org_id to prevent cross-org collision
-
-**CLI:** `sable-platform inspect decay ORG [--min-score N] [--tier critical|high|medium|low] [--json]`
-
-**Dependency:** Cult Grader must compute and emit decay scores before this table has data.
+`get_key_journeys(conn, org_id, limit=5)` in `db/journey.py` returns the N most event-rich entity journeys for an org. Scores by total event count (tag history + actions + outcomes), calls `get_entity_journey()` for each. Exposed as `sable-platform journey top --org ORG [--limit N] [--json]`. This is the primary feed for SableWeb's `key_journeys` field.
 
 ## Cost & Budget Tracking
 
-`db/cost.py` tracks AI API spend per org against a weekly rolling cap.
-
-- `log_cost(conn, org_id, call_type, cost_usd, ...)` — call after every external AI API invocation. Records to the `cost_events` table.
-- `check_budget(conn, org_id)` — raises `SableError(BUDGET_EXCEEDED)` if 7-day rolling spend ≥ cap. Call this before LLM steps.
-- Default cap: **$5.00/week per org.** Override via `orgs.config_json["max_ai_usd_per_org_per_week"]` or `platform.cost_caps.max_ai_usd_per_org_per_week` in `~/.sable/config.yaml`.
-- At 90% of cap, a WARNING is logged but execution continues.
-- `BUDGET_EXCEEDED` is a hard stop — the workflow step fails and does not resume without manual budget adjustment or cap increase.
-
-Builtin workflows do not currently call `check_budget()` automatically. Cost responsibility lives
-with the subprocess adapter that makes the LLM call. Any new workflow step that invokes an
-external AI API must call `check_budget()` first.
+`check_budget()` raises `BUDGET_EXCEEDED` if 7-day rolling spend >= cap ($5/week default, configurable per org). Builtin workflows don't call it automatically — cost responsibility is on the subprocess adapter making the LLM call.

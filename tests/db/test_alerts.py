@@ -125,15 +125,15 @@ class TestCreateAlert:
                             org_id=org_id, dedup_key="stale:org1")
         assert aid2 is None
 
-    def test_dedup_allows_after_acknowledge(self, org_db):
-        """Acknowledged alert should not block new alert with same dedup_key."""
+    def test_dedup_blocks_after_acknowledge(self, org_db):
+        """Acknowledged alert still blocks new alert with same dedup_key."""
         conn, org_id = org_db
         aid1 = create_alert(conn, "stale_tracking", "warning", "A",
                             org_id=org_id, dedup_key="stale:org1")
         acknowledge_alert(conn, aid1, "op")
         aid2 = create_alert(conn, "stale_tracking", "warning", "B",
                             org_id=org_id, dedup_key="stale:org1")
-        assert aid2 is not None
+        assert aid2 is None
 
     def test_dedup_allows_after_resolve(self, org_db):
         conn, org_id = org_db

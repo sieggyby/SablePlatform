@@ -1,0 +1,74 @@
+{
+  "properties": {
+    "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+    },
+    "org_id": {
+      "title": "Org Id",
+      "type": "string"
+    },
+    "display_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Display Name"
+    },
+    "status": {
+      "default": "candidate",
+      "enum": [
+        "candidate",
+        "confirmed",
+        "archived"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "source": {
+      "default": "auto",
+      "title": "Source",
+      "type": "string"
+    },
+    "config_json": {
+      "default": "{}",
+      "title": "Config Json",
+      "type": "string"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    }
+  },
+  "required": [
+    "entity_id",
+    "org_id"
+  ],
+  "title": "Entity",
+  "type": "object"
+}

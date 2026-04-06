@@ -22,7 +22,7 @@ This repo is the backbone for the Sable tool stack. It owns `sable.db`, all DB m
 | External dependencies | No direct external API calls. Subprocess adapters shell out to Cult Grader, SableTracking, and Slopper — each of which may call Anthropic, SocialData, or Replicate |
 | Architecture | Synchronous workflow engine with deterministic step execution, retry, skip_if, and resume. All state persisted in SQLite (`sable.db`). Migrations are append-only and versioned |
 | Reliability risk | Workflow partial failure leaves steps in `running` or `pending` state; resume must correctly identify the restart point. Migration version drift causes schema mismatches across the suite |
-| Auth surface | No API keys owned by this repo. Subprocess adapters inherit environment from the caller — env vars are the other repos' concern |
+| Auth surface | HTTP `/health` endpoint requires `SABLE_HEALTH_TOKEN` Bearer token. CLI requires `SABLE_OPERATOR_ID` (exits 1 if unset, except `init`). No API keys owned by this repo. Subprocess adapters inherit env from caller. |
 | Output formats | SQLite rows, CLI table output (fixed-width), Pydantic JSON contracts passed between suite repos |
 | Deployment | Local CLI + in-process library. `sable.db` at `~/.sable/sable.db` or `$SABLE_DB_PATH` |
 | Cost sensitivity | No direct API cost. Subprocess adapter calls may trigger spend in downstream repos — flag unbounded adapter call loops |
@@ -88,7 +88,8 @@ If no issues exist at a given level, state that and move on.
 
 ## Security baseline
 - No API keys are owned by this repo.
-- `SABLE_DB_PATH` points to a local file (not a credential). `SABLE_TELEGRAM_BOT_TOKEN` is a bot credential — must not be logged, committed, or surfaced in subprocess output.
+- `SABLE_HEALTH_TOKEN` is a bearer secret — must not be logged, committed, or surfaced in error output. `SABLE_TELEGRAM_BOT_TOKEN` is a bot credential with the same constraint.
+- `SABLE_DB_PATH` points to a local file (not a credential).
 - DB path must not appear in committed test fixtures or hardcoded strings.
 - Subprocess adapter calls must not log or surface credentials from the calling environment.
 - Generated files (reports, artifacts) must not interpolate env vars.
@@ -104,7 +105,7 @@ If no issues exist at a given level, state that and move on.
 ---
 
 ## Repo-specific context
-- `sable_platform/db/connection.py` owns the migration list (`_MIGRATIONS`). If a new SQL file is added without a corresponding entry here, it will never be applied.
+- `sable_platform/db/connection.py` owns the migration list (`_MIGRATIONS`) — currently 29 migrations (001–029). If a new SQL file is added without a corresponding entry here, it will never be applied.
 - `sable_platform/workflows/registry.py` auto-registers builtins via import side effects. A new builtin workflow that is not imported in `_auto_register()` will never appear in `sable-platform workflow list`.
 - `entity_tag_history` writes in `sable_platform/db/tags.py` are wrapped in try/except to handle pre-migration-008 databases. This is intentional — do not remove the guard.
 - `diagnostic_runs.run_id` is INTEGER (auto-increment), not TEXT. `diagnostic_deltas` uses plain `INTEGER NOT NULL` for `run_id_before/run_id_after` (no FK constraint) to avoid type mismatch.

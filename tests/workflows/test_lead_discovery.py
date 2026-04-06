@@ -37,12 +37,12 @@ def test_lead_discovery_happy_path(tmp_path, monkeypatch, wf_db):
 
     monkeypatch.setenv("SABLE_LEAD_IDENTIFIER_PATH", str(repo_dir))
 
-    mock_result = MagicMock()
-    mock_result.returncode = 0
-    mock_result.stdout = ""
-    mock_result.stderr = ""
+    mock_proc = MagicMock()
+    mock_proc.communicate.return_value = ("", "")
+    mock_proc.returncode = 0
+    mock_proc.pid = 12345
 
-    with patch("subprocess.run", return_value=mock_result):
+    with patch("subprocess.Popen", return_value=mock_proc):
         runner = WorkflowRunner(LEAD_DISCOVERY)
         run_id = runner.run("wf_org", {}, conn=wf_db)
 

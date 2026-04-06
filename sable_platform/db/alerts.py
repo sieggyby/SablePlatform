@@ -77,7 +77,7 @@ def create_alert(
     """Create an alert. Returns alert_id, or None if dedup_key blocks it."""
     if dedup_key:
         existing = conn.execute(
-            "SELECT alert_id FROM alerts WHERE dedup_key=? AND status='new'",
+            "SELECT alert_id FROM alerts WHERE dedup_key=? AND status IN ('new', 'acknowledged')",
             (dedup_key,),
         ).fetchone()
         if existing:

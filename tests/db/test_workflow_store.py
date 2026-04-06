@@ -393,6 +393,7 @@ class TestGetLatestRun:
     def test_returns_latest(self, org_db):
         conn, org_id = org_db
         rid1 = _make_run(conn, org_id, name="wf")
+        complete_workflow_run(conn, rid1)
         rid2 = _make_run(conn, org_id, name="wf")
         # Force ordering
         conn.execute(

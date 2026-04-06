@@ -15,7 +15,7 @@ def _make_entity(conn, org_id, display_name="Test Person"):
     conn.execute(
         """
         INSERT INTO entities (entity_id, org_id, display_name, source, status)
-        VALUES (?, ?, ?, 'cult_doctor', 'provisional')
+        VALUES (?, ?, ?, 'cult_doctor', 'confirmed')
         """,
         (entity_id, org_id, display_name),
     )
@@ -131,7 +131,7 @@ def test_first_seen_list_filter_source(org_db):
     conn, org_id = org_db
     # Insert entities with different sources
     conn.execute(
-        "INSERT INTO entities (entity_id, org_id, display_name, source, status) VALUES (?, ?, 'A', 'cult_doctor', 'provisional')",
+        "INSERT INTO entities (entity_id, org_id, display_name, source, status) VALUES (?, ?, 'A', 'cult_doctor', 'confirmed')",
         (uuid.uuid4().hex, org_id),
     )
     conn.execute(

@@ -1,0 +1,20 @@
+{
+  "run_meta": {
+    "run_id": "cg_run_001",
+    "run_date": "2026-04-01",
+    "overall_grade": "B+",
+    "sable_verdict": "worth_pursuing",
+    "fit_score": 78,
+    "recommended_action": "pursue",
+    "total_cost_usd": 0.42,
+    "research_mode": "standard"
+  },
+  "diagnostic": {
+    "project_id": "test_project",
+    "community_health": 0.72,
+    "language_signal": 0.65,
+    "growth_trajectory": 0.58,
+    "engagement_quality": 0.80,
+    "sable_fit": 0.74
+  }
+}
