@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
 
 from sable_platform.db.alerts import list_alerts
 from sable_platform.workflows.alert_checks import _check_bridge_decay
@@ -29,8 +28,7 @@ def _insert_decay(conn, org_id, entity_id, score, tier="high"):
     conn.commit()
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_bridge_decay_fires_critical(mock_deliver, org_db):
+def test_bridge_decay_fires_critical(org_db):
     conn, org_id = org_db
     _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.7)
@@ -42,8 +40,7 @@ def test_bridge_decay_fires_critical(mock_deliver, org_db):
     assert any(r["alert_type"] == "bridge_decay" and r["severity"] == "critical" for r in rows)
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_low_centrality_no_alert(mock_deliver, org_db):
+def test_low_centrality_no_alert(org_db):
     conn, org_id = org_db
     _insert_centrality(conn, org_id, "alice", degree=0.1)
     _insert_decay(conn, org_id, "alice", 0.8)
@@ -52,8 +49,7 @@ def test_low_centrality_no_alert(mock_deliver, org_db):
     assert len(alerts) == 0
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_low_decay_no_alert(mock_deliver, org_db):
+def test_low_decay_no_alert(org_db):
     conn, org_id = org_db
     _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.3)
@@ -62,8 +58,7 @@ def test_low_decay_no_alert(mock_deliver, org_db):
     assert len(alerts) == 0
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
+def test_cooldown_suppresses_duplicate(org_db):
     conn, org_id = org_db
     _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.7)
@@ -75,8 +70,7 @@ def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
     assert len(alerts2) == 0
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_config_override_thresholds(mock_deliver, org_db):
+def test_config_override_thresholds(org_db):
     conn, org_id = org_db
     _insert_centrality(conn, org_id, "alice", degree=0.2)
     _insert_decay(conn, org_id, "alice", 0.5)
@@ -96,9 +90,7 @@ def test_config_override_thresholds(mock_deliver, org_db):
     assert len(alerts) == 1
 
 
-@patch("sable_platform.workflows.alert_delivery._send_telegram")
-@patch("sable_platform.workflows.alert_delivery._send_discord")
-def test_bridge_decay_in_evaluate_alerts(mock_discord, mock_telegram, org_db):
+def test_bridge_decay_in_evaluate_alerts(org_db):
     conn, org_id = org_db
     _insert_centrality(conn, org_id, "alice", degree=0.5)
     _insert_decay(conn, org_id, "alice", 0.7)

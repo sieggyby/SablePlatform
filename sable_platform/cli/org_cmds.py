@@ -137,7 +137,19 @@ def org_config_set(org_id: str, key: str, value: str) -> None:
     _NUMERIC_KEYS = {"max_ai_usd_per_org_per_week", "tracking_stale_days",
                      "discord_pulse_stale_days", "stuck_run_threshold_hours",
                      "decay_warning_threshold", "decay_critical_threshold",
-                     "bridge_centrality_threshold", "bridge_decay_threshold"}
+                     "bridge_centrality_threshold", "bridge_decay_threshold",
+                     "discord_pulse_regression_threshold"}
+    _NUMERIC_RANGES: dict[str, tuple[float, float]] = {
+        "tracking_stale_days": (1, 365),
+        "discord_pulse_stale_days": (1, 365),
+        "stuck_run_threshold_hours": (0.5, 168),
+        "decay_warning_threshold": (0.0, 1.0),
+        "decay_critical_threshold": (0.0, 1.0),
+        "bridge_centrality_threshold": (0.0, 1.0),
+        "bridge_decay_threshold": (0.0, 1.0),
+        "discord_pulse_regression_threshold": (0.0, 1.0),
+        "max_ai_usd_per_org_per_week": (0.0, 10000.0),
+    }
     parsed_value: str | float = value
     if key in _NUMERIC_KEYS:
         try:
@@ -145,6 +157,14 @@ def org_config_set(org_id: str, key: str, value: str) -> None:
         except ValueError:
             click.echo(f"Key '{key}' expects a numeric value.", err=True)
             sys.exit(1)
+        if key in _NUMERIC_RANGES:
+            lo, hi = _NUMERIC_RANGES[key]
+            if not (lo <= parsed_value <= hi):
+                click.echo(
+                    f"Value {parsed_value} out of range for '{key}' "
+                    f"(must be {lo}–{hi}).", err=True,
+                )
+                sys.exit(1)
 
     conn = get_db()
     try:

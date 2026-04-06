@@ -279,7 +279,9 @@ def _register_actions(ctx) -> StepResult:
 def _evaluate_alerts(ctx) -> StepResult:
     """Run alert evaluation for this org."""
     from sable_platform.workflows.alert_evaluator import evaluate_alerts
+    from sable_platform.workflows.alert_delivery import deliver_alerts_by_ids
     alert_ids = evaluate_alerts(ctx.db, org_id=ctx.org_id)
+    deliver_alerts_by_ids(ctx.db, alert_ids)
     return StepResult("completed", {"alerts_created": len(alert_ids), "alert_ids": alert_ids})
 
 

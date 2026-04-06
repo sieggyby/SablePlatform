@@ -1,16 +1,13 @@
 """Tests for _check_watchlist_changes alert check."""
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from sable_platform.db.alerts import list_alerts
 from sable_platform.db.watchlist import add_to_watchlist, take_all_snapshots
 from sable_platform.workflows.alert_checks import _check_watchlist_changes
 from sable_platform.workflows.alert_evaluator import evaluate_alerts
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_watchlist_change_fires_warning(mock_deliver, org_db):
+def test_watchlist_change_fires_warning(org_db):
     conn, org_id = org_db
     add_to_watchlist(conn, org_id, "alice", "op")
 
@@ -29,8 +26,7 @@ def test_watchlist_change_fires_warning(mock_deliver, org_db):
     assert any(r["alert_type"] == "watchlist_change" and r["severity"] == "warning" for r in rows)
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_large_decay_shift_fires_critical(mock_deliver, org_db):
+def test_large_decay_shift_fires_critical(org_db):
     conn, org_id = org_db
 
     # Insert initial decay score before watching
@@ -56,8 +52,7 @@ def test_large_decay_shift_fires_critical(mock_deliver, org_db):
     assert any(r["alert_type"] == "watchlist_change" and r["severity"] == "critical" for r in rows)
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_no_changes_no_alert(mock_deliver, org_db):
+def test_no_changes_no_alert(org_db):
     conn, org_id = org_db
     add_to_watchlist(conn, org_id, "alice", "op")
 
@@ -68,8 +63,7 @@ def test_no_changes_no_alert(mock_deliver, org_db):
     assert len(alerts) == 0
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
+def test_cooldown_suppresses_duplicate(org_db):
     conn, org_id = org_db
     add_to_watchlist(conn, org_id, "alice", "op")
 
@@ -94,9 +88,7 @@ def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
     assert len(alerts2) == 0  # dedup blocks
 
 
-@patch("sable_platform.workflows.alert_delivery._send_telegram")
-@patch("sable_platform.workflows.alert_delivery._send_discord")
-def test_watchlist_in_evaluate_alerts(mock_discord, mock_telegram, org_db):
+def test_watchlist_in_evaluate_alerts(org_db):
     conn, org_id = org_db
     add_to_watchlist(conn, org_id, "alice", "op")
 

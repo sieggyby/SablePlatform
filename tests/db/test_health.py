@@ -22,7 +22,7 @@ def test_health_check_fresh_db(health_db):
     """Health check on a fresh DB returns ok with current migration version."""
     result = check_db_health(health_db)
     assert result["ok"] is True
-    assert result["migration_version"] == 29
+    assert result["migration_version"] == 30
     assert result["org_count"] == 0
     assert result["latest_diagnostic_run"] is None
 

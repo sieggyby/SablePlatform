@@ -353,19 +353,22 @@ def test_recent_workflow_failure_does_alert(org_db):
 
 def test_telegram_delivery_called_when_configured(org_db):
     """urlopen is called when telegram_chat_id is configured and token present."""
+    from sable_platform.workflows.alert_delivery import deliver_alerts_by_ids
+
     conn, org_id = org_db
     upsert_alert_config(conn, org_id, telegram_chat_id="123456789")
 
-    # Insert a stale sync so _deliver is triggered
+    # Insert a stale sync so alerts are created
     conn.execute(
         "INSERT INTO sync_runs (org_id, sync_type, status, completed_at) VALUES (?, 'sable_tracking', 'completed', ?)",
         (org_id, _ts(18)),
     )
     conn.commit()
 
+    alert_ids = evaluate_alerts(conn, org_id=org_id)
     with patch("sable_platform.workflows.alert_delivery.os.environ.get", return_value="fake-token"):
         with patch("urllib.request.urlopen") as mock_urlopen:
-            evaluate_alerts(conn, org_id=org_id)
+            deliver_alerts_by_ids(conn, alert_ids)
             assert mock_urlopen.called
 
 

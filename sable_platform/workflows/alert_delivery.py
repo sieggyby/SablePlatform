@@ -13,6 +13,32 @@ from sable_platform.db.alerts import get_last_delivered_at, mark_delivered, mark
 log = logging.getLogger(__name__)
 
 
+def deliver_alerts_by_ids(
+    conn: sqlite3.Connection,
+    alert_ids: list[str],
+) -> None:
+    """Deliver alerts by their IDs. Call AFTER committing alert rows.
+
+    Reads each alert from the DB and dispatches via _deliver().
+    Delivery failures are logged but never propagated.
+    """
+    for alert_id in alert_ids:
+        try:
+            row = conn.execute(
+                "SELECT org_id, severity, title, dedup_key FROM alerts WHERE alert_id=?",
+                (alert_id,),
+            ).fetchone()
+            if not row:
+                continue
+            sev = row["severity"]
+            org = row["org_id"]
+            title = row["title"]
+            msg = f"[{sev.upper()}] [{org}] {title}" if org else f"[{sev.upper()}] {title}"
+            _deliver(conn, org, sev, msg, dedup_key=row["dedup_key"])
+        except Exception as exc:
+            log.warning("deliver_alerts_by_ids: failed for alert %s: %s", alert_id, exc)
+
+
 def _deliver(
     conn: sqlite3.Connection,
     org_id: str | None,

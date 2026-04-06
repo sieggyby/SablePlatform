@@ -27,7 +27,7 @@ sable_platform/
 ├── db/
 │   ├── connection.py       get_db(), ensure_schema() — importlib.resources migrations
 │   ├── backup.py           SQLite online backup — WAL-safe, atomic, pruning
-│   ├── migrations/         001–029 SQL files
+│   ├── migrations/         001–030 SQL files
 │   ├── entities.py         Entity CRUD + entity_notes
 │   ├── tags.py             Tag management (replace-current vs append semantics)
 │   ├── merge.py            Merge candidates + 9-step atomic merge
@@ -51,7 +51,7 @@ sable_platform/
 │   ├── registry.py         register() / get() / list_all()
 │   ├── alert_evaluator.py  evaluate_alerts() — thin orchestrator, per-org isolation
 │   ├── alert_checks.py     12 _check_* condition functions
-│   ├── alert_delivery.py   _deliver() + _send_telegram() + _send_discord() — cooldown-gated
+│   ├── alert_delivery.py   deliver_alerts_by_ids() + _deliver() + _send_telegram() + _send_discord()
 │   └── builtins/
 │       ├── prospect_diagnostic_sync.py   Workflow 1
 │       ├── weekly_client_loop.py         Workflow 2
@@ -85,18 +85,18 @@ sable_platform/
 
 ## DB schema ownership
 
-`sable_platform` owns `get_db()` and all 29 migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location.
+`sable_platform` owns `get_db()` and all 30 migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location. `get_db()` sets `PRAGMA busy_timeout=5000` for concurrent access reliability.
 
 **Three separate SQLite databases exist in the suite — only sable.db is owned here:**
 - `~/.sable/sable.db` — platform cross-tool store (owned by SablePlatform)
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
-**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 29**.
+**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 30**.
 
 ## Workflow engine design
 
-The engine is **synchronous and blocking**. No threading, no asyncio.
+The engine is **synchronous and blocking**. Threading is used only for per-step timeouts.
 
 ```
 WorkflowDefinition
@@ -106,8 +106,9 @@ StepDefinition
   name: str
   fn: Callable[[StepContext], StepResult]
   max_retries: int = 1
-  retry_delay_seconds: int = 5
+  retry_delay_seconds: float = 0.0
   skip_if: Callable[[StepContext], bool] | None
+  timeout_seconds: int | None     # None = no timeout
 
 StepContext
   run_id, step_id, org_id, step_name, step_index

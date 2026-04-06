@@ -62,6 +62,15 @@ class TestGetDb:
         finally:
             conn.close()
 
+    def test_busy_timeout_set(self, tmp_path):
+        db_path = tmp_path / "bt.db"
+        conn = get_db(db_path)
+        try:
+            bt = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            assert bt == 5000
+        finally:
+            conn.close()
+
     def test_creates_parent_dirs(self, tmp_path):
         db_path = tmp_path / "deep" / "nested" / "test.db"
         conn = get_db(db_path)
@@ -84,7 +93,7 @@ class TestEnsureSchema:
 
     def test_applies_all_migrations(self, in_memory_db):
         row = in_memory_db.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 29
+        assert row[0] == 30
 
     def test_tables_exist(self, in_memory_db):
         """Spot-check that key tables were created."""
@@ -99,3 +108,13 @@ class TestEnsureSchema:
             "workflow_runs", "workflow_steps", "audit_log",
         }
         assert expected.issubset(tables)
+
+    def test_performance_indexes_exist(self, in_memory_db):
+        """Migration 030 creates performance indexes."""
+        indexes = {
+            r[0] for r in in_memory_db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        assert "idx_entity_tags_current" in indexes
+        assert "idx_cost_events_org_date" in indexes

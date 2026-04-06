@@ -72,9 +72,13 @@ def alerts_acknowledge(alert_id: str, operator: str) -> None:
 @click.option("--org", default=None, help="Org ID (omit to sweep all)")
 def alerts_evaluate(org: str | None) -> None:
     """Run alert evaluation for an org (or all orgs)."""
+    from sable_platform.workflows.alert_delivery import deliver_alerts_by_ids
+
     conn = get_db()
     try:
         alert_ids = evaluate_alerts(conn, org_id=org)
+        # Deliver after alert rows are committed (evaluate_alerts commits heartbeat)
+        deliver_alerts_by_ids(conn, alert_ids)
         if alert_ids:
             click.echo(f"Created {len(alert_ids)} alert(s):")
             for aid in alert_ids:

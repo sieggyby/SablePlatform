@@ -39,8 +39,7 @@ def _insert_decay_score(conn, org_id, entity_id, score, tier):
 # --- Fire cases ---
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_warning_fires_for_high_score(mock_deliver, org_db):
+def test_warning_fires_for_high_score(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _insert_decay_score(conn, org_id, eid, 0.65, "high")
@@ -52,8 +51,7 @@ def test_warning_fires_for_high_score(mock_deliver, org_db):
     assert any(r["alert_type"] == "member_decay" and r["severity"] == "warning" for r in rows)
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_critical_fires_for_high_score_with_important_tag(mock_deliver, org_db):
+def test_critical_fires_for_high_score_with_important_tag(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _add_tag(conn, eid, "cultist_candidate")
@@ -66,8 +64,7 @@ def test_critical_fires_for_high_score_with_important_tag(mock_deliver, org_db):
     assert any(r["alert_type"] == "member_decay" and r["severity"] == "critical" for r in rows)
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_high_score_without_tag_stays_warning(mock_deliver, org_db):
+def test_high_score_without_tag_stays_warning(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     # No tag added — score is high but no structural importance
@@ -83,8 +80,7 @@ def test_high_score_without_tag_stays_warning(mock_deliver, org_db):
 # --- No-fire cases ---
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_below_threshold_no_alert(mock_deliver, org_db):
+def test_below_threshold_no_alert(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _insert_decay_score(conn, org_id, eid, 0.4, "medium")
@@ -93,8 +89,7 @@ def test_below_threshold_no_alert(mock_deliver, org_db):
     assert len(alerts) == 0
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_no_decay_scores_no_alert(mock_deliver, org_db):
+def test_no_decay_scores_no_alert(org_db):
     conn, org_id = org_db
     alerts = _check_member_decay(conn, org_id)
     assert len(alerts) == 0
@@ -103,8 +98,7 @@ def test_no_decay_scores_no_alert(mock_deliver, org_db):
 # --- Cooldown suppression ---
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
+def test_cooldown_suppresses_duplicate(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _insert_decay_score(conn, org_id, eid, 0.7, "high")
@@ -120,8 +114,7 @@ def test_cooldown_suppresses_duplicate(mock_deliver, org_db):
 # --- Config override ---
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_config_override_threshold(mock_deliver, org_db):
+def test_config_override_threshold(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _insert_decay_score(conn, org_id, eid, 0.5, "medium")
@@ -144,9 +137,7 @@ def test_config_override_threshold(mock_deliver, org_db):
 # --- Integration with evaluate_alerts ---
 
 
-@patch("sable_platform.workflows.alert_delivery._send_telegram")
-@patch("sable_platform.workflows.alert_delivery._send_discord")
-def test_member_decay_in_evaluate_alerts(mock_discord, mock_telegram, org_db):
+def test_member_decay_in_evaluate_alerts(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _insert_decay_score(conn, org_id, eid, 0.7, "high")
@@ -162,8 +153,7 @@ def test_member_decay_in_evaluate_alerts(mock_discord, mock_telegram, org_db):
 # --- QA-requested: cross-org dedup isolation ---
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_member_decay_dedup_does_not_cross_orgs(mock_deliver, in_memory_db):
+def test_member_decay_dedup_does_not_cross_orgs(in_memory_db):
     conn = in_memory_db
     conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('org_a', 'A', 'active')")
     conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('org_b', 'B', 'active')")
@@ -182,8 +172,7 @@ def test_member_decay_dedup_does_not_cross_orgs(mock_deliver, in_memory_db):
 # --- QA-requested: config override critical threshold ---
 
 
-@patch("sable_platform.workflows.alert_checks._deliver")
-def test_config_override_critical_threshold(mock_deliver, org_db):
+def test_config_override_critical_threshold(org_db):
     conn, org_id = org_db
     eid = _make_entity(conn, org_id)
     _add_tag(conn, eid, "voice")

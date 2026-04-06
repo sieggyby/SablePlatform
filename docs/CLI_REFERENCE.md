@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. All commands operate on `s
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 29 migrations
+sable-platform init                      # Create sable.db + apply all 30 migrations
 sable-platform init --db-path /alt/path  # Use non-default DB location
 ```
 
@@ -92,7 +92,7 @@ sable-platform org config list --json
 
 **Valid stages:** `pre_launch`, `launch`, `growth`, `mature`, `declining`
 
-All other keys (cost caps, alert thresholds) pass through without validation. Numeric threshold keys are coerced to `float`. See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full list of supported threshold keys.
+Numeric threshold keys are coerced to `float` and validated against min/max bounds. Out-of-range values are rejected. See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full list of supported threshold keys and their ranges.
 
 ---
 
@@ -361,7 +361,7 @@ sable-platform health-server             # Listen on :8765 (default)
 sable-platform health-server --port 9000 # Custom port
 ```
 
-Response body: `{"ok": true, "migration_version": 29, "org_count": 2, "last_alert_eval_age_hours": 1.2, "alert_eval_stale": false, ...}`
+Response body: `{"ok": true, "migration_version": 30, "org_count": 2, "last_alert_eval_age_hours": 1.2, "alert_eval_stale": false, ...}`
 
 Returns HTTP 200 on success, HTTP 404 for any path other than `/health`.
 

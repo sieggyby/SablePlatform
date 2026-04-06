@@ -8,9 +8,11 @@ from sable_platform.workflows import registry
 def _evaluate_all_orgs(ctx) -> StepResult:
     """Run alert evaluation for all active orgs (or the configured org_id)."""
     from sable_platform.workflows.alert_evaluator import evaluate_alerts
+    from sable_platform.workflows.alert_delivery import deliver_alerts_by_ids
 
     sweep_org_id = ctx.config.get("org_id")
     alert_ids = evaluate_alerts(ctx.db, org_id=sweep_org_id)
+    deliver_alerts_by_ids(ctx.db, alert_ids)
     return StepResult(
         "completed",
         {"alerts_created": len(alert_ids), "alert_ids": alert_ids},

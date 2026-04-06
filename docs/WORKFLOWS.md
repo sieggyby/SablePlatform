@@ -164,9 +164,9 @@ sable-platform workflow events <run_id>
 
 **Key details:**
 - Runs 12 `_check_*` functions covering: tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes.
-- Each check writes an alert row; delivery is gated by per-`dedup_key` cooldown (`cooldown_hours`, default 4).
+- Each check writes alert rows only — no HTTP delivery during evaluation.
+- After evaluation, `deliver_alerts_by_ids()` dispatches notifications. Delivery is gated by per-`dedup_key` cooldown (`cooldown_hours`, default 4).
 - Delivery channels: Telegram (`SABLE_TELEGRAM_BOT_TOKEN` + org `telegram_chat_id`) and Discord (webhook).
-- Alert DB records are always written; only external HTTP delivery is suppressed during cooldown.
 
 **CLI:**
 ```bash

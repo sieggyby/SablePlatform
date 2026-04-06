@@ -9,8 +9,6 @@ from sable_platform.db.alerts import create_alert
 from sable_platform.db.centrality import BRIDGE_CENTRALITY_THRESHOLD, BRIDGE_DECAY_THRESHOLD
 from sable_platform.db.decay import DECAY_WARNING_THRESHOLD, DECAY_CRITICAL_THRESHOLD
 from sable_platform.db.watchlist import take_all_snapshots, get_watchlist_changes
-from sable_platform.workflows.alert_delivery import _deliver
-
 log = logging.getLogger(__name__)
 
 TRACKING_STALE_DAYS = 14
@@ -67,8 +65,6 @@ def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
         dedup_key=dedup_key,
     )
     if alert_id:
-        _deliver(conn, org_id, "critical", f"[CRITICAL] Tracking stale for {org_id}: {age_str}",
-                 dedup_key=dedup_key)
         return [alert_id]
     return []
 
@@ -108,8 +104,6 @@ def _check_cultist_tag_expiring(conn: sqlite3.Connection, org_id: str) -> list[s
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "warning", f"[WARNING] cultist_candidate expiring for entity {entity_id[:8]}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -144,8 +138,6 @@ def _check_sentiment_shift(conn: sqlite3.Connection, org_id: str) -> list[str]:
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "warning", f"[WARNING] Sentiment spike for {org_id}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -181,8 +173,6 @@ def _check_mvl_score_change(conn: sqlite3.Connection, org_id: str) -> list[str]:
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "info", f"[INFO] MVL score change for {org_id}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -217,8 +207,6 @@ def _check_actions_unclaimed(conn: sqlite3.Connection, org_id: str) -> list[str]
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "info", f"[INFO] Unclaimed action for {org_id}: {r['action_id'][:8]}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -253,9 +241,6 @@ def _check_workflow_failures(
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, r["org_id"], "critical",
-                     f"[CRITICAL] Workflow {r['workflow_name']} failed ({r['run_id'][:12]})",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -297,9 +282,6 @@ def _check_discord_pulse_regression(conn: sqlite3.Connection, org_id: str) -> li
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "warning",
-                     f"[WARNING] Discord retention drop for {org_id}/{r['project_slug']} on {r['run_date']}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -356,8 +338,6 @@ def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[st
         dedup_key=dedup_key,
     )
     if alert_id:
-        _deliver(conn, org_id, "warning", f"[WARNING] Discord pulse stale for {org_id}: {age_str}",
-                 dedup_key=dedup_key)
         return [alert_id]
     return []
 
@@ -403,9 +383,6 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "warning",
-                     f"[WARNING] Stuck workflow run {r['workflow_name']} ({r['run_id'][:12]})",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -486,10 +463,6 @@ def _check_member_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
             dedup_key=dedup_key,
         )
         if alert_id:
-            label = "CRITICAL" if severity == "critical" else "WARNING"
-            _deliver(conn, org_id, severity,
-                     f"[{label}] Member decay for {org_id}: {entity_id[:16]} score={score:.2f}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -537,9 +510,6 @@ def _check_bridge_decay(conn: sqlite3.Connection, org_id: str) -> list[str]:
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "critical",
-                     f"[CRITICAL] Bridge node decay for {org_id}: {entity_id[:16]}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 
@@ -588,9 +558,5 @@ def _check_watchlist_changes(conn: sqlite3.Connection, org_id: str) -> list[str]
             dedup_key=dedup_key,
         )
         if alert_id:
-            label = "CRITICAL" if severity == "critical" else "WARNING"
-            _deliver(conn, org_id, severity,
-                     f"[{label}] Watchlist change for {org_id}: {entity_id[:16]}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created

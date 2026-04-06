@@ -39,6 +39,7 @@ _MIGRATIONS = [
     ("027_workflow_active_lock.sql", 27),
     ("028_platform_meta.sql", 28),
     ("029_prospect_score_fields.sql", 29),
+    ("030_performance_indexes.sql", 30),
 ]
 
 
@@ -61,6 +62,7 @@ def get_db(db_path: str | Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA busy_timeout=5000")
     ensure_schema(conn)
     return conn
 

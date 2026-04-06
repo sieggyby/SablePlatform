@@ -723,3 +723,74 @@ def test_retry_delay_is_applied(wf_db):
             runner.run("wf_org", {}, conn=wf_db)
 
     mock_sleep.assert_called_once_with(0.1)
+
+
+# ---------------------------------------------------------------------------
+# Step timeout
+# ---------------------------------------------------------------------------
+
+def test_step_timeout_marks_step_failed(wf_db):
+    """A step exceeding timeout_seconds is marked failed with error='step_timeout'."""
+    import time as _time
+
+    def slow_step(ctx):
+        _time.sleep(5)  # longer than timeout
+        return StepResult("completed", {})
+
+    defn = WorkflowDefinition(
+        name="timeout_test", version="1.0",
+        steps=[
+            StepDefinition(name="slow", fn=slow_step, max_retries=0, timeout_seconds=1),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+
+    with pytest.raises(SableError) as exc_info:
+        runner.run("wf_org", {}, conn=wf_db)
+
+    assert "step_timeout" in str(exc_info.value)
+
+    step = wf_db.execute(
+        "SELECT error FROM workflow_steps WHERE step_name='slow'"
+    ).fetchone()
+    assert step["error"] == "step_timeout"
+
+
+def test_step_without_timeout_runs_normally(wf_db):
+    """A step with timeout_seconds=None runs without timeout enforcement."""
+    defn = WorkflowDefinition(
+        name="no_timeout_test", version="1.0",
+        steps=[
+            StepDefinition(
+                name="normal",
+                fn=lambda ctx: StepResult("completed", {"done": True}),
+                max_retries=0,
+                timeout_seconds=None,
+            ),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"
+
+
+def test_step_completes_within_timeout(wf_db):
+    """A step finishing within timeout_seconds succeeds normally."""
+    defn = WorkflowDefinition(
+        name="fast_timeout_test", version="1.0",
+        steps=[
+            StepDefinition(
+                name="fast",
+                fn=lambda ctx: StepResult("completed", {"fast": True}),
+                max_retries=0,
+                timeout_seconds=10,
+            ),
+        ],
+    )
+    runner = WorkflowRunner(defn)
+    run_id = runner.run("wf_org", {}, conn=wf_db)
+
+    run = get_workflow_run(wf_db, run_id)
+    assert run["status"] == "completed"

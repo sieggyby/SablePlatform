@@ -26,6 +26,7 @@ def test_module_imports_succeed():
     assert callable(alert_evaluator.evaluate_alerts)
     assert callable(alert_checks._check_tracking_stale)
     assert callable(alert_delivery._deliver)
+    assert callable(alert_delivery.deliver_alerts_by_ids)
 
 
 def test_all_check_functions_in_checks_module():
@@ -37,6 +38,50 @@ def test_deliver_not_in_evaluator_module():
     assert not hasattr(alert_evaluator, "_deliver"), (
         "_deliver must live in alert_delivery, not alert_evaluator"
     )
+
+
+def test_checks_do_not_import_deliver():
+    """Check functions must not import _deliver — delivery is caller's responsibility."""
+    import inspect
+    source = inspect.getsource(alert_checks)
+    assert "_deliver" not in source, "alert_checks must not reference _deliver"
+
+
+def test_deliver_alerts_by_ids_skips_missing():
+    """deliver_alerts_by_ids silently skips nonexistent alert IDs."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(conn)
+
+    # Should not raise
+    alert_delivery.deliver_alerts_by_ids(conn, ["nonexistent_id"])
+
+
+def test_deliver_alerts_by_ids_calls_deliver():
+    """deliver_alerts_by_ids reads alert rows and dispatches via _deliver."""
+    from unittest.mock import patch
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(conn)
+
+    conn.execute(
+        "INSERT INTO orgs (org_id, display_name, status) VALUES ('dtest', 'D', 'active')"
+    )
+    conn.execute(
+        "INSERT INTO sync_runs (org_id, sync_type, status, completed_at) "
+        "VALUES ('dtest', 'sable_tracking', 'completed', datetime('now', '-60 days'))"
+    )
+    conn.commit()
+
+    alert_ids = alert_evaluator.evaluate_alerts(conn, org_id="dtest")
+    assert len(alert_ids) > 0
+
+    with patch.object(alert_delivery, "_deliver") as mock_deliver:
+        alert_delivery.deliver_alerts_by_ids(conn, alert_ids)
+        assert mock_deliver.call_count == len(alert_ids)
 
 
 def test_evaluate_alerts_end_to_end():

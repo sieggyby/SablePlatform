@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 
 from sable_platform.db.connection import get_db
@@ -355,6 +356,38 @@ class WorkflowRunner:
             extra={"run_id": run_id, "org_id": org_id},
         )
 
+    @staticmethod
+    def _run_with_timeout(step_def: StepDefinition, ctx: StepContext) -> StepResult:
+        """Execute step function, enforcing timeout_seconds if set."""
+        if step_def.timeout_seconds is None:
+            return step_def.fn(ctx)
+
+        result_holder: list[StepResult] = []
+        error_holder: list[Exception] = []
+
+        def _target() -> None:
+            try:
+                result_holder.append(step_def.fn(ctx))
+            except Exception as exc:
+                error_holder.append(exc)
+
+        thread = threading.Thread(target=_target, daemon=True)
+        thread.start()
+        thread.join(timeout=step_def.timeout_seconds)
+
+        if thread.is_alive():
+            # Step didn't finish in time — thread is abandoned (daemon)
+            logger.warning(
+                "Step %s timed out after %ds", step_def.name, step_def.timeout_seconds,
+                extra={"step_name": step_def.name},
+            )
+            return StepResult(status="failed", output={}, error="step_timeout")
+
+        if error_holder:
+            raise error_holder[0]
+
+        return result_holder[0]
+
     def _execute_with_retry(
         self,
         step_def: StepDefinition,
@@ -371,7 +404,7 @@ class WorkflowRunner:
                 {"step": step_def.name, "attempt": attempt},
             )
             try:
-                result = step_def.fn(ctx)
+                result = self._run_with_timeout(step_def, ctx)
                 if result.status == "completed":
                     complete_workflow_step(conn, ctx.step_id, result.output)
                     emit_workflow_event(

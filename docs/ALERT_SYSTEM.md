@@ -21,18 +21,22 @@ evaluate_alerts()
 
 Each check:
   └── create_alert()  ──► dedup gate (blocks if dedup_key in new/acknowledged)
-        │
-        └── _deliver() ──► enabled check
-                         ──► min_severity filter
-                         ──► cooldown gate (4h default, per dedup_key)
-                         ──► _send_telegram() (if configured)
-                         ──► _send_discord()  (if configured)
-                         ──► log.warning (always)
-                         ──► webhook dispatch (best-effort)
-                         ──► mark_delivered() or mark_delivery_failed()
+        └── returns alert_id (no delivery here)
+
+Caller (CLI or workflow step):
+  └── deliver_alerts_by_ids(conn, alert_ids)
+        └── for each alert_id:
+              └── _deliver() ──► enabled check
+                               ──► min_severity filter
+                               ──► cooldown gate (4h default, per dedup_key)
+                               ──► _send_telegram() (if configured)
+                               ──► _send_discord()  (if configured)
+                               ──► log.warning (always)
+                               ──► webhook dispatch (best-effort)
+                               ──► mark_delivered() or mark_delivery_failed()
 ```
 
-`evaluate_alerts()` is a **pure DB read path** — no external API calls. Each per-org block runs inside a `try/except` so one broken org does not abort evaluation for remaining orgs. The cross-org `_check_workflow_failures` block has its own isolation.
+`evaluate_alerts()` is a **pure DB path** — no external HTTP calls. Alert creation is committed before delivery begins. Each per-org block runs inside a `try/except` so one broken org does not abort evaluation for remaining orgs. The cross-org `_check_workflow_failures` block has its own isolation.
 
 ---
 
@@ -96,12 +100,16 @@ sable-platform org config set tig decay_warning_threshold 0.5
 | `decay_critical_threshold` | module default | `_check_member_decay` |
 | `bridge_centrality_threshold` | `0.3` | `_check_bridge_decay` |
 | `bridge_decay_threshold` | `0.6` | `_check_bridge_decay` |
+| `discord_pulse_regression_threshold` | `0.05` | `_check_discord_pulse_regression` |
+| `max_ai_usd_per_org_per_week` | `5.0` | Cost budget cap |
+
+**Range validation:** Numeric config keys are validated against min/max bounds on `org config set`. Out-of-range values are rejected. See `org_cmds.py` `_NUMERIC_RANGES` for bounds.
 
 ---
 
 ## Delivery Pipeline
 
-`_deliver()` is called by each check immediately after `create_alert()` returns a non-None alert_id. It runs synchronously — delivery failures do not affect alert creation.
+Alert delivery is **decoupled** from evaluation. Check functions only create alert rows — they do not call `_deliver()`. After `evaluate_alerts()` returns, the caller invokes `deliver_alerts_by_ids(conn, alert_ids)` to dispatch notifications. This ensures alert rows are committed before any HTTP calls, and delivery failures never affect alert creation.
 
 ```
 _deliver(conn, org_id, severity, message, dedup_key=...)
@@ -166,7 +174,7 @@ _deliver(conn, org_id, severity, message, dedup_key=...)
 
 ## Mute / Unmute
 
-Muting an org sets `alert_configs.enabled = 0`. All delivery (Telegram, Discord, webhooks) is suppressed. Alerts are still created in the DB — mute only affects `_deliver()`.
+Muting an org sets `alert_configs.enabled = 0`. All delivery (Telegram, Discord, webhooks) is suppressed. Alerts are still created in the DB — mute only affects `deliver_alerts_by_ids()` / `_deliver()`.
 
 ```bash
 sable-platform alerts mute tig
@@ -243,7 +251,7 @@ sable-platform alerts config show --org tig
 | File | Purpose |
 |------|---------|
 | `sable_platform/workflows/alert_evaluator.py` | `evaluate_alerts()` — thin orchestrator, per-org isolation |
-| `sable_platform/workflows/alert_checks.py` | All 12 `_check_*` condition functions |
-| `sable_platform/workflows/alert_delivery.py` | `_deliver()`, `_send_telegram()`, `_send_discord()` |
+| `sable_platform/workflows/alert_checks.py` | All 12 `_check_*` condition functions (create alerts only, no delivery) |
+| `sable_platform/workflows/alert_delivery.py` | `deliver_alerts_by_ids()`, `_deliver()`, `_send_telegram()`, `_send_discord()` |
 | `sable_platform/db/alerts.py` | `create_alert()`, `list_alerts()`, `mark_delivered()`, `mark_delivery_failed()`, `acknowledge_alert()` |
 | `sable_platform/webhooks/dispatch.py` | HMAC-SHA256 webhook dispatch called from `_deliver()` |

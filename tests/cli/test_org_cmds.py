@@ -157,3 +157,33 @@ def test_org_config_numeric_key(tmp_path, monkeypatch):
     r2 = CliRunner().invoke(org_config_get, ["numorg", "--json"])
     cfg = json.loads(r2.output)
     assert cfg["max_ai_usd_per_org_per_week"] == 7.5
+
+
+import pytest
+
+
+@pytest.mark.parametrize("key,value,should_pass", [
+    ("tracking_stale_days", "7", True),
+    ("tracking_stale_days", "0", False),      # below min 1
+    ("tracking_stale_days", "366", False),     # above max 365
+    ("discord_pulse_regression_threshold", "0.05", True),
+    ("discord_pulse_regression_threshold", "1.5", False),
+    ("decay_warning_threshold", "0.5", True),
+    ("decay_warning_threshold", "1.0", True),  # boundary inclusive
+    ("max_ai_usd_per_org_per_week", "100", True),
+    ("max_ai_usd_per_org_per_week", "10001", False),  # above max 10000
+    ("stuck_run_threshold_hours", "0.5", True),  # boundary inclusive
+    ("stuck_run_threshold_hours", "0.1", False),  # below 0.5
+])
+def test_org_config_range_validation(tmp_path, monkeypatch, key, value, should_pass):
+    """org config set rejects out-of-range numeric values."""
+    db_path = str(tmp_path / "t.db")
+    _setup_file_db(db_path)
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    CliRunner().invoke(org_create, ["rangeorg", "--name", "Range"])
+    r = CliRunner().invoke(org_config_set, ["rangeorg", key, value])
+    if should_pass:
+        assert r.exit_code == 0, f"Expected pass for {key}={value}: {r.output}"
+    else:
+        assert r.exit_code != 0, f"Expected fail for {key}={value}: {r.output}"
+        assert "out of range" in r.output

@@ -77,15 +77,16 @@ sable-platform workflow run my_workflow --org <org_id> --config '{"key": "val"}'
 |-------|---------|-------|
 | `name` | required | Must be unique within the workflow. Changing names invalidates existing run fingerprints — resumes of in-flight runs will fail unless `--ignore-version-check` is passed. |
 | `fn` | required | `Callable[[StepContext], StepResult]` |
-| `max_retries` | `3` | Set `0` for steps that must not retry (e.g., irrevocable actions). Set `1` for adapter calls. |
-| `retry_delay_seconds` | `5` | Seconds between retries. |
+| `max_retries` | `1` | Set `0` for steps that must not retry (e.g., irrevocable actions). |
+| `retry_delay_seconds` | `0` | Seconds between retries. |
 | `skip_if` | `None` | `Callable[[StepContext], bool]`. If returns `True`, step is marked `skipped` and execution continues. Do not capture mutable ctx fields in a closure — evaluate inside the lambda. |
+| `timeout_seconds` | `None` | Per-step execution timeout in seconds. If exceeded, step returns `StepResult(status="failed", error="step_timeout")`. `None` means no timeout. |
 
 ### Gotchas
 
 - **Step output accumulation**: `StepResult.output` is merged into `ctx.input_data` for all subsequent steps. Keys can shadow earlier outputs — use namespaced keys like `step_one_result` to avoid collisions.
 - **Idempotency on resume**: Steps are re-run from the first non-completed step. If a step has side effects (e.g., writes to an external system), guard with a check: `if ctx.input_data.get("already_submitted"): return StepResult("completed", {})`.
-- **Synchronous blocking**: The engine is single-threaded. Long-running steps (e.g., subprocess adapters for Cult Grader) block the process. For steps that poll external state, design them to fail fast and resume manually (see `prospect_diagnostic_sync` / `poll_diagnostic` for the pattern).
+- **Synchronous blocking**: The engine runs steps synchronously. Long-running steps (e.g., subprocess adapters for Cult Grader) block the process. Use `timeout_seconds` on `StepDefinition` to bound execution time. For steps that poll external state, design them to fail fast and resume manually (see `prospect_diagnostic_sync` / `poll_diagnostic` for the pattern).
 
 ---
 
@@ -190,12 +191,11 @@ def _check_my_condition(conn: sqlite3.Connection, org_id: str) -> list[str]:
             dedup_key=dedup_key,
         )
         if alert_id:
-            _deliver(conn, org_id, "warning",
-                     f"[WARNING] My condition for {org_id}: {r['entity_id'][:16]}",
-                     dedup_key=dedup_key)
             created.append(alert_id)
     return created
 ```
+
+**Important:** Check functions must NOT call `_deliver()`. They only create alert rows and return IDs. The caller (CLI or builtin workflow step) calls `deliver_alerts_by_ids(conn, alert_ids)` after evaluation to dispatch notifications.
 
 **Dedup key rules:**
 - Entity-scoped: `"{alert_type}:{org_id}:{entity_id}"` (3 parts)
@@ -267,18 +267,19 @@ def test_my_condition_cooldown(db_conn):
 ### 1. Create the SQL file
 
 ```
-sable_platform/db/migrations/030_my_change.sql
+sable_platform/db/migrations/031_my_change.sql
 ```
 
 Migrations must be:
 - **Append-only.** Never modify existing migrations.
 - **Idempotent.** Use `IF NOT EXISTS`, `ON CONFLICT IGNORE`, etc.
 - **Non-destructive.** No `DROP TABLE` or `DROP COLUMN` without explicit operator approval.
+- **Self-versioning.** Each migration SQL must include its own `UPDATE schema_version` statement (required because DDL auto-commits in Python sqlite3, breaking the `with conn:` context manager pattern).
 
 Example:
 
 ```sql
--- 030_my_change.sql
+-- 031_my_change.sql
 CREATE TABLE IF NOT EXISTS my_new_table (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
@@ -287,6 +288,8 @@ CREATE TABLE IF NOT EXISTS my_new_table (
 );
 
 CREATE INDEX IF NOT EXISTS idx_my_new_table_org_id ON my_new_table (org_id);
+
+UPDATE schema_version SET version = 31 WHERE version < 31;
 ```
 
 ### 2. Register it in `connection.py`
@@ -295,8 +298,8 @@ Add an entry to `_MIGRATIONS` in `sable_platform/db/connection.py`:
 
 ```python
 _MIGRATIONS = [
-    # ... existing 29 entries ...
-    ("030_my_change.sql", 30),
+    # ... existing 30 entries ...
+    ("031_my_change.sql", 31),
 ]
 ```
 
@@ -308,16 +311,12 @@ Find and update the version assertion in `tests/test_init.py`:
 
 ```python
 # Before
-assert version == 29
-# After
 assert version == 30
+# After
+assert version == 31
 ```
 
-Also update the schema head comment in `ARCHITECTURE.md` (§ DB schema ownership):
-
-```markdown
-Current schema head: **version 30**.
-```
+Also update the schema head comment in `ARCHITECTURE.md` (§ DB schema ownership).
 
 ### 4. Verify
 
@@ -327,7 +326,7 @@ sable-platform init
 
 # Check version
 sqlite3 ~/.sable/sable.db "SELECT value FROM schema_version LIMIT 1;"
-# Should print 30
+# Should print 31
 
 # Run tests
 python3 -m pytest tests/ -q

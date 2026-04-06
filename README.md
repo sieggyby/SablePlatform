@@ -6,7 +6,7 @@ SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a 
 
 ## Current scope (v0.5)
 
-- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 29 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks helpers
+- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 30 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks helpers
 - **`sable_platform.contracts`** — Lead, ProspectHandoff, DiagnosticRun, Entity, ContentItem, Artifact, SyncRun, WorkflowRun, Task, Outcome, Recommendation, TrackingMetadata
 - **`sable_platform.workflows`** — deterministic `WorkflowRunner`, registry, 5 builtin workflows, 12 alert checks, alert delivery (Telegram/Discord with cooldown)
 - **`sable_platform.adapters`** — subprocess adapters for CultGrader, SableTracking, Slopper, LeadIdentifier
@@ -72,7 +72,7 @@ sable-platform metrics              # Prometheus text format to stdout
 ```
 sable_platform/
 ├── contracts/      Canonical Pydantic models
-├── db/             DB layer + 29 migrations
+├── db/             DB layer + 30 migrations
 ├── workflows/      WorkflowRunner, registry, builtins, alert engine
 ├── adapters/       Subprocess adapters per repo
 ├── webhooks/       HMAC-SHA256 webhook dispatch
@@ -80,7 +80,7 @@ sable_platform/
 ├── metrics.py      Prometheus text format export
 ├── cron.py         Crontab scheduler
 └── cli/            sable-platform CLI
-tests/              968 tests (in-memory SQLite, no ~/.sable modification)
+tests/              996 tests (in-memory SQLite, no ~/.sable modification)
 docs/
 ```
 

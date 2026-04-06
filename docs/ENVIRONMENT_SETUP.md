@@ -89,7 +89,7 @@ export ANTHROPIC_API_KEY="your_key_here"
 cd ~/Projects/SablePlatform
 source .venv/bin/activate
 
-# 2. Initialize DB (creates ~/.sable/sable.db with all 29 migrations)
+# 2. Initialize DB (creates ~/.sable/sable.db with all 30 migrations)
 # Safe to run multiple times — migrations are append-only and idempotent
 sable-platform init
 
@@ -132,7 +132,7 @@ python3 -m pytest tests/ -q
 
 ```
 ~/.sable/
-├── sable.db          # Shared SQLite database (29 migrations)
+├── sable.db          # Shared SQLite database (30 migrations)
 ├── config.yaml       # Optional: budget cap overrides, platform config
 └── profiles/         # Slopper account profiles
     └── @handle/
