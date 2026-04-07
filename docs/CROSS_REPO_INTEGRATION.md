@@ -90,6 +90,8 @@ SablePlatform never imports from downstream repos. All integration happens via s
 
 **What flows back:** Lead prospects as entities.
 
+**Automated Cult Grader trigger:** The `lead_discovery` workflow's `trigger_cult_grader_for_tier1` step automatically runs Cult Grader diagnostics for Tier 1 prospects (composite >= 0.50). Bounded to max 10 diagnostics per run. Each diagnostic is budget-checked via `check_budget()`. Individual diagnostic failures do not fail the workflow step — errors are logged and remaining prospects are processed.
+
 ---
 
 ## Prospect YAML Schema
@@ -120,6 +122,33 @@ operator_notes: |                           # Optional; injected into diagnostic
 **Field naming:** `project_name` is the canonical field. `name` and `project_slug` are accepted as backward-compatible aliases — Platform normalizes them to `project_name` at validate time. New YAMLs should use `project_name` only.
 
 **Critical:** `sable_org` must exactly match the `org_id` you created in sable.db. Without it, Cult Grader's platform sync (Stage 8 post-step) is silently skipped and no data flows back to SablePlatform.
+
+---
+
+## Data Flow: Lead Discovery → Diagnosis (Automated Pipeline)
+
+The `lead_discovery` workflow automates the full prospecting pipeline:
+
+```
+sable-platform workflow run lead_discovery --org <org>
+
+Steps:
+1. validate_env          — check SABLE_LEAD_IDENTIFIER_PATH + org exists
+2. run_lead_identifier   — execute Lead Identifier (pass-1)
+3. parse_leads           — read sable_leads_latest.json, filter pursue+monitor
+4. create_entities       — create/find entities, tag as bd_prospect
+5. sync_scores           — upsert to prospect_scores table
+6. trigger_cult_grader_for_tier1 — auto-diagnose Tier 1 (composite >= 0.50)
+                           • Max 10 per run (cost bound)
+                           • check_budget() before each
+                           • Individual failures logged, not fatal
+7. sync_cult_grader_results — log cost summary
+8. register_artifacts    — register Lead Identifier output
+9. evaluate_alerts       — run alert checks
+10. mark_complete        — summary
+```
+
+Schedule via cron preset: `sable-platform cron add-preset lead_discovery --org <org>` (Monday 22:00 UTC).
 
 ---
 

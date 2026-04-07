@@ -22,10 +22,10 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - **DB:** 30 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export
 - **Workflow engine:** synchronous, deterministic, retry/resume/skip_if, per-step timeout, config versioning, execution locking
-- **5 builtin workflows:** prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery, onboard_client
+- **5 builtin workflows:** prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery (with auto Cult Grader trigger for Tier 1), onboard_client
 - **12 alert checks:** tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes. Alert creation decoupled from delivery (`deliver_alerts_by_ids()` called after commit).
 - **Delivery:** Telegram, Discord, HMAC-SHA256 webhooks. Cooldown (4h default), per-org config, mute/unmute.
-- **CLI:** full operator surface — workflows, alerts, inspect, actions, outcomes, journey, dashboard, watchlist, webhooks, cron, org config (sector/stage enums, numeric range validation), backup, init, gc, health-server, metrics
+- **CLI:** full operator surface — workflows, alerts, inspect (13 subcommands including prospect_pipeline), actions, outcomes, journey, dashboard, watchlist, webhooks, cron, org config (sector/stage enums, numeric range validation), backup, init, gc, health-server, metrics
 - **Adapters:** subprocess-based for CultGrader, SableTracking, Slopper, LeadIdentifier
 - **Infra:** Dockerfile, CI (ruff + pytest), structured JSON logging, cron scheduler
 
@@ -61,6 +61,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/db/decay.py` | Decay score CRUD — sync_decay_scores(), list_decay_scores(), get_decay_summary() |
 | `sable_platform/db/prospects.py` | Prospect score CRUD — sync_prospect_scores(), list_prospect_scores(), get_prospect_summary() |
 | `sable_platform/db/cost.py` | Cost tracking — log_cost(), check_budget(), get_weekly_spend() |
+| `sable_platform/db/prospect_pipeline.py` | Prospect pipeline query — JOINs prospect_scores with diagnostic_runs |
 | `sable_platform/workflows/engine.py` | WorkflowRunner — the core state machine |
 | `sable_platform/workflows/registry.py` | Register + look up named workflows |
 | `sable_platform/workflows/alert_evaluator.py` | evaluate_alerts() — thin orchestrator |
@@ -89,6 +90,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `docs/CROSS_REPO_INTEGRATION.md` | Adapter reference, data flows, direct commands |
 | `docs/SCHEMA_CONTRACTS.md` | Cross-suite data contracts — entity status, tiers, dimensions, cost models, artifacts, outcomes |
 | `docs/ALERT_SYSTEM.md` | Alert lifecycle, all 12 checks, dedup key formats, delivery channels, threshold overrides |
+| `docs/CLIENT_LIFECYCLE.md` | Client lifecycle stages → CLI commands → SableWeb views |
 | `docs/EXTENDING.md` | How to add a workflow, adapter, alert check, or migration |
 | `docs/schemas/` | Generated JSON Schema files for all 8 Pydantic contracts |
 

@@ -63,6 +63,12 @@ WORKFLOW_PRESETS: dict[str, WorkflowPreset] = {
         description="Weekly data retention GC on Sundays at 04:00 UTC",
         command_template="{cli_bin} gc",
     ),
+    "lead_discovery": WorkflowPreset(
+        schedule="0 22 * * 1",  # Monday 22:00 UTC
+        workflow="lead_discovery",
+        description="Weekly lead discovery pipeline on Mondays at 22:00 UTC",
+        command_template="{cli_bin} workflow run lead_discovery --org {org}",
+    ),
 }
 
 
@@ -228,7 +234,7 @@ def add_preset(preset_name: str, org: str) -> CronEntry:
 
     wp = WORKFLOW_PRESETS[preset_name]
     cli_bin = _find_cli_binary()
-    command = wp.command_template.format(cli_bin=shlex.quote(cli_bin))
+    command = wp.command_template.format(cli_bin=shlex.quote(cli_bin), org=shlex.quote(org))
 
     current = _read_crontab()
     for existing in _parse_entries(current):

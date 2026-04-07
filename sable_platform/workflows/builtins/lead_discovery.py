@@ -11,11 +11,14 @@ import datetime
 import json
 import logging
 
-from sable_platform.errors import SableError, INVALID_CONFIG
+from sable_platform.errors import SableError, INVALID_CONFIG, BUDGET_EXCEEDED
 from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
 from sable_platform.workflows import registry
 
 log = logging.getLogger(__name__)
+
+# Max Cult Grader diagnostics per lead_discovery run to prevent cost blowout.
+_MAX_DIAGNOSTICS_PER_RUN = 10
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +188,86 @@ def _sync_scores(ctx) -> StepResult:
     return StepResult("completed", {"scores_synced": count})
 
 
+def _trigger_cult_grader_for_tier1(ctx) -> StepResult:
+    """Trigger Cult Grader diagnostic for new Tier 1 prospects (composite >= 0.50).
+
+    BOUNDED: max 10 diagnostics per run. Checks budget before each.
+    Individual failures are logged but do not fail the step.
+    """
+    from sable_platform.adapters.cult_grader import CultGraderAdapter
+    from sable_platform.db.cost import check_budget
+
+    leads = ctx.input_data.get("leads", [])
+    tier1 = [l for l in leads if l.get("composite_score", 0) >= 0.50]
+
+    triggered = 0
+    failed = 0
+    skipped_budget = 0
+    errors: list[dict] = []
+
+    adapter = CultGraderAdapter()
+
+    for lead in tier1[:_MAX_DIAGNOSTICS_PER_RUN]:
+        project_id = lead.get("project_id", "unknown")
+
+        # Budget gate
+        try:
+            check_budget(ctx.db, ctx.org_id)
+        except SableError as exc:
+            if exc.code == BUDGET_EXCEEDED:
+                log.warning("Budget exceeded, stopping Cult Grader triggers at %d/%d",
+                            triggered, len(tier1))
+                skipped_budget = len(tier1[:_MAX_DIAGNOSTICS_PER_RUN]) - triggered - failed
+                break
+            raise
+
+        # Trigger diagnostic — partial failure must not fail the step
+        try:
+            prospect_yaml = lead.get("prospect_yaml_path", "")
+            if not prospect_yaml:
+                # Build a minimal path from the Lead Identifier output convention
+                import os
+                li_path = os.environ.get("SABLE_LEAD_IDENTIFIER_PATH", "")
+                prospect_yaml = str(
+                    __import__("pathlib").Path(li_path) / "prospects" / f"{project_id}.yaml"
+                )
+
+            adapter.run({"prospect_yaml_path": prospect_yaml})
+            triggered += 1
+            log.info("Cult Grader diagnostic triggered for prospect: %s", project_id)
+        except Exception as exc:
+            failed += 1
+            errors.append({"project_id": project_id, "error": str(exc)[:200]})
+            log.error("Cult Grader diagnostic failed for %s: %s", project_id, exc)
+
+    bounded_note = ""
+    if len(tier1) > _MAX_DIAGNOSTICS_PER_RUN:
+        bounded_note = f" (capped at {_MAX_DIAGNOSTICS_PER_RUN}, {len(tier1)} total Tier 1)"
+
+    return StepResult("completed", {
+        "tier1_total": len(tier1),
+        "diagnostics_triggered": triggered,
+        "diagnostics_failed": failed,
+        "diagnostics_skipped_budget": skipped_budget,
+        "bounded_note": bounded_note,
+        "errors": errors,
+    })
+
+
+def _sync_cult_grader_results(ctx) -> StepResult:
+    """Mark workflow complete and log aggregate cost."""
+    from sable_platform.db.cost import get_weekly_spend
+
+    spend = get_weekly_spend(ctx.db, ctx.org_id)
+    diagnostics_triggered = ctx.input_data.get("diagnostics_triggered", 0)
+
+    return StepResult("completed", {
+        "workflow_status": "complete",
+        "diagnostics_triggered": diagnostics_triggered,
+        "weekly_spend_usd": round(spend, 2),
+    })
+
+
 def _register_artifacts(ctx) -> StepResult:
     """Register the Lead Identifier output directory as an artifact."""
     output_dir = ctx.input_data.get("lead_output_dir", "")
@@ -249,6 +332,8 @@ LEAD_DISCOVERY = WorkflowDefinition(
         StepDefinition(name="parse_leads", fn=_parse_leads, max_retries=1),
         StepDefinition(name="create_entities", fn=_create_entities, max_retries=1),
         StepDefinition(name="sync_scores", fn=_sync_scores, max_retries=0),
+        StepDefinition(name="trigger_cult_grader_for_tier1", fn=_trigger_cult_grader_for_tier1, max_retries=0),
+        StepDefinition(name="sync_cult_grader_results", fn=_sync_cult_grader_results, max_retries=0),
         StepDefinition(name="register_artifacts", fn=_register_artifacts, max_retries=1),
         StepDefinition(name="evaluate_alerts", fn=_evaluate_alerts, max_retries=0),
         StepDefinition(name="mark_complete", fn=_mark_complete, max_retries=0),

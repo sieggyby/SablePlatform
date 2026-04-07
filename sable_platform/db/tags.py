@@ -16,6 +16,8 @@ _REPLACE_CURRENT_TAGS: frozenset[str] = frozenset({
     "cabal_member",
     "watchlist_account",
     "bd_prospect",
+    "cultist_candidate",
+    "bridge_node",
 })
 
 _ACTIVE_PREDICATE = "is_current = 1 AND (expires_at IS NULL OR expires_at > datetime('now'))"

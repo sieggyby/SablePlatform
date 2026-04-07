@@ -53,7 +53,14 @@ sable-platform cron remove --org tig --workflow weekly_client_loop
 sable-platform cron presets
 ```
 
+```bash
+# Install a bundled workflow preset
+sable-platform cron add-preset lead_discovery --org tig   # Weekly Monday 22:00 UTC
+```
+
 **Presets:** `hourly`, `daily`, `twice-weekly`, `weekly-monday` through `weekly-sunday`. Or pass any 5-field cron expression directly.
+
+**Workflow presets:** `backup` (daily 03:00), `alert_check` (every 4h), `gc` (Sunday 04:00), `lead_discovery` (Monday 22:00).
 
 **Security:** `org` and `workflow` must be `[A-Za-z0-9_-]` only. All command values are shell-quoted via `shlex.quote()`. Newlines, colons, and shell metacharacters are rejected.
 
@@ -168,7 +175,7 @@ sable-platform workflow preflight             # Check all active orgs
 | `prospect_diagnostic_sync` | Diagnose, sync entities, register artifacts | `prospect_yaml_path` |
 | `weekly_client_loop` | Recurring: freshness, refresh, strategy, alerts | — |
 | `alert_check` | Evaluate all alert conditions | — |
-| `lead_discovery` | Run Lead Identifier, sync scores, register artifacts | — |
+| `lead_discovery` | Run Lead Identifier, sync scores, trigger Cult Grader for Tier 1, register artifacts | — |
 
 ---
 
@@ -212,6 +219,15 @@ sable-platform inspect playbook <ORG_ID> --limit 5
 # Lead Identifier prospect scores — defaults to latest run date
 sable-platform inspect prospects [--min-score 0.5] [--tier "Tier 1"|"Tier 2"|"Tier 3"] [--run-date 2026-04-01] [--limit 50] [--json]
 ```
+
+### Prospect Pipeline
+
+```bash
+# Prospect pipeline: scores joined with latest diagnostics per prospect
+sable-platform inspect prospect_pipeline [--tier "Tier 1"|"Tier 2"|"Tier 3"] [--stale-days 14] [--limit 50] [--json]
+```
+
+Shows composite score, tier, fit score (from diagnostic), days since last diagnostic, and recommended action. Prospects without a diagnostic show `—` for fit_score and diagnostic date. `--stale-days N` filters to prospects where the last diagnostic is older than N days (or has no diagnostic at all).
 
 ### Operational
 

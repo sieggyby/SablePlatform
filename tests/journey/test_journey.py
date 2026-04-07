@@ -66,14 +66,15 @@ def test_non_replace_tag_appends_without_replacing(org_db):
     conn, org_id = org_db
     entity_id = _make_entity(conn, org_id)
 
-    add_tag(conn, entity_id, "cultist_candidate", confidence=0.8)
-    add_tag(conn, entity_id, "cultist_candidate", confidence=0.9)
+    # Use 'cultist' which is NOT in _REPLACE_CURRENT_TAGS
+    add_tag(conn, entity_id, "cultist", confidence=0.8)
+    add_tag(conn, entity_id, "cultist", confidence=0.9)
 
     history = conn.execute(
         "SELECT change_type FROM entity_tag_history WHERE entity_id=? ORDER BY rowid",
         (entity_id,),
     ).fetchall()
-    # Both are 'added' — cultist_candidate is not in REPLACE_CURRENT_TAGS
+    # Both are 'added' — cultist is not in REPLACE_CURRENT_TAGS
     change_types = [h["change_type"] for h in history]
     assert change_types == ["added", "added"]
 

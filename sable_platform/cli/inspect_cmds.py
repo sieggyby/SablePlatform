@@ -18,6 +18,7 @@ from sable_platform.db.interactions import list_interactions
 from sable_platform.db.audit import list_audit_log
 from sable_platform.db.playbook import list_playbook_targets, list_playbook_outcomes
 from sable_platform.db.prospects import list_prospect_scores
+from sable_platform.db.prospect_pipeline import query_prospect_pipeline
 
 
 @click.group("inspect")
@@ -573,4 +574,43 @@ def inspect_prospects(min_score: float, tier: str | None, run_date: str | None,
         click.echo(
             f"{r['org_id']:<24}  {r['composite_score']:>6.2f}  {r['tier']:<8}  "
             f"{sector:<16}  {r['run_date'] or ''}"
+        )
+
+
+@inspect.command("prospect_pipeline")
+@click.option("--tier", default=None, help="Filter by tier: 'Tier 1', 'Tier 2', 'Tier 3'")
+@click.option("--stale-days", default=None, type=int, help="Show only prospects where last diagnostic > N days ago")
+@click.option("--limit", default=50, show_default=True)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def inspect_prospect_pipeline(tier: str | None, stale_days: int | None,
+                              limit: int, as_json: bool) -> None:
+    """Show prospect pipeline: scores joined with latest diagnostics."""
+    conn = get_db()
+    try:
+        rows = query_prospect_pipeline(
+            conn, tier=tier, stale_days=stale_days, limit=limit,
+        )
+    finally:
+        conn.close()
+
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+
+    if not rows:
+        click.echo("No prospects found in pipeline.")
+        return
+
+    click.echo(
+        f"{'ORG_ID':<24}  {'SCORE':>6}  {'TIER':<8}  {'FIT':>5}  "
+        f"{'DIAG_DATE':<12}  {'STALE':>5}  ACTION"
+    )
+    click.echo("-" * 85)
+    for r in rows:
+        fit = f"{r['fit_score']}" if r["fit_score"] is not None else "\u2014"
+        diag_date = (r["diagnostic_date"] or "")[:10] if r["diagnostic_date"] else "\u2014"
+        stale = str(r["days_since_last_diagnostic"]) if r["days_since_last_diagnostic"] is not None else "\u2014"
+        click.echo(
+            f"{r['org_id']:<24}  {r['composite_score']:>6.2f}  {r['tier']:<8}  {fit:>5}  "
+            f"{diag_date:<12}  {stale:>5}  {r['recommended_action']}"
         )

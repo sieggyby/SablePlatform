@@ -315,6 +315,68 @@ class TestTagHistorySuppression:
             _record_tag_history(conn, eid, org_id, "added", "cultist")
 
 
+# ---------------------------------------------------------------------------
+# Replace behavior for cultist_candidate and bridge_node
+# ---------------------------------------------------------------------------
+
+class TestCultistCandidateReplace:
+    def test_cultist_candidate_replaces_old(self, org_db):
+        """cultist_candidate in _REPLACE_CURRENT_TAGS: re-add deactivates previous."""
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+        add_tag(conn, eid, "cultist_candidate", source="cult_doctor:abc12345", confidence=0.7)
+        add_tag(conn, eid, "cultist_candidate", source="cult_doctor:def67890", confidence=0.9)
+
+        active = get_active_tags(conn, eid)
+        cc_tags = [t for t in active if t["tag"] == "cultist_candidate"]
+        assert len(cc_tags) == 1
+        assert cc_tags[0]["source"] == "cult_doctor:def67890"
+        assert cc_tags[0]["confidence"] == 0.9
+
+    def test_cultist_candidate_history_recorded(self, org_db):
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+        add_tag(conn, eid, "cultist_candidate", source="run1", confidence=0.6)
+        add_tag(conn, eid, "cultist_candidate", source="run2", confidence=0.8)
+
+        history = conn.execute(
+            "SELECT change_type FROM entity_tag_history WHERE entity_id=? AND tag='cultist_candidate' ORDER BY rowid",
+            (eid,),
+        ).fetchall()
+        types = [r["change_type"] for r in history]
+        assert "replaced" in types
+        assert types.count("added") == 2
+
+
+class TestBridgeNodeReplace:
+    def test_bridge_node_replaces_old(self, org_db):
+        """bridge_node in _REPLACE_CURRENT_TAGS: re-add deactivates previous."""
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+        add_tag(conn, eid, "bridge_node", source="cult_doctor:aaa11111", confidence=0.65)
+        add_tag(conn, eid, "bridge_node", source="cult_doctor:bbb22222", confidence=0.85)
+
+        active = get_active_tags(conn, eid)
+        bn_tags = [t for t in active if t["tag"] == "bridge_node"]
+        assert len(bn_tags) == 1
+        assert bn_tags[0]["source"] == "cult_doctor:bbb22222"
+        assert bn_tags[0]["confidence"] == 0.85
+
+    def test_bridge_node_history_recorded(self, org_db):
+        conn, org_id = org_db
+        eid = _insert_entity(conn, org_id)
+        add_tag(conn, eid, "bridge_node", source="run1")
+        add_tag(conn, eid, "bridge_node", source="run2")
+
+        history = conn.execute(
+            "SELECT change_type FROM entity_tag_history WHERE entity_id=? AND tag='bridge_node' ORDER BY rowid",
+            (eid,),
+        ).fetchall()
+        types = [r["change_type"] for r in history]
+        assert "replaced" in types
+        assert types.count("added") == 2
+
+
 class TestAddTagEdgeCases:
     def test_add_tag_nonexistent_entity_fk_violation(self, org_db):
         """FK constraint prevents orphan tag row for nonexistent entity."""
