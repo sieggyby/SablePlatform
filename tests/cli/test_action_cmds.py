@@ -1,30 +1,19 @@
 """Smoke tests for actions CLI commands."""
 from __future__ import annotations
 
-import sqlite3
-
 from click.testing import CliRunner
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn, make_test_file_db
 from sable_platform.db.actions import create_action
 from sable_platform.cli.action_cmds import actions_list, actions_create, actions_claim, actions_complete, actions_summary
 
 
 def _make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+    return make_test_conn()
 
 
 def _setup_file_db(path: str, org_id: str = "o1") -> None:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES (?, 'Test', 'active')", (org_id,))
-    conn.commit()
+    conn = make_test_file_db(path, with_org=org_id)
     conn.close()
 
 
@@ -54,9 +43,7 @@ def test_actions_claim(tmp_path, monkeypatch):
     db_path = str(tmp_path / "t.db")
     _setup_file_db(db_path)
     monkeypatch.setenv("SABLE_DB_PATH", db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = make_test_file_db(db_path)
     action_id = create_action(conn, "o1", "Claim me")
     conn.commit()
     conn.close()
@@ -69,9 +56,7 @@ def test_actions_complete(tmp_path, monkeypatch):
     db_path = str(tmp_path / "t.db")
     _setup_file_db(db_path)
     monkeypatch.setenv("SABLE_DB_PATH", db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = make_test_file_db(db_path)
     action_id = create_action(conn, "o1", "Complete me")
     conn.execute("UPDATE actions SET status='claimed', operator='alice' WHERE action_id=?", (action_id,))
     conn.commit()

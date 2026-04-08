@@ -1,14 +1,16 @@
 """Operator action helpers for sable.db."""
 from __future__ import annotations
 
-import sqlite3
 import uuid
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, ENTITY_NOT_FOUND
 
 
 def create_action(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     title: str,
     *,
@@ -22,72 +24,74 @@ def create_action(
     """Create a pending action. Returns action_id."""
     action_id = uuid.uuid4().hex
     conn.execute(
-        """
+        text("""
         INSERT INTO actions
             (action_id, org_id, entity_id, content_item_id, source, source_ref,
              action_type, title, description)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (action_id, org_id, entity_id, content_item_id, source, source_ref,
-         action_type, title, description),
+        VALUES (:action_id, :org_id, :entity_id, :content_item_id, :source, :source_ref,
+                :action_type, :title, :description)
+        """),
+        {"action_id": action_id, "org_id": org_id, "entity_id": entity_id,
+         "content_item_id": content_item_id, "source": source, "source_ref": source_ref,
+         "action_type": action_type, "title": title, "description": description},
     )
     conn.commit()
     return action_id
 
 
-def claim_action(conn: sqlite3.Connection, action_id: str, operator: str) -> None:
+def claim_action(conn: Connection, action_id: str, operator: str) -> None:
     """Mark an action as claimed by an operator."""
     conn.execute(
-        """
+        text("""
         UPDATE actions
-        SET status='claimed', operator=?, claimed_at=datetime('now')
-        WHERE action_id=?
-        """,
-        (operator, action_id),
+        SET status='claimed', operator=:operator, claimed_at=datetime('now')
+        WHERE action_id=:action_id
+        """),
+        {"operator": operator, "action_id": action_id},
     )
     conn.commit()
 
 
 def complete_action(
-    conn: sqlite3.Connection,
+    conn: Connection,
     action_id: str,
     *,
     outcome_notes: str | None = None,
 ) -> None:
     """Mark an action as completed."""
     conn.execute(
-        """
+        text("""
         UPDATE actions
-        SET status='completed', completed_at=datetime('now'), outcome_notes=?
-        WHERE action_id=?
-        """,
-        (outcome_notes, action_id),
+        SET status='completed', completed_at=datetime('now'), outcome_notes=:outcome_notes
+        WHERE action_id=:action_id
+        """),
+        {"outcome_notes": outcome_notes, "action_id": action_id},
     )
     conn.commit()
 
 
 def skip_action(
-    conn: sqlite3.Connection,
+    conn: Connection,
     action_id: str,
     *,
     outcome_notes: str | None = None,
 ) -> None:
     """Mark an action as skipped."""
     conn.execute(
-        """
+        text("""
         UPDATE actions
-        SET status='skipped', skipped_at=datetime('now'), outcome_notes=?
-        WHERE action_id=?
-        """,
-        (outcome_notes, action_id),
+        SET status='skipped', skipped_at=datetime('now'), outcome_notes=:outcome_notes
+        WHERE action_id=:action_id
+        """),
+        {"outcome_notes": outcome_notes, "action_id": action_id},
     )
     conn.commit()
 
 
-def get_action(conn: sqlite3.Connection, action_id: str) -> sqlite3.Row:
+def get_action(conn: Connection, action_id: str):
     """Fetch action by ID or raise SableError."""
     row = conn.execute(
-        "SELECT * FROM actions WHERE action_id=?", (action_id,)
+        text("SELECT * FROM actions WHERE action_id=:action_id"), {"action_id": action_id}
     ).fetchone()
     if not row:
         raise SableError(ENTITY_NOT_FOUND, f"Action '{action_id}' not found")
@@ -95,33 +99,33 @@ def get_action(conn: sqlite3.Connection, action_id: str) -> sqlite3.Row:
 
 
 def list_actions(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     *,
     status: str | None = None,
     limit: int = 50,
-) -> list[sqlite3.Row]:
+) -> list:
     """List actions for an org, optionally filtered by status."""
     if status:
         return conn.execute(
-            """
+            text("""
             SELECT * FROM actions
-            WHERE org_id=? AND status=?
-            ORDER BY created_at DESC LIMIT ?
-            """,
-            (org_id, status, limit),
+            WHERE org_id=:org_id AND status=:status
+            ORDER BY created_at DESC LIMIT :limit
+            """),
+            {"org_id": org_id, "status": status, "limit": limit},
         ).fetchall()
     return conn.execute(
-        "SELECT * FROM actions WHERE org_id=? ORDER BY created_at DESC LIMIT ?",
-        (org_id, limit),
+        text("SELECT * FROM actions WHERE org_id=:org_id ORDER BY created_at DESC LIMIT :limit"),
+        {"org_id": org_id, "limit": limit},
     ).fetchall()
 
 
-def action_summary(conn: sqlite3.Connection, org_id: str) -> dict:
+def action_summary(conn: Connection, org_id: str) -> dict:
     """Return counts by status and execution rate for an org."""
     rows = conn.execute(
-        "SELECT status, COUNT(*) as cnt FROM actions WHERE org_id=? GROUP BY status",
-        (org_id,),
+        text("SELECT status, COUNT(*) as cnt FROM actions WHERE org_id=:org_id GROUP BY status"),
+        {"org_id": org_id},
     ).fetchall()
     counts = {r["status"]: r["cnt"] for r in rows}
     pending = counts.get("pending", 0)
@@ -133,12 +137,12 @@ def action_summary(conn: sqlite3.Connection, org_id: str) -> dict:
     execution_rate = (completed / denominator) if denominator > 0 else 0.0
 
     avg_row = conn.execute(
-        """
+        text("""
         SELECT AVG(julianday(completed_at) - julianday(created_at)) AS avg_days
         FROM actions
-        WHERE org_id=? AND status='completed' AND completed_at IS NOT NULL
-        """,
-        (org_id,),
+        WHERE org_id=:org_id AND status='completed' AND completed_at IS NOT NULL
+        """),
+        {"org_id": org_id},
     ).fetchone()
     avg_days = avg_row["avg_days"] if avg_row and avg_row["avg_days"] is not None else None
 

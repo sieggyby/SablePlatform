@@ -2,20 +2,15 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from unittest.mock import patch
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+def _make_conn():
+    return make_test_conn()
 
 
 def _insert_org(conn, org_id="test_org"):
@@ -108,11 +103,8 @@ def test_alert_delivery_webhook_failure_logs_warning(caplog):
     conn = _make_conn()
     _insert_org(conn)
     # Configure alert_configs so delivery proceeds
-    conn.execute(
-        "INSERT INTO alert_configs (org_id, min_severity, enabled, cooldown_hours) VALUES (?, 'info', 1, 0)",
-        ("test_org",),
-    )
-    conn.commit()
+    from sable_platform.db.alerts import upsert_alert_config
+    upsert_alert_config(conn, "test_org", min_severity="info", enabled=True, cooldown_hours=0)
 
     with patch("sable_platform.webhooks.dispatch.dispatch_event", side_effect=RuntimeError("boom")), \
          caplog.at_level(logging.WARNING, logger="sable_platform.workflows.alert_delivery"):

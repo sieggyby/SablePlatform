@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 
 from click.testing import CliRunner
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.cli.workflow_cmds import workflow_list, workflow_status
 from sable_platform.cli.alert_cmds import alerts_list
 from sable_platform.cli.org_cmds import org_list
@@ -15,11 +14,7 @@ from sable_platform.cli.action_cmds import actions_list
 
 
 def _make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+    return make_test_conn()
 
 
 def _insert_org(conn, org_id="o1"):

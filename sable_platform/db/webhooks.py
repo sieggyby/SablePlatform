@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import sqlite3
 import urllib.parse
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, ORG_NOT_FOUND
 
@@ -54,14 +56,14 @@ def _is_private_url(url: str) -> bool:
 
 
 def create_subscription(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     url: str,
     event_types: list[str],
     secret: str,
 ) -> int:
     """Create a webhook subscription. Returns the subscription id."""
-    row = conn.execute("SELECT 1 FROM orgs WHERE org_id=?", (org_id,)).fetchone()
+    row = conn.execute(text("SELECT 1 FROM orgs WHERE org_id=:org_id"), {"org_id": org_id}).fetchone()
     if not row:
         raise SableError(ORG_NOT_FOUND, f"Org '{org_id}' not found")
 
@@ -72,8 +74,8 @@ def create_subscription(
         raise SableError(INVALID_WEBHOOK, f"URL targets a private/localhost address: {url}")
 
     count_row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM webhook_subscriptions WHERE org_id=? AND enabled=1",
-        (org_id,),
+        text("SELECT COUNT(*) as cnt FROM webhook_subscriptions WHERE org_id=:org_id AND enabled=1"),
+        {"org_id": org_id},
     ).fetchone()
     if count_row["cnt"] >= MAX_SUBSCRIPTIONS_PER_ORG:
         raise SableError(
@@ -82,21 +84,21 @@ def create_subscription(
         )
 
     cursor = conn.execute(
-        """
+        text("""
         INSERT INTO webhook_subscriptions (org_id, url, event_types, secret)
-        VALUES (?, ?, ?, ?)
-        """,
-        (org_id, url, json.dumps(event_types), secret),
+        VALUES (:org_id, :url, :event_types, :secret)
+        """),
+        {"org_id": org_id, "url": url, "event_types": json.dumps(event_types), "secret": secret},
     )
     conn.commit()
     return cursor.lastrowid
 
 
-def list_subscriptions(conn: sqlite3.Connection, org_id: str) -> list[dict]:
+def list_subscriptions(conn: Connection, org_id: str) -> list[dict]:
     """List subscriptions for an org. Secrets are masked."""
     rows = conn.execute(
-        "SELECT * FROM webhook_subscriptions WHERE org_id=? ORDER BY created_at",
-        (org_id,),
+        text("SELECT * FROM webhook_subscriptions WHERE org_id=:org_id ORDER BY created_at"),
+        {"org_id": org_id},
     ).fetchall()
 
     result = []
@@ -108,52 +110,52 @@ def list_subscriptions(conn: sqlite3.Connection, org_id: str) -> list[dict]:
     return result
 
 
-def get_subscription(conn: sqlite3.Connection, subscription_id: int) -> sqlite3.Row | None:
+def get_subscription(conn: Connection, subscription_id: int):
     """Get a subscription by id (raw, unmasked)."""
     return conn.execute(
-        "SELECT * FROM webhook_subscriptions WHERE id=?",
-        (subscription_id,),
+        text("SELECT * FROM webhook_subscriptions WHERE id=:id"),
+        {"id": subscription_id},
     ).fetchone()
 
 
-def delete_subscription(conn: sqlite3.Connection, subscription_id: int) -> bool:
+def delete_subscription(conn: Connection, subscription_id: int) -> bool:
     """Delete a subscription. Returns True if deleted."""
     cursor = conn.execute(
-        "DELETE FROM webhook_subscriptions WHERE id=?",
-        (subscription_id,),
+        text("DELETE FROM webhook_subscriptions WHERE id=:id"),
+        {"id": subscription_id},
     )
     conn.commit()
     return cursor.rowcount > 0
 
 
-def record_failure(conn: sqlite3.Connection, subscription_id: int, error: str) -> None:
+def record_failure(conn: Connection, subscription_id: int, error: str) -> None:
     """Increment failure count. Auto-disable after 10 consecutive failures."""
     conn.execute(
-        """
+        text("""
         UPDATE webhook_subscriptions
         SET consecutive_failures = consecutive_failures + 1,
             last_failure_at = datetime('now'),
-            last_failure_error = ?
-        WHERE id=?
-        """,
-        (error[:500], subscription_id),
+            last_failure_error = :error
+        WHERE id=:id
+        """),
+        {"error": error[:500], "id": subscription_id},
     )
     # Auto-disable
     conn.execute(
-        """
+        text("""
         UPDATE webhook_subscriptions
         SET enabled = 0
-        WHERE id=? AND consecutive_failures >= 10
-        """,
-        (subscription_id,),
+        WHERE id=:id AND consecutive_failures >= 10
+        """),
+        {"id": subscription_id},
     )
     conn.commit()
 
 
-def record_success(conn: sqlite3.Connection, subscription_id: int) -> None:
+def record_success(conn: Connection, subscription_id: int) -> None:
     """Reset failure count on successful delivery."""
     conn.execute(
-        "UPDATE webhook_subscriptions SET consecutive_failures = 0 WHERE id=?",
-        (subscription_id,),
+        text("UPDATE webhook_subscriptions SET consecutive_failures = 0 WHERE id=:id"),
+        {"id": subscription_id},
     )
     conn.commit()

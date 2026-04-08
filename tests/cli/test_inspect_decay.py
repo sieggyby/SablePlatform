@@ -2,21 +2,16 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 from click.testing import CliRunner
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.decay import sync_decay_scores
 from sable_platform.cli.inspect_cmds import inspect_decay
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+def _make_conn():
+    return make_test_conn()
 
 
 def _seed(conn):

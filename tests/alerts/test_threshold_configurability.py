@@ -19,13 +19,8 @@ from sable_platform.workflows.alert_checks import (
 
 @pytest.fixture
 def db():
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('test_org', 'Test Org')")
-    conn.commit()
+    from tests.conftest import make_test_conn
+    conn = make_test_conn(with_org="test_org")
     return conn
 
 

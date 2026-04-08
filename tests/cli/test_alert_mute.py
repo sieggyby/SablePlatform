@@ -10,16 +10,12 @@ from click.testing import CliRunner
 from sable_platform.cli.alert_cmds import alerts_mute, alerts_unmute
 from sable_platform.db.alerts import get_alert_config, upsert_alert_config
 from sable_platform.db.connection import ensure_schema, get_db
+from tests.conftest import make_test_conn, make_test_file_db
 
 
 def _setup_file_db(path: str) -> None:
     """Create schema + test org in a file-based DB."""
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('test_org', 'Test Org')")
-    conn.commit()
+    conn = make_test_file_db(path, with_org="test_org")
     conn.close()
 
 
@@ -29,9 +25,7 @@ def test_mute_sets_enabled_false(tmp_path, monkeypatch):
     _setup_file_db(db_path)
 
     # Pre-create the alert config
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = make_test_file_db(db_path)
     upsert_alert_config(conn, "test_org", min_severity="warning")
     conn.close()
 
@@ -53,9 +47,7 @@ def test_unmute_sets_enabled_true(tmp_path, monkeypatch):
     db_path = str(tmp_path / "sable.db")
     _setup_file_db(db_path)
 
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn = make_test_file_db(db_path)
     upsert_alert_config(conn, "test_org", enabled=False)
     conn.close()
 
@@ -74,14 +66,10 @@ def test_unmute_sets_enabled_true(tmp_path, monkeypatch):
 
 def test_mute_suppresses_alert_delivery(monkeypatch):
     """evaluate_alerts fires no Telegram/Discord delivery when org is muted."""
-    from sable_platform.db.connection import ensure_schema
     from sable_platform.workflows.alert_evaluator import evaluate_alerts
     from unittest.mock import patch
 
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+    conn = make_test_conn()
     conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('test_org', 'Test Org')")
     # Mute the org
     upsert_alert_config(conn, "test_org", enabled=False)

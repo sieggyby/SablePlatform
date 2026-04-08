@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.decay import (
     sync_decay_scores,
     list_decay_scores,
@@ -15,12 +14,8 @@ from sable_platform.db.decay import (
 from sable_platform.errors import SableError, ORG_NOT_FOUND
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+def _make_conn():
+    return make_test_conn()
 
 
 def _insert_org(conn, org_id="test_org") -> str:

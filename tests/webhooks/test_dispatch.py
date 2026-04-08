@@ -3,20 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import sqlite3
 from unittest.mock import patch
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.webhooks import create_subscription
 from sable_platform.webhooks.dispatch import dispatch_event, _deliver_webhook
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+def _make_conn():
+    return make_test_conn()
 
 
 def _insert_org(conn, org_id="test_org") -> str:

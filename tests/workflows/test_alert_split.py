@@ -1,12 +1,10 @@
 """Architecture boundary tests for the alert_evaluator split."""
 from __future__ import annotations
 
-import sqlite3
-
 import sable_platform.workflows.alert_checks as alert_checks
 import sable_platform.workflows.alert_delivery as alert_delivery
 import sable_platform.workflows.alert_evaluator as alert_evaluator
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 
 
 _ALL_CHECK_NAMES = [
@@ -49,10 +47,7 @@ def test_checks_do_not_import_deliver():
 
 def test_deliver_alerts_by_ids_skips_missing():
     """deliver_alerts_by_ids silently skips nonexistent alert IDs."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+    conn = make_test_conn()
 
     # Should not raise
     alert_delivery.deliver_alerts_by_ids(conn, ["nonexistent_id"])
@@ -62,10 +57,7 @@ def test_deliver_alerts_by_ids_calls_deliver():
     """deliver_alerts_by_ids reads alert rows and dispatches via _deliver."""
     from unittest.mock import patch
 
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+    conn = make_test_conn()
 
     conn.execute(
         "INSERT INTO orgs (org_id, display_name, status) VALUES ('dtest', 'D', 'active')"
@@ -85,10 +77,7 @@ def test_deliver_alerts_by_ids_calls_deliver():
 
 
 def test_evaluate_alerts_end_to_end():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+    conn = make_test_conn()
 
     conn.execute(
         "INSERT INTO orgs (org_id, display_name, status) VALUES ('e2e_org', 'E2E', 'active')"
@@ -109,10 +98,7 @@ def test_evaluate_alerts_end_to_end():
 
 def test_per_org_failure_isolation(monkeypatch):
     """A crash in one org's checks must not prevent other orgs from being evaluated."""
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+    conn = make_test_conn()
 
     for org_id in ("bad_org", "good_org"):
         conn.execute(
