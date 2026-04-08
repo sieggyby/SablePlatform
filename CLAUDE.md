@@ -17,7 +17,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5** is complete. 996 tests passing.
+**v0.5** is complete. 1056 tests passing. SQLAlchemy Core migration (Phases 0–7) complete — all db modules use SA `text()` with `:named` params, Alembic for Postgres, `pg_dump` backup support.
 
 - **DB:** 30 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export
