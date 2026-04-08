@@ -1,4 +1,9 @@
-"""Shared SQLite connection factory and migration runner for sable.db."""
+"""Shared connection factory and migration runner for sable.db.
+
+Legacy ``get_db()`` returns a raw ``sqlite3.Connection``.  The new
+``get_sa_engine()`` / ``get_sa_connection()`` functions return SQLAlchemy
+objects and are the migration path toward Postgres support.
+"""
 from __future__ import annotations
 
 import importlib.resources
@@ -6,6 +11,9 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
+
+from sqlalchemy import Engine
+from sqlalchemy.engine import Connection as SAConnection
 
 log = logging.getLogger(__name__)
 
@@ -109,3 +117,37 @@ def _warn_migration_027_autofails(conn: sqlite3.Connection) -> None:
             )
     except sqlite3.OperationalError:
         pass  # workflow_runs table absent — migration applied to empty DB
+
+
+# ---------------------------------------------------------------------------
+# SQLAlchemy connection path (new — coexists with legacy get_db)
+# ---------------------------------------------------------------------------
+
+
+def get_sa_engine(url: str | None = None) -> Engine:
+    """Return a SQLAlchemy :class:`Engine` for the platform database.
+
+    For SQLite engines the schema is created via :func:`metadata.create_all`
+    (idempotent).  For Postgres, Alembic manages migrations separately.
+
+    .. important::
+        ``schema.py`` must stay in sync with the SQL migration files listed
+        in ``_MIGRATIONS``.  The parity tests in ``tests/db/test_schema.py``
+        verify this mechanically.
+    """
+    from sable_platform.db.engine import get_engine
+    from sable_platform.db.schema import metadata
+
+    engine = get_engine(url)
+    if engine.dialect.name == "sqlite":
+        metadata.create_all(engine)
+    return engine
+
+
+def get_sa_connection(url: str | None = None) -> SAConnection:
+    """Convenience: return an open SQLAlchemy :class:`Connection`.
+
+    Callers are responsible for calling ``conn.close()`` when done (or using
+    the connection as a context manager).
+    """
+    return get_sa_engine(url).connect()
