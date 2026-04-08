@@ -1,24 +1,19 @@
 """Tests for F-REJECT: prospect rejection."""
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.prospects import (
     reject_prospect,
     list_prospect_scores,
     sync_prospect_scores,
 )
+from tests.conftest import make_test_conn
 
 
 @pytest.fixture
-def rej_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+def rej_db():
+    conn = make_test_conn()
     sync_prospect_scores(conn, [
         {"org_id": "alpha", "composite_score": 0.8, "tier": "Tier 1"},
         {"org_id": "beta", "composite_score": 0.6, "tier": "Tier 2"},

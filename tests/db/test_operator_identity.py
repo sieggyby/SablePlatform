@@ -1,24 +1,18 @@
 """Tests for SP-AUTH: operator identity tracking."""
 from __future__ import annotations
 
-import sqlite3
 from unittest.mock import patch
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.audit import log_audit, list_audit_log
 from sable_platform.db.workflow_store import create_workflow_run
+from tests.conftest import make_test_conn
 
 
 @pytest.fixture
-def auth_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('auth_org', 'Auth Org')")
-    conn.commit()
+def auth_db():
+    conn = make_test_conn(with_org="auth_org")
     return conn
 
 

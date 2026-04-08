@@ -5,16 +5,7 @@ from click.testing import CliRunner
 
 from sable_platform.cli.inspect_cmds import inspect_health
 from sable_platform.db.discord_pulse import upsert_discord_pulse_run
-from sable_platform.db.connection import ensure_schema
-import sqlite3
-
-
-def _make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+from tests.conftest import make_test_conn
 
 
 def _insert_org(conn, org_id="test_org"):
@@ -27,7 +18,7 @@ def _insert_org(conn, org_id="test_org"):
 
 def test_health_org_not_found(monkeypatch):
     """inspect health exits gracefully when org does not exist."""
-    conn = _make_conn()
+    conn = make_test_conn()
     monkeypatch.setattr("sable_platform.cli.inspect_cmds.get_db", lambda: conn)
 
     runner = CliRunner()
@@ -38,7 +29,7 @@ def test_health_org_not_found(monkeypatch):
 
 def test_health_no_data(monkeypatch):
     """inspect health shows 'none' labels when org has no syncs, alerts, or pulse data."""
-    conn = _make_conn()
+    conn = make_test_conn()
     _insert_org(conn)
     monkeypatch.setattr("sable_platform.cli.inspect_cmds.get_db", lambda: conn)
 
@@ -51,7 +42,7 @@ def test_health_no_data(monkeypatch):
 
 def test_health_full_output(monkeypatch):
     """inspect health shows all sections when org has data."""
-    conn = _make_conn()
+    conn = make_test_conn()
     _insert_org(conn)
     conn.execute(
         "INSERT INTO sync_runs (org_id, sync_type, status, completed_at) VALUES (?, 'sable_tracking', 'completed', '2026-03-24 10:00:00')",
@@ -80,7 +71,7 @@ def test_health_full_output(monkeypatch):
 def test_health_json_flag(monkeypatch):
     """--json flag emits valid JSON with expected keys."""
     import json
-    conn = _make_conn()
+    conn = make_test_conn()
     _insert_org(conn)
     monkeypatch.setattr("sable_platform.cli.inspect_cmds.get_db", lambda: conn)
 

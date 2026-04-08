@@ -2,21 +2,17 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 from click.testing import CliRunner
 
 from sable_platform.cli.main import cli
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.audit import log_audit
+from tests.conftest import make_test_file_db
 
 
 def _setup_db(tmp_path):
     db_path = str(tmp_path / "sable.db")
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+    conn = make_test_file_db(db_path)
     return db_path, conn
 
 

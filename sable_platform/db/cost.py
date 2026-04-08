@@ -5,8 +5,10 @@ import datetime
 import json
 import logging
 import os
-import sqlite3
 from pathlib import Path
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, BUDGET_EXCEEDED
 
@@ -26,7 +28,7 @@ def _read_platform_config() -> dict:
 
 
 def log_cost(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     call_type: str,
     cost_usd: float,
@@ -37,17 +39,26 @@ def log_cost(
     job_id: str | None = None,
 ) -> None:
     conn.execute(
-        """
-        INSERT INTO cost_events
-            (org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd, call_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd, call_status),
+        text(
+            "INSERT INTO cost_events"
+            " (org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd, call_status)"
+            " VALUES (:org_id, :job_id, :call_type, :model, :input_tokens, :output_tokens, :cost_usd, :call_status)"
+        ),
+        {
+            "org_id": org_id,
+            "job_id": job_id,
+            "call_type": call_type,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_usd": cost_usd,
+            "call_status": call_status,
+        },
     )
     conn.commit()
 
 
-def get_weekly_spend(conn: sqlite3.Connection, org_id: str) -> float:
+def get_weekly_spend(conn: Connection, org_id: str) -> float:
     """Return total cost_usd for org in the current ISO calendar week (Mon–Sun UTC)."""
     now = datetime.datetime.now(datetime.timezone.utc)
     y, w, _ = now.isocalendar()
@@ -56,21 +67,24 @@ def get_weekly_spend(conn: sqlite3.Connection, org_id: str) -> float:
 
     fmt = "%Y-%m-%d %H:%M:%S"
     row = conn.execute(
-        """
-        SELECT COALESCE(SUM(cost_usd), 0.0)
-        FROM cost_events
-        WHERE org_id = ?
-          AND created_at >= ?
-          AND created_at <  ?
-        """,
-        (org_id, week_start.strftime(fmt), week_end.strftime(fmt)),
+        text(
+            "SELECT COALESCE(SUM(cost_usd), 0.0) AS total"
+            " FROM cost_events"
+            " WHERE org_id = :org_id"
+            "   AND created_at >= :start"
+            "   AND created_at <  :end"
+        ),
+        {"org_id": org_id, "start": week_start.strftime(fmt), "end": week_end.strftime(fmt)},
     ).fetchone()
     return float(row[0])
 
 
-def get_org_cost_cap(conn: sqlite3.Connection, org_id: str) -> float:
+def get_org_cost_cap(conn: Connection, org_id: str) -> float:
     """Return the weekly AI spend cap for the org; falls back to config default."""
-    row = conn.execute("SELECT config_json FROM orgs WHERE org_id=?", (org_id,)).fetchone()
+    row = conn.execute(
+        text("SELECT config_json FROM orgs WHERE org_id=:org_id"),
+        {"org_id": org_id},
+    ).fetchone()
     if row:
         try:
             cfg = json.loads(row["config_json"] or "{}")
@@ -88,7 +102,7 @@ def get_org_cost_cap(conn: sqlite3.Connection, org_id: str) -> float:
     )
 
 
-def check_budget(conn: sqlite3.Connection, org_id: str) -> tuple[float, float]:
+def check_budget(conn: Connection, org_id: str) -> tuple[float, float]:
     """Return (weekly_spend, cap). Raises SableError(BUDGET_EXCEEDED) if over cap."""
     spend = get_weekly_spend(conn, org_id)
     cap = get_org_cost_cap(conn, org_id)

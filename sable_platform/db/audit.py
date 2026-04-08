@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 
 def _resolve_actor(actor: str) -> str:
@@ -18,7 +20,7 @@ def _resolve_actor(actor: str) -> str:
 
 
 def log_audit(
-    conn: sqlite3.Connection,
+    conn: Connection,
     actor: str,
     action: str,
     *,
@@ -31,46 +33,53 @@ def log_audit(
     resolved_actor = _resolve_actor(actor)
     detail_json = json.dumps(detail) if detail else None
     cursor = conn.execute(
-        """
-        INSERT INTO audit_log (actor, action, org_id, entity_id, detail_json, source)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (resolved_actor, action, org_id, entity_id, detail_json, source),
+        text(
+            "INSERT INTO audit_log (actor, action, org_id, entity_id, detail_json, source)"
+            " VALUES (:actor, :action, :org_id, :entity_id, :detail_json, :source)"
+        ),
+        {
+            "actor": resolved_actor,
+            "action": action,
+            "org_id": org_id,
+            "entity_id": entity_id,
+            "detail_json": detail_json,
+            "source": source,
+        },
     )
     conn.commit()
     return cursor.lastrowid
 
 
 def list_audit_log(
-    conn: sqlite3.Connection,
+    conn: Connection,
     *,
     org_id: str | None = None,
     actor: str | None = None,
     action: str | None = None,
     since: str | None = None,
     limit: int = 100,
-) -> list[sqlite3.Row]:
+) -> list:
     """Query audit log with optional filters. Order by timestamp DESC."""
     conditions: list[str] = []
-    params: list = []
+    params: dict = {}
 
     if org_id:
-        conditions.append("org_id=?")
-        params.append(org_id)
+        conditions.append("org_id=:org_id")
+        params["org_id"] = org_id
     if actor:
-        conditions.append("actor=?")
-        params.append(actor)
+        conditions.append("actor=:actor")
+        params["actor"] = actor
     if action:
-        conditions.append("action=?")
-        params.append(action)
+        conditions.append("action=:action")
+        params["action"] = action
     if since:
-        conditions.append("timestamp >= ?")
-        params.append(since)
+        conditions.append("timestamp >= :since")
+        params["since"] = since
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-    params.append(limit)
+    params["lim"] = limit
 
     return conn.execute(
-        f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC LIMIT ?",
+        text(f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC LIMIT :lim"),
         params,
     ).fetchall()

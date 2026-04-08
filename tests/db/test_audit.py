@@ -2,22 +2,14 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.audit import log_audit, list_audit_log
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
-
-
-def test_log_audit_basic():
-    conn = _make_conn()
+def test_log_audit_basic(in_memory_db):
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", ("test_org", "Test"))
+    conn.commit()
     row_id = log_audit(conn, "cli:alice", "alert_acknowledge", org_id="test_org")
     assert row_id > 0
 
@@ -28,8 +20,8 @@ def test_log_audit_basic():
     assert row["source"] == "cli"
 
 
-def test_log_audit_with_detail():
-    conn = _make_conn()
+def test_log_audit_with_detail(in_memory_db):
+    conn = in_memory_db
     detail = {"alert_id": "abc123", "reason": "investigated"}
     row_id = log_audit(conn, "op", "test_action", detail=detail)
 
@@ -37,21 +29,23 @@ def test_log_audit_with_detail():
     assert json.loads(row["detail_json"]) == detail
 
 
-def test_list_audit_all():
-    conn = _make_conn()
+def test_list_audit_all(in_memory_db):
+    conn = in_memory_db
     log_audit(conn, "a", "action1")
     log_audit(conn, "b", "action2")
     log_audit(conn, "c", "action3")
 
     rows = list_audit_log(conn)
     assert len(rows) == 3
-    # All three present (ordering within same second is by id DESC)
     actors = {r["actor"] for r in rows}
     assert actors == {"a", "b", "c"}
 
 
-def test_list_audit_filter_org():
-    conn = _make_conn()
+def test_list_audit_filter_org(in_memory_db):
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", ("org1", "O1"))
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", ("org2", "O2"))
+    conn.commit()
     log_audit(conn, "a", "x", org_id="org1")
     log_audit(conn, "b", "y", org_id="org2")
 
@@ -60,8 +54,8 @@ def test_list_audit_filter_org():
     assert rows[0]["actor"] == "a"
 
 
-def test_list_audit_filter_actor():
-    conn = _make_conn()
+def test_list_audit_filter_actor(in_memory_db):
+    conn = in_memory_db
     log_audit(conn, "alice", "x")
     log_audit(conn, "bob", "y")
 
@@ -69,8 +63,8 @@ def test_list_audit_filter_actor():
     assert len(rows) == 1
 
 
-def test_list_audit_filter_action():
-    conn = _make_conn()
+def test_list_audit_filter_action(in_memory_db):
+    conn = in_memory_db
     log_audit(conn, "a", "alert_acknowledge")
     log_audit(conn, "b", "tag_deactivate")
 
@@ -79,9 +73,8 @@ def test_list_audit_filter_action():
     assert rows[0]["actor"] == "b"
 
 
-def test_list_audit_filter_since():
-    conn = _make_conn()
-    # Insert with explicit timestamps
+def test_list_audit_filter_since(in_memory_db):
+    conn = in_memory_db
     conn.execute(
         "INSERT INTO audit_log (actor, action, timestamp, source) VALUES (?, ?, ?, ?)",
         ("a", "x", "2026-01-01 00:00:00", "cli"),
@@ -97,8 +90,10 @@ def test_list_audit_filter_since():
     assert rows[0]["actor"] == "b"
 
 
-def test_list_audit_combined_filters():
-    conn = _make_conn()
+def test_list_audit_combined_filters(in_memory_db):
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", ("org1", "O1"))
+    conn.commit()
     log_audit(conn, "alice", "alert_acknowledge", org_id="org1")
     log_audit(conn, "alice", "tag_deactivate", org_id="org1")
     log_audit(conn, "bob", "alert_acknowledge", org_id="org1")

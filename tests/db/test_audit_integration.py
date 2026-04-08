@@ -1,20 +1,10 @@
 """Integration tests for audit log instrumentation at mutation sites."""
 from __future__ import annotations
 
-import sqlite3
-
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.alerts import create_alert, acknowledge_alert
 from sable_platform.db.tags import add_tag, deactivate_tag
 from sable_platform.db.watchlist import add_to_watchlist
-
-
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+from tests.conftest import make_test_conn
 
 
 def _insert_org(conn, org_id="test_org") -> str:
@@ -36,7 +26,7 @@ def _insert_entity(conn, org_id, entity_id="ent_1"):
 
 
 def test_acknowledge_alert_creates_audit_entry():
-    conn = _make_conn()
+    conn = make_test_conn()
     org_id = _insert_org(conn)
 
     alert_id = create_alert(
@@ -54,7 +44,7 @@ def test_acknowledge_alert_creates_audit_entry():
 
 
 def test_deactivate_tag_creates_audit_entry():
-    conn = _make_conn()
+    conn = make_test_conn()
     org_id = _insert_org(conn)
     entity_id = _insert_entity(conn, org_id)
 
@@ -69,7 +59,7 @@ def test_deactivate_tag_creates_audit_entry():
 
 
 def test_watchlist_add_creates_audit_entry():
-    conn = _make_conn()
+    conn = make_test_conn()
     org_id = _insert_org(conn)
 
     # The CLI calls log_audit after add_to_watchlist, but the DB helper doesn't.

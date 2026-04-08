@@ -7,11 +7,13 @@ Platform stores and queries — it does not compute.
 from __future__ import annotations
 
 import json
-import sqlite3
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 
 def upsert_playbook_targets(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     targets: list[dict],
     *,
@@ -22,42 +24,42 @@ def upsert_playbook_targets(
     Returns the row id of the inserted record.
     """
     row_id = conn.execute(
-        """
-        INSERT INTO playbook_targets (org_id, artifact_id, targets_json)
-        VALUES (?, ?, ?)
-        """,
-        (org_id, artifact_id, json.dumps(targets)),
+        text(
+            "INSERT INTO playbook_targets (org_id, artifact_id, targets_json)"
+            " VALUES (:org_id, :artifact_id, :targets_json)"
+        ),
+        {"org_id": org_id, "artifact_id": artifact_id, "targets_json": json.dumps(targets)},
     ).lastrowid
     conn.commit()
     return row_id
 
 
 def get_latest_playbook_targets(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
-) -> sqlite3.Row | None:
+):
     """Return the most recent playbook targets for an org, or None."""
     return conn.execute(
-        "SELECT * FROM playbook_targets WHERE org_id=? ORDER BY created_at DESC LIMIT 1",
-        (org_id,),
+        text("SELECT * FROM playbook_targets WHERE org_id=:org_id ORDER BY created_at DESC LIMIT 1"),
+        {"org_id": org_id},
     ).fetchone()
 
 
 def list_playbook_targets(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     *,
     limit: int = 20,
-) -> list[sqlite3.Row]:
+) -> list:
     """List playbook targets for an org, newest first."""
     return conn.execute(
-        "SELECT * FROM playbook_targets WHERE org_id=? ORDER BY created_at DESC LIMIT ?",
-        (org_id, limit),
+        text("SELECT * FROM playbook_targets WHERE org_id=:org_id ORDER BY created_at DESC LIMIT :lim"),
+        {"org_id": org_id, "lim": limit},
     ).fetchall()
 
 
 def record_playbook_outcomes(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     outcomes: dict,
     *,
@@ -68,35 +70,35 @@ def record_playbook_outcomes(
     Returns the row id of the inserted record.
     """
     row_id = conn.execute(
-        """
-        INSERT INTO playbook_outcomes (org_id, targets_artifact_id, outcomes_json)
-        VALUES (?, ?, ?)
-        """,
-        (org_id, targets_artifact_id, json.dumps(outcomes)),
+        text(
+            "INSERT INTO playbook_outcomes (org_id, targets_artifact_id, outcomes_json)"
+            " VALUES (:org_id, :targets_artifact_id, :outcomes_json)"
+        ),
+        {"org_id": org_id, "targets_artifact_id": targets_artifact_id, "outcomes_json": json.dumps(outcomes)},
     ).lastrowid
     conn.commit()
     return row_id
 
 
 def get_latest_playbook_outcomes(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
-) -> sqlite3.Row | None:
+):
     """Return the most recent playbook outcomes for an org, or None."""
     return conn.execute(
-        "SELECT * FROM playbook_outcomes WHERE org_id=? ORDER BY created_at DESC LIMIT 1",
-        (org_id,),
+        text("SELECT * FROM playbook_outcomes WHERE org_id=:org_id ORDER BY created_at DESC LIMIT 1"),
+        {"org_id": org_id},
     ).fetchone()
 
 
 def list_playbook_outcomes(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     *,
     limit: int = 20,
-) -> list[sqlite3.Row]:
+) -> list:
     """List playbook outcomes for an org, newest first."""
     return conn.execute(
-        "SELECT * FROM playbook_outcomes WHERE org_id=? ORDER BY created_at DESC LIMIT ?",
-        (org_id, limit),
+        text("SELECT * FROM playbook_outcomes WHERE org_id=:org_id ORDER BY created_at DESC LIMIT :lim"),
+        {"org_id": org_id, "lim": limit},
     ).fetchall()

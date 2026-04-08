@@ -1,18 +1,8 @@
 """Tests for deactivate_tag() in tags.py."""
 from __future__ import annotations
 
-import sqlite3
-
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.tags import add_tag, deactivate_tag, get_active_tags
-
-
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+from tests.conftest import make_test_conn
 
 
 def _insert_entity(conn, org_id="test_org", entity_id="ent_1") -> str:
@@ -29,7 +19,7 @@ def _insert_entity(conn, org_id="test_org", entity_id="ent_1") -> str:
 
 
 def test_deactivate_active_tag():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
     add_tag(conn, eid, "top_contributor", source="tracking")
 
@@ -40,7 +30,7 @@ def test_deactivate_active_tag():
 
 
 def test_deactivate_nonexistent_tag_returns_false():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
 
     result = deactivate_tag(conn, eid, "top_contributor")
@@ -48,7 +38,7 @@ def test_deactivate_nonexistent_tag_returns_false():
 
 
 def test_deactivate_already_deactivated_tag_returns_false():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
     add_tag(conn, eid, "top_contributor", source="tracking")
 
@@ -58,7 +48,7 @@ def test_deactivate_already_deactivated_tag_returns_false():
 
 
 def test_deactivate_records_history():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
     add_tag(conn, eid, "top_contributor", source="tracking", confidence=0.9)
 
@@ -75,7 +65,7 @@ def test_deactivate_records_history():
 
 
 def test_deactivate_sets_deactivated_at():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
     add_tag(conn, eid, "top_contributor")
 
@@ -90,7 +80,7 @@ def test_deactivate_sets_deactivated_at():
 
 
 def test_deactivate_updates_entity_timestamp():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
     add_tag(conn, eid, "top_contributor")
 
@@ -102,7 +92,7 @@ def test_deactivate_updates_entity_timestamp():
 
 
 def test_deactivate_custom_reason():
-    conn = _make_conn()
+    conn = make_test_conn()
     eid = _insert_entity(conn)
     add_tag(conn, eid, "watchlist_account", source="ops")
 

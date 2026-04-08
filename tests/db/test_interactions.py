@@ -1,11 +1,8 @@
 """Tests for entity interaction edge helpers."""
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.interactions import (
     sync_interaction_edges,
     list_interactions,
@@ -14,29 +11,11 @@ from sable_platform.db.interactions import (
 from sable_platform.errors import SableError, ORG_NOT_FOUND
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
-
-
-def _insert_org(conn, org_id="test_org") -> str:
-    conn.execute(
-        "INSERT INTO orgs (org_id, display_name, status) VALUES (?, ?, ?)",
-        (org_id, "Test Org", "active"),
-    )
-    conn.commit()
-    return org_id
-
-
 # --- Migration ---
 
 
-def test_entity_interactions_table_columns():
-    conn = _make_conn()
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(entity_interactions)").fetchall()}
+def test_entity_interactions_table_columns(in_memory_db):
+    cols = {row[1] for row in in_memory_db.execute("PRAGMA table_info(entity_interactions)").fetchall()}
     for expected in (
         "id", "org_id", "source_handle", "target_handle",
         "interaction_type", "count", "first_seen", "last_seen", "run_date",
@@ -47,9 +26,8 @@ def test_entity_interactions_table_columns():
 # --- sync_interaction_edges ---
 
 
-def test_sync_inserts_new_edges():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_sync_inserts_new_edges(org_db):
+    conn, org_id = org_db
     edges = [
         {"source_handle": "alice", "target_handle": "bob", "interaction_type": "reply", "count": 3, "first_seen": "2026-03-01", "last_seen": "2026-03-15"},
         {"source_handle": "alice", "target_handle": "carol", "interaction_type": "mention", "count": 1},
@@ -65,9 +43,8 @@ def test_sync_inserts_new_edges():
     assert rows[0]["run_date"] == "2026-03-15"
 
 
-def test_sync_upserts_existing_edge():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_sync_upserts_existing_edge(org_db):
+    conn, org_id = org_db
 
     edges1 = [{"source_handle": "alice", "target_handle": "bob", "interaction_type": "reply", "count": 3, "first_seen": "2026-03-01", "last_seen": "2026-03-15"}]
     sync_interaction_edges(conn, org_id, edges1, "2026-03-15")
@@ -83,9 +60,8 @@ def test_sync_upserts_existing_edge():
     assert rows[0]["run_date"] == "2026-03-22"
 
 
-def test_sync_default_count_is_one():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_sync_default_count_is_one(org_db):
+    conn, org_id = org_db
     edges = [{"source_handle": "a", "target_handle": "b", "interaction_type": "co_mention"}]
     sync_interaction_edges(conn, org_id, edges, "2026-03-15")
 
@@ -93,17 +69,15 @@ def test_sync_default_count_is_one():
     assert row["count"] == 1
 
 
-def test_sync_rejects_unknown_org():
-    conn = _make_conn()
+def test_sync_rejects_unknown_org(in_memory_db):
     edges = [{"source_handle": "a", "target_handle": "b", "interaction_type": "reply"}]
     with pytest.raises(SableError) as exc:
-        sync_interaction_edges(conn, "nonexistent", edges, "2026-03-15")
+        sync_interaction_edges(in_memory_db, "nonexistent", edges, "2026-03-15")
     assert exc.value.code == ORG_NOT_FOUND
 
 
-def test_sync_empty_edges_list():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_sync_empty_edges_list(org_db):
+    conn, org_id = org_db
     n = sync_interaction_edges(conn, org_id, [], "2026-03-15")
     assert n == 0
 
@@ -111,9 +85,8 @@ def test_sync_empty_edges_list():
 # --- list_interactions ---
 
 
-def test_list_interactions_sorted_by_count():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_list_interactions_sorted_by_count(org_db):
+    conn, org_id = org_db
     edges = [
         {"source_handle": "a", "target_handle": "b", "interaction_type": "reply", "count": 1},
         {"source_handle": "c", "target_handle": "d", "interaction_type": "reply", "count": 10},
@@ -128,9 +101,8 @@ def test_list_interactions_sorted_by_count():
     assert rows[2]["count"] == 1
 
 
-def test_list_interactions_filter_by_type():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_list_interactions_filter_by_type(org_db):
+    conn, org_id = org_db
     edges = [
         {"source_handle": "a", "target_handle": "b", "interaction_type": "reply", "count": 5},
         {"source_handle": "c", "target_handle": "d", "interaction_type": "mention", "count": 3},
@@ -142,9 +114,8 @@ def test_list_interactions_filter_by_type():
     assert rows[0]["interaction_type"] == "mention"
 
 
-def test_list_interactions_min_count_filter():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_list_interactions_min_count_filter(org_db):
+    conn, org_id = org_db
     edges = [
         {"source_handle": "a", "target_handle": "b", "interaction_type": "reply", "count": 1},
         {"source_handle": "c", "target_handle": "d", "interaction_type": "reply", "count": 10},
@@ -159,9 +130,8 @@ def test_list_interactions_min_count_filter():
 # --- get_interaction_summary ---
 
 
-def test_interaction_summary():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_interaction_summary(org_db):
+    conn, org_id = org_db
     edges = [
         {"source_handle": "alice", "target_handle": "bob", "interaction_type": "reply", "count": 3},
         {"source_handle": "alice", "target_handle": "carol", "interaction_type": "mention", "count": 2},
@@ -176,9 +146,8 @@ def test_interaction_summary():
     assert summary["unique_targets"] == 2  # bob, carol
 
 
-def test_interaction_summary_empty_org():
-    conn = _make_conn()
-    org_id = _insert_org(conn)
+def test_interaction_summary_empty_org(org_db):
+    conn, org_id = org_db
     summary = get_interaction_summary(conn, org_id)
     assert summary["edge_count"] == 0
     assert summary["total_interactions"] == 0

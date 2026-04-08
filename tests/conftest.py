@@ -13,6 +13,68 @@ from sable_platform.db.schema import metadata as sa_metadata
 os.environ.setdefault("SABLE_OPERATOR_ID", "test")
 
 
+def make_test_conn(*, with_org: str | None = None) -> CompatConnection:
+    """Create an in-memory CompatConnection for tests that don't use fixtures.
+
+    Returns a CompatConnection backed by an in-memory SQLite database with
+    full schema. If *with_org* is provided, inserts an org row with that ID.
+    Caller is responsible for closing via ``conn.close()``.
+    """
+    engine = create_engine("sqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_conn, connection_record):  # noqa: ARG001
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    sa_metadata.create_all(engine)
+    sa_conn = engine.connect()
+    conn = CompatConnection(sa_conn)
+    if with_org:
+        conn.execute(
+            "INSERT INTO orgs (org_id, display_name) VALUES (?, ?)",
+            (with_org, "Test Org"),
+        )
+        conn.commit()
+    return conn
+
+
+def make_test_file_db(db_path: str, *, with_org: str | None = None) -> CompatConnection:
+    """Create a file-backed CompatConnection using the migration path.
+
+    Uses ``ensure_schema()`` (SQL migrations) so that the file DB is
+    compatible with ``get_db()`` which also runs ``ensure_schema()``.
+    """
+    import sqlite3 as _sqlite3
+
+    from sable_platform.db.connection import ensure_schema
+
+    raw = _sqlite3.connect(db_path)
+    raw.row_factory = _sqlite3.Row
+    raw.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(raw)
+    raw.close()
+
+    engine = create_engine(f"sqlite:///{db_path}")
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_conn, connection_record):  # noqa: ARG001
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    sa_conn = engine.connect()
+    conn = CompatConnection(sa_conn)
+    if with_org:
+        conn.execute(
+            "INSERT INTO orgs (org_id, display_name) VALUES (?, ?)",
+            (with_org, "Test Org"),
+        )
+        conn.commit()
+    return conn
+
+
 # ---------------------------------------------------------------------------
 # Shared SA engine (used by both compat and native fixtures)
 # ---------------------------------------------------------------------------
