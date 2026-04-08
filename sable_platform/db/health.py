@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import sqlite3
 
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
 
-def check_db_health(conn: sqlite3.Connection) -> dict:
+def check_db_health(conn: Connection) -> dict:
     """Return a health status dict for the database.
 
     Returns:
@@ -20,7 +22,7 @@ def check_db_health(conn: sqlite3.Connection) -> dict:
         }
     """
     try:
-        version_row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version_row = conn.execute(text("SELECT version FROM schema_version")).fetchone()
         migration_version = version_row[0] if version_row else 0
     except (sqlite3.OperationalError, SAOperationalError):
         return {
@@ -32,11 +34,11 @@ def check_db_health(conn: sqlite3.Connection) -> dict:
             "alert_eval_stale": True,
         }
 
-    org_row = conn.execute("SELECT COUNT(*) as cnt FROM orgs").fetchone()
+    org_row = conn.execute(text("SELECT COUNT(*) as cnt FROM orgs")).fetchone()
     org_count = org_row["cnt"] if org_row else 0
 
     diag_row = conn.execute(
-        "SELECT MAX(started_at) as latest FROM diagnostic_runs"
+        text("SELECT MAX(started_at) as latest FROM diagnostic_runs")
     ).fetchone()
     latest_diag = diag_row["latest"] if diag_row else None
 
@@ -44,8 +46,10 @@ def check_db_health(conn: sqlite3.Connection) -> dict:
     alert_eval_stale = True
     try:
         meta_row = conn.execute(
-            "SELECT CAST((julianday('now') - julianday(value)) * 24 AS REAL) as age_hours"
-            " FROM platform_meta WHERE key='last_alert_eval_at'"
+            text(
+                "SELECT CAST((julianday('now') - julianday(value)) * 24 AS REAL) as age_hours"
+                " FROM platform_meta WHERE key='last_alert_eval_at'"
+            )
         ).fetchone()
         if meta_row and meta_row["age_hours"] is not None:
             last_eval_age_hours = round(meta_row["age_hours"], 2)

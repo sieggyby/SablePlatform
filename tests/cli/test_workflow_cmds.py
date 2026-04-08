@@ -1,21 +1,16 @@
 """Smoke tests for workflow CLI commands."""
 from __future__ import annotations
 
-import sqlite3
 import uuid
 
 from click.testing import CliRunner
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.cli.workflow_cmds import workflow_list, workflow_events, workflow_status, workflow_gc
+from tests.conftest import make_test_conn
 
 
 def _make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+    return make_test_conn()
 
 
 def _insert_org(conn, org_id="o1"):

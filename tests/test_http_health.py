@@ -3,19 +3,15 @@ from __future__ import annotations
 
 import io
 import json
-import sqlite3
 from unittest.mock import patch
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    ensure_schema(conn)
-    return conn
+def _make_conn():
+    return make_test_conn()
 
 
 class _MockHeaders:
@@ -29,7 +25,7 @@ class _MockHeaders:
 
 def _invoke_handler(
     path: str,
-    conn: sqlite3.Connection,
+    conn,
     headers: dict | None = None,
     monkeypatch=None,
     token: str = "test_token",

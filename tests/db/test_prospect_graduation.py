@@ -1,11 +1,9 @@
 """Tests for LI-3: prospect graduation."""
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.prospects import (
     graduate_prospect,
     list_prospect_scores,
@@ -14,17 +12,15 @@ from sable_platform.db.prospects import (
 
 
 @pytest.fixture
-def grad_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
+def grad_db():
+    conn = make_test_conn()
     # Seed two prospects
     sync_prospect_scores(conn, [
         {"org_id": "alpha", "composite_score": 0.8, "tier": "Tier 1"},
         {"org_id": "beta", "composite_score": 0.6, "tier": "Tier 2"},
     ], "2026-04-01")
-    return conn
+    yield conn
+    conn.close()
 
 
 def test_list_excludes_graduated_by_default(grad_db):

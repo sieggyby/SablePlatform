@@ -1,23 +1,17 @@
 """Tests for SP-RETENTION: data retention garbage collection."""
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.gc import run_gc
 
 
 @pytest.fixture
-def gc_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('gc_org', 'GC Org')")
-    conn.commit()
-    return conn
+def gc_db():
+    conn = make_test_conn(with_org="gc_org")
+    yield conn
+    conn.close()
 
 
 def test_gc_empty_db(gc_db):

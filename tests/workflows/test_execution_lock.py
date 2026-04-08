@@ -1,12 +1,11 @@
 """Tests for SP-LOCK: workflow execution locking."""
 from __future__ import annotations
 
-import sqlite3
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn, make_test_file_db
 from sable_platform.db.workflow_store import (
     create_workflow_run,
     fail_workflow_run,
@@ -31,31 +30,22 @@ _TEST_WF = WorkflowDefinition(
 
 
 @pytest.fixture
-def lock_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org_a', 'Org A')")
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org_b', 'Org B')")
+def lock_db():
+    conn = make_test_conn()
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", ("org_a", "Org A"))
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", ("org_b", "Org B"))
     conn.commit()
-    return conn
+    yield conn
+    conn.close()
 
 
 class TestConcurrentRunBlocking:
     def test_db_level_lock_blocks_second_connection(self, tmp_path):
         """The DB-level active-run invariant blocks duplicate inserts across connections."""
-        db_path = tmp_path / "lock.db"
-        conn1 = sqlite3.connect(db_path)
-        conn2 = sqlite3.connect(db_path)
+        db_path = str(tmp_path / "lock.db")
+        conn1 = make_test_file_db(db_path, with_org="org_a")
+        conn2 = make_test_file_db(db_path)
         try:
-            for conn in (conn1, conn2):
-                conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA foreign_keys=ON")
-            ensure_schema(conn1)
-            conn1.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org_a', 'Org A')")
-            conn1.commit()
-
             create_workflow_run(conn1, "org_a", "test_lock_wf", "1.0", {})
 
             with pytest.raises(SableError) as exc_info:
@@ -179,11 +169,9 @@ class TestResumeRespectLock:
         # correctly prevents a second pending/running row for the same key.
         run_b = "failed_run_b"
         lock_db.execute(
-            """
-            INSERT INTO workflow_runs
-                (run_id, org_id, workflow_name, workflow_version, status, config_json, completed_at)
-            VALUES (?, ?, ?, '1.0', 'failed', '{}', datetime('now'))
-            """,
+            "INSERT INTO workflow_runs"
+            " (run_id, org_id, workflow_name, workflow_version, status, config_json, completed_at)"
+            " VALUES (?, ?, ?, '1.0', 'failed', '{}', datetime('now'))",
             (run_b, "org_a", "test_lock_wf"),
         )
         lock_db.commit()

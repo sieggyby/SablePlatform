@@ -1,19 +1,13 @@
 """Tests for T3-SELFMON: alert evaluator heartbeat and health staleness reporting."""
 from __future__ import annotations
 
-import sqlite3
-
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.health import check_db_health
 from sable_platform.workflows.alert_evaluator import evaluate_alerts
 
 
-def _make_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+def _make_conn():
+    return make_test_conn()
 
 
 def test_heartbeat_written_after_evaluate_alerts():

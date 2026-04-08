@@ -2,97 +2,102 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, MAX_RETRIES_EXCEEDED
 
 
 def create_job(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     job_type: str,
     config: dict | None = None,
 ) -> str:
     job_id = uuid.uuid4().hex
     conn.execute(
-        """
-        INSERT INTO jobs (job_id, org_id, job_type, status, config_json)
-        VALUES (?, ?, ?, 'pending', ?)
-        """,
-        (job_id, org_id, job_type, json.dumps(config or {})),
+        text(
+            "INSERT INTO jobs (job_id, org_id, job_type, status, config_json)"
+            " VALUES (:job_id, :org_id, :job_type, 'pending', :config_json)"
+        ),
+        {"job_id": job_id, "org_id": org_id, "job_type": job_type, "config_json": json.dumps(config or {})},
     )
     conn.commit()
     return job_id
 
 
 def add_step(
-    conn: sqlite3.Connection,
+    conn: Connection,
     job_id: str,
     step_name: str,
     step_order: int = 0,
     input_data: dict | None = None,
 ) -> int:
     cursor = conn.execute(
-        """
-        INSERT INTO job_steps (job_id, step_name, step_order, status, input_json)
-        VALUES (?, ?, ?, 'pending', ?)
-        """,
-        (job_id, step_name, step_order, json.dumps(input_data or {})),
+        text(
+            "INSERT INTO job_steps (job_id, step_name, step_order, status, input_json)"
+            " VALUES (:job_id, :step_name, :step_order, 'pending', :input_json)"
+        ),
+        {"job_id": job_id, "step_name": step_name, "step_order": step_order, "input_json": json.dumps(input_data or {})},
     )
     conn.commit()
     return cursor.lastrowid
 
 
-def start_step(conn: sqlite3.Connection, step_id: int) -> None:
+def start_step(conn: Connection, step_id: int) -> None:
     conn.execute(
-        """
-        UPDATE job_steps
-        SET status='running', started_at=datetime('now')
-        WHERE step_id=?
-        """,
-        (step_id,),
+        text(
+            "UPDATE job_steps"
+            " SET status='running', started_at=datetime('now')"
+            " WHERE step_id=:step_id"
+        ),
+        {"step_id": step_id},
     )
     conn.commit()
 
 
-def complete_step(conn: sqlite3.Connection, step_id: int, output: dict | None = None) -> None:
+def complete_step(conn: Connection, step_id: int, output: dict | None = None) -> None:
     conn.execute(
-        """
-        UPDATE job_steps
-        SET status='completed', completed_at=datetime('now'), output_json=?
-        WHERE step_id=?
-        """,
-        (json.dumps(output or {}), step_id),
+        text(
+            "UPDATE job_steps"
+            " SET status='completed', completed_at=datetime('now'), output_json=:output_json"
+            " WHERE step_id=:step_id"
+        ),
+        {"output_json": json.dumps(output or {}), "step_id": step_id},
     )
     conn.commit()
 
 
-def fail_step(conn: sqlite3.Connection, step_id: int, error: str | None = None) -> None:
+def fail_step(conn: Connection, step_id: int, error: str | None = None) -> None:
     conn.execute(
-        """
-        UPDATE job_steps
-        SET status='failed', retries = retries + 1, error=?
-        WHERE step_id=?
-        """,
-        (error, step_id),
+        text(
+            "UPDATE job_steps"
+            " SET status='failed', retries = retries + 1, error=:error"
+            " WHERE step_id=:step_id"
+        ),
+        {"error": error, "step_id": step_id},
     )
     conn.commit()
 
 
-def get_job(conn: sqlite3.Connection, job_id: str) -> sqlite3.Row:
-    return conn.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+def get_job(conn: Connection, job_id: str):
+    return conn.execute(
+        text("SELECT * FROM jobs WHERE job_id=:job_id"),
+        {"job_id": job_id},
+    ).fetchone()
 
 
-def get_resumable_steps(conn: sqlite3.Connection, job_id: str) -> list[sqlite3.Row]:
+def get_resumable_steps(conn: Connection, job_id: str) -> list:
     """Return all steps for the job ordered by step_order."""
     return conn.execute(
-        "SELECT * FROM job_steps WHERE job_id=? ORDER BY step_order",
-        (job_id,),
+        text("SELECT * FROM job_steps WHERE job_id=:job_id ORDER BY step_order"),
+        {"job_id": job_id},
     ).fetchall()
 
 
-def resume_job(conn: sqlite3.Connection, job_id: str, max_retries: int = 2) -> list[dict]:
+def resume_job(conn: Connection, job_id: str, max_retries: int = 2) -> list[dict]:
     """
     Run the resume state machine for all steps in the job.
 
@@ -115,8 +120,8 @@ def resume_job(conn: sqlite3.Connection, job_id: str, max_retries: int = 2) -> l
         elif status == "failed":
             if retries < max_retries:
                 conn.execute(
-                    "UPDATE job_steps SET status='pending' WHERE step_id=?",
-                    (step["step_id"],),
+                    text("UPDATE job_steps SET status='pending' WHERE step_id=:step_id"),
+                    {"step_id": step["step_id"]},
                 )
                 conn.commit()
                 actions.append({"step_name": step["step_name"], "action": "retry"})
@@ -131,8 +136,8 @@ def resume_job(conn: sqlite3.Connection, job_id: str, max_retries: int = 2) -> l
 
         else:
             conn.execute(
-                "UPDATE job_steps SET status='running' WHERE step_id=?",
-                (step["step_id"],),
+                text("UPDATE job_steps SET status='running' WHERE step_id=:step_id"),
+                {"step_id": step["step_id"]},
             )
             conn.commit()
             actions.append({"step_name": step["step_name"], "action": "run"})

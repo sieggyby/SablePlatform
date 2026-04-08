@@ -7,16 +7,11 @@ from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
 from sable_platform.cli.main import cli
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 
 
 def _make_conn():
-    import sqlite3
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+    return make_test_conn()
 
 
 def _seed_scores(conn):

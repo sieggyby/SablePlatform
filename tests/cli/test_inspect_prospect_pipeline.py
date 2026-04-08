@@ -2,22 +2,17 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from sable_platform.cli.main import cli
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.prospects import sync_prospect_scores
+from tests.conftest import make_test_conn
 
 
 def _make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+    return make_test_conn()
 
 
 def _seed_prospects(conn):

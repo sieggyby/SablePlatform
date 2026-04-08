@@ -1,21 +1,20 @@
 """Tests for SP-4: health check query."""
 from __future__ import annotations
 
-import sqlite3
-
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 from sable_platform.db.health import check_db_health
 
 
 @pytest.fixture
-def health_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+def health_db():
+    conn = make_test_conn()
+    # Simulate ensure_schema() populating schema_version
+    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (30,))
+    conn.commit()
+    yield conn
+    conn.close()
 
 
 def test_health_check_fresh_db(health_db):

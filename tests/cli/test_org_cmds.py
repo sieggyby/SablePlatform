@@ -6,16 +6,13 @@ import sqlite3
 
 from click.testing import CliRunner
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.cli.org_cmds import org_list, org_create, org_reject, org_config_set, org_config_get, org_config_list
+from sable_platform.db.connection import ensure_schema
+from tests.conftest import make_test_conn
 
 
 def _make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    return conn
+    return make_test_conn()
 
 
 def _setup_file_db(path: str) -> None:
@@ -63,10 +60,9 @@ def test_org_reject_success(tmp_path, monkeypatch):
     _setup_file_db(db_path)
     monkeypatch.setenv("SABLE_DB_PATH", db_path)
     # Seed a prospect
-    import sqlite3 as _sql
-    conn = _sql.connect(db_path)
-    conn.row_factory = _sql.Row
+    from tests.conftest import make_test_file_db
     from sable_platform.db.prospects import sync_prospect_scores
+    conn = make_test_file_db(db_path)
     sync_prospect_scores(conn, [{"org_id": "proj_x", "composite_score": 0.8, "tier": "Tier 1"}], "2026-04-04")
     conn.close()
 

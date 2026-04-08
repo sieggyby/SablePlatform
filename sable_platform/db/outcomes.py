@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import uuid
 from pathlib import Path
+
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 TRACKED_METRICS = [
     "fit_score",
@@ -26,7 +28,7 @@ TRACKED_METRICS = [
 
 
 def create_outcome(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     outcome_type: str,
     *,
@@ -45,98 +47,111 @@ def create_outcome(
     if metric_before is not None and metric_after is not None:
         metric_delta = metric_after - metric_before
     conn.execute(
-        """
-        INSERT INTO outcomes
-            (outcome_id, org_id, entity_id, action_id, outcome_type, description,
-             metric_name, metric_before, metric_after, metric_delta, data_json, recorded_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (outcome_id, org_id, entity_id, action_id, outcome_type, description,
-         metric_name, metric_before, metric_after, metric_delta, data_json, recorded_by),
+        text(
+            "INSERT INTO outcomes"
+            " (outcome_id, org_id, entity_id, action_id, outcome_type, description,"
+            "  metric_name, metric_before, metric_after, metric_delta, data_json, recorded_by)"
+            " VALUES (:outcome_id, :org_id, :entity_id, :action_id, :outcome_type, :description,"
+            "  :metric_name, :metric_before, :metric_after, :metric_delta, :data_json, :recorded_by)"
+        ),
+        {
+            "outcome_id": outcome_id,
+            "org_id": org_id,
+            "entity_id": entity_id,
+            "action_id": action_id,
+            "outcome_type": outcome_type,
+            "description": description,
+            "metric_name": metric_name,
+            "metric_before": metric_before,
+            "metric_after": metric_after,
+            "metric_delta": metric_delta,
+            "data_json": data_json,
+            "recorded_by": recorded_by,
+        },
     )
     conn.commit()
     return outcome_id
 
 
 def list_outcomes(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     *,
     outcome_type: str | None = None,
     limit: int = 50,
-) -> list[sqlite3.Row]:
+) -> list:
     if outcome_type:
         return conn.execute(
-            """
-            SELECT * FROM outcomes
-            WHERE org_id=? AND outcome_type=?
-            ORDER BY created_at DESC LIMIT ?
-            """,
-            (org_id, outcome_type, limit),
+            text(
+                "SELECT * FROM outcomes"
+                " WHERE org_id=:org_id AND outcome_type=:outcome_type"
+                " ORDER BY created_at DESC LIMIT :lim"
+            ),
+            {"org_id": org_id, "outcome_type": outcome_type, "lim": limit},
         ).fetchall()
     return conn.execute(
-        "SELECT * FROM outcomes WHERE org_id=? ORDER BY created_at DESC LIMIT ?",
-        (org_id, limit),
+        text("SELECT * FROM outcomes WHERE org_id=:org_id ORDER BY created_at DESC LIMIT :lim"),
+        {"org_id": org_id, "lim": limit},
     ).fetchall()
 
 
 def compute_and_store_diagnostic_delta(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     run_id_after: str,
 ) -> list[str]:
     """Compare run_id_after to the previous completed run. Returns created delta_ids."""
     after_row = conn.execute(
-        """
-        SELECT run_id, completed_at, checkpoint_path FROM diagnostic_runs
-        WHERE org_id=? AND run_id=? AND status='completed'
-        """,
-        (org_id, run_id_after),
+        text(
+            "SELECT run_id, completed_at, checkpoint_path FROM diagnostic_runs"
+            " WHERE org_id=:org_id AND run_id=:run_id AND status='completed'"
+        ),
+        {"org_id": org_id, "run_id": run_id_after},
     ).fetchone()
     if not after_row or not after_row["checkpoint_path"]:
         return []
 
     if after_row["completed_at"] is None:
         prev_row = conn.execute(
-            """
-            SELECT run_id, checkpoint_path FROM diagnostic_runs
-            WHERE org_id=?
-              AND run_id < ?
-              AND status='completed'
-              AND checkpoint_path IS NOT NULL
-            ORDER BY run_id DESC LIMIT 1
-            """,
-            (org_id, run_id_after),
+            text(
+                "SELECT run_id, checkpoint_path FROM diagnostic_runs"
+                " WHERE org_id=:org_id"
+                "   AND run_id < :run_id"
+                "   AND status='completed'"
+                "   AND checkpoint_path IS NOT NULL"
+                " ORDER BY run_id DESC LIMIT 1"
+            ),
+            {"org_id": org_id, "run_id": run_id_after},
         ).fetchone()
     else:
         prev_row = conn.execute(
-            """
-            SELECT run_id, checkpoint_path FROM diagnostic_runs
-            WHERE org_id=?
-              AND run_id != ?
-              AND status='completed'
-              AND checkpoint_path IS NOT NULL
-              AND (
-                  (completed_at IS NOT NULL AND (
-                      completed_at < ?
-                      OR (completed_at = ? AND run_id < ?)
-                  ))
-                  OR (completed_at IS NULL AND run_id < ?)
-              )
-            ORDER BY
-                CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END,
-                completed_at DESC,
-                run_id DESC
-            LIMIT 1
-            """,
-            (
-                org_id,
-                run_id_after,
-                after_row["completed_at"],
-                after_row["completed_at"],
-                run_id_after,
-                run_id_after,
+            text(
+                "SELECT run_id, checkpoint_path FROM diagnostic_runs"
+                " WHERE org_id=:org_id"
+                "   AND run_id != :run_id"
+                "   AND status='completed'"
+                "   AND checkpoint_path IS NOT NULL"
+                "   AND ("
+                "       (completed_at IS NOT NULL AND ("
+                "           completed_at < :completed_at"
+                "           OR (completed_at = :completed_at2 AND run_id < :run_id2)"
+                "       ))"
+                "       OR (completed_at IS NULL AND run_id < :run_id3)"
+                "   )"
+                " ORDER BY"
+                "     CASE WHEN completed_at IS NULL THEN 1 ELSE 0 END,"
+                "     completed_at DESC,"
+                "     run_id DESC"
+                " LIMIT 1"
             ),
+            {
+                "org_id": org_id,
+                "run_id": run_id_after,
+                "completed_at": after_row["completed_at"],
+                "completed_at2": after_row["completed_at"],
+                "run_id2": run_id_after,
+                "run_id3": run_id_after,
+            },
         ).fetchone()
     if not prev_row:
         return []
@@ -165,14 +180,24 @@ def compute_and_store_diagnostic_delta(
 
         delta_id = uuid.uuid4().hex
         conn.execute(
-            """
-            INSERT INTO diagnostic_deltas
-                (delta_id, org_id, run_id_before, run_id_after, metric_name,
-                 value_before, value_after, delta, pct_change)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (delta_id, org_id, prev_row["run_id"], run_id_after, metric,
-             val_before, val_after, delta, pct),
+            text(
+                "INSERT INTO diagnostic_deltas"
+                " (delta_id, org_id, run_id_before, run_id_after, metric_name,"
+                "  value_before, value_after, delta, pct_change)"
+                " VALUES (:delta_id, :org_id, :run_id_before, :run_id_after, :metric_name,"
+                "  :value_before, :value_after, :delta, :pct_change)"
+            ),
+            {
+                "delta_id": delta_id,
+                "org_id": org_id,
+                "run_id_before": prev_row["run_id"],
+                "run_id_after": run_id_after,
+                "metric_name": metric,
+                "value_before": val_before,
+                "value_after": val_after,
+                "delta": delta,
+                "pct_change": pct,
+            },
         )
         delta_ids.append(delta_id)
 
@@ -181,27 +206,27 @@ def compute_and_store_diagnostic_delta(
 
 
 def get_diagnostic_deltas(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     *,
     run_id_after: str | None = None,
-) -> list[sqlite3.Row]:
+) -> list:
     if run_id_after:
         return conn.execute(
-            """
-            SELECT * FROM diagnostic_deltas
-            WHERE org_id=? AND run_id_after=?
-            ORDER BY metric_name
-            """,
-            (org_id, run_id_after),
+            text(
+                "SELECT * FROM diagnostic_deltas"
+                " WHERE org_id=:org_id AND run_id_after=:run_id_after"
+                " ORDER BY metric_name"
+            ),
+            {"org_id": org_id, "run_id_after": run_id_after},
         ).fetchall()
     return conn.execute(
-        """
-        SELECT * FROM diagnostic_deltas
-        WHERE org_id=?
-        ORDER BY created_at DESC, metric_name
-        """,
-        (org_id,),
+        text(
+            "SELECT * FROM diagnostic_deltas"
+            " WHERE org_id=:org_id"
+            " ORDER BY created_at DESC, metric_name"
+        ),
+        {"org_id": org_id},
     ).fetchall()
 
 

@@ -1,11 +1,12 @@
 """Prospect pipeline query — joins prospect_scores with diagnostic_runs."""
 from __future__ import annotations
 
-import sqlite3
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 
 
 def query_prospect_pipeline(
-    conn: sqlite3.Connection,
+    conn: Connection,
     *,
     tier: str | None = None,
     stale_days: int | None = None,
@@ -47,23 +48,23 @@ def query_prospect_pipeline(
           AND ps.graduated_at IS NULL
           AND ps.rejected_at IS NULL
     """
-    params: list = []
+    params: dict = {}
 
     if tier:
-        query += " AND ps.tier = ?"
-        params.append(tier)
+        query += " AND ps.tier = :tier"
+        params["tier"] = tier
 
     if stale_days is not None:
         query += """
             AND (d.completed_at IS NULL
-                 OR CAST(julianday('now') - julianday(d.completed_at) AS INTEGER) > ?)
+                 OR CAST(julianday('now') - julianday(d.completed_at) AS INTEGER) > :stale_days)
         """
-        params.append(stale_days)
+        params["stale_days"] = stale_days
 
-    query += " ORDER BY ps.composite_score DESC LIMIT ?"
-    params.append(limit)
+    query += " ORDER BY ps.composite_score DESC LIMIT :lim"
+    params["lim"] = limit
 
-    rows = conn.execute(query, params).fetchall()
+    rows = conn.execute(text(query), params).fetchall()
 
     results = []
     for r in rows:

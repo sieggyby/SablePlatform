@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import sqlite3
 
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
 
-def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
+def get_entity_journey(conn: Connection, entity_id: str) -> list[dict]:
     """Return a chronological list of events for an entity.
 
     Each event is a dict with at minimum: {type, timestamp, ...context fields}.
@@ -16,8 +18,8 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
 
     # Entity creation event
     entity_row = conn.execute(
-        "SELECT org_id, display_name, source, status, created_at FROM entities WHERE entity_id=?",
-        (entity_id,),
+        text("SELECT org_id, display_name, source, status, created_at FROM entities WHERE entity_id=:entity_id"),
+        {"entity_id": entity_id},
     ).fetchone()
     if entity_row:
         events.append({
@@ -31,13 +33,13 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
     # Tag history events
     try:
         tag_rows = conn.execute(
-            """
-            SELECT change_type, tag, confidence, source, expires_at, effective_at
-            FROM entity_tag_history
-            WHERE entity_id=?
-            ORDER BY effective_at
-            """,
-            (entity_id,),
+            text(
+                "SELECT change_type, tag, confidence, source, expires_at, effective_at"
+                " FROM entity_tag_history"
+                " WHERE entity_id=:entity_id"
+                " ORDER BY effective_at"
+            ),
+            {"entity_id": entity_id},
         ).fetchall()
         for r in tag_rows:
             events.append({
@@ -55,14 +57,14 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
     # Action events
     try:
         action_rows = conn.execute(
-            """
-            SELECT action_type, title, status, operator, outcome_notes,
-                   created_at, claimed_at, completed_at, skipped_at
-            FROM actions
-            WHERE entity_id=?
-            ORDER BY created_at
-            """,
-            (entity_id,),
+            text(
+                "SELECT action_type, title, status, operator, outcome_notes,"
+                "       created_at, claimed_at, completed_at, skipped_at"
+                " FROM actions"
+                " WHERE entity_id=:entity_id"
+                " ORDER BY created_at"
+            ),
+            {"entity_id": entity_id},
         ).fetchall()
         for r in action_rows:
             events.append({
@@ -100,13 +102,13 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
     # Outcome events
     try:
         outcome_rows = conn.execute(
-            """
-            SELECT outcome_type, description, metric_name, metric_before, metric_after, created_at
-            FROM outcomes
-            WHERE entity_id=?
-            ORDER BY created_at
-            """,
-            (entity_id,),
+            text(
+                "SELECT outcome_type, description, metric_name, metric_before, metric_after, created_at"
+                " FROM outcomes"
+                " WHERE entity_id=:entity_id"
+                " ORDER BY created_at"
+            ),
+            {"entity_id": entity_id},
         ).fetchall()
         for r in outcome_rows:
             events.append({
@@ -125,46 +127,46 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
     return events
 
 
-def entity_funnel(conn: sqlite3.Connection, org_id: str) -> dict:
+def entity_funnel(conn: Connection, org_id: str) -> dict:
     """Return aggregate funnel counts for an org."""
     total = conn.execute(
-        "SELECT COUNT(*) FROM entities WHERE org_id=? AND status != 'archived'",
-        (org_id,),
+        text("SELECT COUNT(*) FROM entities WHERE org_id=:org_id AND status != 'archived'"),
+        {"org_id": org_id},
     ).fetchone()[0]
 
     cultist_count = conn.execute(
-        """
-        SELECT COUNT(DISTINCT e.entity_id)
-        FROM entities e
-        JOIN entity_tags t ON e.entity_id = t.entity_id
-        WHERE e.org_id=? AND t.tag='cultist_candidate'
-          AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))
-        """,
-        (org_id,),
+        text(
+            "SELECT COUNT(DISTINCT e.entity_id)"
+            " FROM entities e"
+            " JOIN entity_tags t ON e.entity_id = t.entity_id"
+            " WHERE e.org_id=:org_id AND t.tag='cultist_candidate'"
+            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))"
+        ),
+        {"org_id": org_id},
     ).fetchone()[0]
 
     top_contrib_count = conn.execute(
-        """
-        SELECT COUNT(DISTINCT e.entity_id)
-        FROM entities e
-        JOIN entity_tags t ON e.entity_id = t.entity_id
-        WHERE e.org_id=? AND t.tag='top_contributor'
-          AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))
-        """,
-        (org_id,),
+        text(
+            "SELECT COUNT(DISTINCT e.entity_id)"
+            " FROM entities e"
+            " JOIN entity_tags t ON e.entity_id = t.entity_id"
+            " WHERE e.org_id=:org_id AND t.tag='top_contributor'"
+            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))"
+        ),
+        {"org_id": org_id},
     ).fetchone()[0]
 
     # Average days from entity creation to first cultist_candidate tag
     avg_cultist = None
     try:
         row = conn.execute(
-            """
-            SELECT AVG(julianday(h.effective_at) - julianday(e.created_at)) AS avg_days
-            FROM entity_tag_history h
-            JOIN entities e ON h.entity_id = e.entity_id
-            WHERE e.org_id=? AND h.tag='cultist_candidate' AND h.change_type='added'
-            """,
-            (org_id,),
+            text(
+                "SELECT AVG(julianday(h.effective_at) - julianday(e.created_at)) AS avg_days"
+                " FROM entity_tag_history h"
+                " JOIN entities e ON h.entity_id = e.entity_id"
+                " WHERE e.org_id=:org_id AND h.tag='cultist_candidate' AND h.change_type='added'"
+            ),
+            {"org_id": org_id},
         ).fetchone()
         avg_cultist = round(row["avg_days"], 1) if row and row["avg_days"] is not None else None
     except (sqlite3.OperationalError, SAOperationalError):
@@ -173,13 +175,13 @@ def entity_funnel(conn: sqlite3.Connection, org_id: str) -> dict:
     avg_top_contrib = None
     try:
         row = conn.execute(
-            """
-            SELECT AVG(julianday(h.effective_at) - julianday(e.created_at)) AS avg_days
-            FROM entity_tag_history h
-            JOIN entities e ON h.entity_id = e.entity_id
-            WHERE e.org_id=? AND h.tag='top_contributor' AND h.change_type='added'
-            """,
-            (org_id,),
+            text(
+                "SELECT AVG(julianday(h.effective_at) - julianday(e.created_at)) AS avg_days"
+                " FROM entity_tag_history h"
+                " JOIN entities e ON h.entity_id = e.entity_id"
+                " WHERE e.org_id=:org_id AND h.tag='top_contributor' AND h.change_type='added'"
+            ),
+            {"org_id": org_id},
         ).fetchone()
         avg_top_contrib = round(row["avg_days"], 1) if row and row["avg_days"] is not None else None
     except (sqlite3.OperationalError, SAOperationalError):
@@ -195,7 +197,7 @@ def entity_funnel(conn: sqlite3.Connection, org_id: str) -> dict:
 
 
 def get_key_journeys(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     limit: int = 5,
 ) -> list[dict]:
@@ -205,8 +207,8 @@ def get_key_journeys(
     then returns the top N with their full journey via get_entity_journey().
     """
     entity_rows = conn.execute(
-        "SELECT entity_id, display_name FROM entities WHERE org_id=? AND status != 'archived'",
-        (org_id,),
+        text("SELECT entity_id, display_name FROM entities WHERE org_id=:org_id AND status != 'archived'"),
+        {"org_id": org_id},
     ).fetchall()
 
     scored: list[tuple[int, str, str]] = []
@@ -215,19 +217,22 @@ def get_key_journeys(
         count = 0
         try:
             count += conn.execute(
-                "SELECT COUNT(*) FROM entity_tag_history WHERE entity_id=?", (eid,)
+                text("SELECT COUNT(*) FROM entity_tag_history WHERE entity_id=:entity_id"),
+                {"entity_id": eid},
             ).fetchone()[0]
         except (sqlite3.OperationalError, SAOperationalError):
             pass
         try:
             count += conn.execute(
-                "SELECT COUNT(*) FROM actions WHERE entity_id=?", (eid,)
+                text("SELECT COUNT(*) FROM actions WHERE entity_id=:entity_id"),
+                {"entity_id": eid},
             ).fetchone()[0]
         except (sqlite3.OperationalError, SAOperationalError):
             pass
         try:
             count += conn.execute(
-                "SELECT COUNT(*) FROM outcomes WHERE entity_id=?", (eid,)
+                text("SELECT COUNT(*) FROM outcomes WHERE entity_id=:entity_id"),
+                {"entity_id": eid},
             ).fetchone()[0]
         except (sqlite3.OperationalError, SAOperationalError):
             pass
@@ -249,29 +254,29 @@ def get_key_journeys(
 
 
 def first_seen_list(
-    conn: sqlite3.Connection,
+    conn: Connection,
     org_id: str,
     *,
     source: str | None = None,
     limit: int = 50,
-) -> list[sqlite3.Row]:
+) -> list:
     """List entities for an org ordered by first seen (created_at)."""
     if source:
         return conn.execute(
-            """
-            SELECT entity_id, display_name, source, status, created_at
-            FROM entities
-            WHERE org_id=? AND source=? AND status != 'archived'
-            ORDER BY created_at DESC LIMIT ?
-            """,
-            (org_id, source, limit),
+            text(
+                "SELECT entity_id, display_name, source, status, created_at"
+                " FROM entities"
+                " WHERE org_id=:org_id AND source=:source AND status != 'archived'"
+                " ORDER BY created_at DESC LIMIT :lim"
+            ),
+            {"org_id": org_id, "source": source, "lim": limit},
         ).fetchall()
     return conn.execute(
-        """
-        SELECT entity_id, display_name, source, status, created_at
-        FROM entities
-        WHERE org_id=? AND status != 'archived'
-        ORDER BY created_at DESC LIMIT ?
-        """,
-        (org_id, limit),
+        text(
+            "SELECT entity_id, display_name, source, status, created_at"
+            " FROM entities"
+            " WHERE org_id=:org_id AND status != 'archived'"
+            " ORDER BY created_at DESC LIMIT :lim"
+        ),
+        {"org_id": org_id, "lim": limit},
     ).fetchall()
