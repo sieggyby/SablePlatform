@@ -73,16 +73,23 @@ def init(db_path: str | None) -> None:
               type=click.IntRange(min=0),
               help="Max backups to retain (0 = unlimited).")
 def backup(db_path: str | None, dest: str | None, label: str | None, max_backups: int) -> None:
-    """Create a backup of sable.db using SQLite online backup API."""
+    """Create a backup of sable.db (SQLite online backup or pg_dump)."""
+    import os
     from pathlib import Path
-    from sable_platform.db.backup import backup_database, get_backup_size
+    from sable_platform.db.backup import backup_database, backup_database_pg, get_backup_size
     from sable_platform.db.connection import sable_db_path
 
-    source = Path(db_path) if db_path else sable_db_path()
-    dest_dir = Path(dest) if dest else source.parent / "backups"
+    database_url = os.environ.get("SABLE_DATABASE_URL", "")
+    is_postgres = database_url.startswith("postgresql")
 
     try:
-        result = backup_database(source, dest_dir, label=label, max_backups=max_backups)
+        if is_postgres and not db_path:
+            dest_dir = Path(dest) if dest else Path.home() / ".sable" / "backups"
+            result = backup_database_pg(database_url, dest_dir, label=label, max_backups=max_backups)
+        else:
+            source = Path(db_path) if db_path else sable_db_path()
+            dest_dir = Path(dest) if dest else source.parent / "backups"
+            result = backup_database(source, dest_dir, label=label, max_backups=max_backups)
         size = get_backup_size(result)
         click.echo(f"Backup created: {result} ({size})")
     except (FileNotFoundError, ValueError) as e:

@@ -1,13 +1,20 @@
-"""SQLite online backup for sable.db."""
+"""Database backup for sable.db (SQLite online backup or pg_dump)."""
 from __future__ import annotations
 
+import logging
 import re
+import shutil
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Backup files match: sable_YYYYMMDDTHHMMSSz[_label].db
-_BACKUP_PATTERN = "sable_[0-9]*T[0-9]*Z*.db"
+log = logging.getLogger(__name__)
+
+# Backup files match: sable_YYYYMMDDTHHMMSSz[_label].db  (SQLite)
+#                  or: sable_YYYYMMDDTHHMMSSz[_label].sql  (Postgres)
+_BACKUP_PATTERN_SQLITE = "sable_[0-9]*T[0-9]*Z*.db"
+_BACKUP_PATTERN_PG = "sable_[0-9]*T[0-9]*Z*.sql"
 _LABEL_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
@@ -71,14 +78,72 @@ def backup_database(
 
     # Prune old backups if max_backups is set.
     if max_backups > 0:
-        _prune_old_backups(dest_dir, max_backups)
+        _prune_old_backups(dest_dir, max_backups, pattern=_BACKUP_PATTERN_SQLITE)
 
     return dest_path
 
 
-def _prune_old_backups(dest_dir: Path, max_backups: int) -> list[Path]:
+def backup_database_pg(
+    database_url: str,
+    dest_dir: Path,
+    *,
+    label: str | None = None,
+    max_backups: int = 10,
+) -> Path:
+    """Create a backup of a Postgres database using ``pg_dump``.
+
+    Requires ``pg_dump`` to be available on ``$PATH``.
+
+    Args:
+        database_url: PostgreSQL connection URL (``postgresql://...``).
+        dest_dir: Directory to write the backup into.
+        label: Optional label appended to the backup filename.
+        max_backups: Retain at most this many backups (0 = unlimited).
+
+    Returns:
+        Path to the newly created backup file.
+
+    Raises:
+        ValueError: If *label* contains invalid characters.
+        FileNotFoundError: If ``pg_dump`` is not installed.
+        RuntimeError: If ``pg_dump`` exits with a non-zero status.
+    """
+    if label and not _LABEL_RE.match(label):
+        raise ValueError(
+            f"Label must contain only alphanumeric, underscore, or hyphen characters: {label!r}"
+        )
+
+    if not shutil.which("pg_dump"):
+        raise FileNotFoundError("pg_dump is not installed or not on $PATH")
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = f"_{label}" if label else ""
+    dest_path = dest_dir / f"sable_{timestamp}{suffix}.sql"
+
+    try:
+        result = subprocess.run(
+            ["pg_dump", "--no-owner", "--no-acl", "-f", str(dest_path), database_url],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"pg_dump failed (exit {result.returncode}): {result.stderr.strip()}")
+    except Exception:
+        dest_path.unlink(missing_ok=True)
+        raise
+
+    if max_backups > 0:
+        _prune_old_backups(dest_dir, max_backups, pattern=_BACKUP_PATTERN_PG)
+
+    return dest_path
+
+
+def _prune_old_backups(dest_dir: Path, max_backups: int, pattern: str = _BACKUP_PATTERN_SQLITE) -> list[Path]:
     """Remove oldest backups exceeding *max_backups*.  Returns list of removed paths."""
-    backups = sorted(dest_dir.glob(_BACKUP_PATTERN))
+    backups = sorted(dest_dir.glob(pattern))
     removed: list[Path] = []
     while len(backups) > max_backups:
         oldest = backups.pop(0)

@@ -99,6 +99,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | Variable | Required | Purpose |
 |---|---|---|
 | `SABLE_DB_PATH` | No | Path to `sable.db`. Defaults to `~/.sable/sable.db` |
+| `SABLE_DATABASE_URL` | No | SQLAlchemy database URL. When set, takes precedence over `SABLE_DB_PATH` for the connection factory. Supports `sqlite:///path` and `postgresql://...`. Backup CLI auto-dispatches to `pg_dump` when this starts with `postgresql`. |
 | `SABLE_TELEGRAM_BOT_TOKEN` | No | Telegram bot token for alert delivery. If unset, Telegram delivery is silently skipped even when `telegram_chat_id` is configured on an org. |
 | `SABLE_HOME` | No | Root dir for Sable config. Defaults to `~/.sable`. Used by `db/cost.py` to locate `config.yaml` for budget cap overrides. |
 | `SABLE_OPERATOR_ID` | **Yes** | Operator identity stamped on `workflow_runs.operator_id` and `audit_log.actor`. CLI fails closed (exit 1) if unset or `"unknown"` for all commands except `init`. |

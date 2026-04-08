@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sable_platform.db.backup import backup_database, get_backup_size, _prune_old_backups
+from sable_platform.db.backup import backup_database, backup_database_pg, get_backup_size, _prune_old_backups
 
 
 def _create_test_db(path: Path) -> None:
@@ -151,6 +151,60 @@ class TestBackupDatabase:
 
         # No orphan backup file should remain
         assert len(list(dest_dir.glob("sable_*.db"))) == 0
+
+
+class TestBackupDatabasePg:
+    def test_rejects_invalid_label(self, tmp_path):
+        with pytest.raises(ValueError, match="alphanumeric"):
+            backup_database_pg("postgresql://localhost/test", tmp_path, label="../../evil")
+
+    def test_raises_when_pg_dump_missing(self, tmp_path):
+        with patch("sable_platform.db.backup.shutil.which", return_value=None):
+            with pytest.raises(FileNotFoundError, match="pg_dump"):
+                backup_database_pg("postgresql://localhost/test", tmp_path)
+
+    def test_raises_on_pg_dump_failure(self, tmp_path):
+        mock_result = type("Result", (), {"returncode": 1, "stderr": "connection refused"})()
+        with patch("sable_platform.db.backup.shutil.which", return_value="/usr/bin/pg_dump"):
+            with patch("sable_platform.db.backup.subprocess.run", return_value=mock_result):
+                with pytest.raises(RuntimeError, match="connection refused"):
+                    backup_database_pg("postgresql://localhost/test", tmp_path)
+        # Verify no orphan file remains
+        assert len(list(tmp_path.glob("sable_*.sql"))) == 0
+
+    def test_creates_sql_backup_on_success(self, tmp_path):
+        def fake_run(cmd, **kwargs):
+            # Simulate pg_dump writing the output file
+            for i, arg in enumerate(cmd):
+                if arg == "-f" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text("-- pg_dump output")
+            return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+        with patch("sable_platform.db.backup.shutil.which", return_value="/usr/bin/pg_dump"):
+            with patch("sable_platform.db.backup.subprocess.run", side_effect=fake_run):
+                result = backup_database_pg("postgresql://localhost/test", tmp_path, label="test")
+
+        assert result.exists()
+        assert result.suffix == ".sql"
+        assert "_test" in result.name
+
+    def test_prunes_old_pg_backups(self, tmp_path):
+        # Pre-create old backups
+        for i in range(5):
+            (tmp_path / f"sable_2026010{i}T000000Z.sql").touch()
+
+        def fake_run(cmd, **kwargs):
+            for i, arg in enumerate(cmd):
+                if arg == "-f" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text("-- pg_dump output")
+            return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+        with patch("sable_platform.db.backup.shutil.which", return_value="/usr/bin/pg_dump"):
+            with patch("sable_platform.db.backup.subprocess.run", side_effect=fake_run):
+                backup_database_pg("postgresql://localhost/test", tmp_path, max_backups=3)
+
+        # 5 old + 1 new = 6, pruned to 3
+        assert len(list(tmp_path.glob("sable_*T*Z*.sql"))) == 3
 
 
 class TestPruneOldBackups:

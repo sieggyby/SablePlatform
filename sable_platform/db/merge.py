@@ -100,10 +100,6 @@ def execute_merge(
 
     ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    # TODO: convert BEGIN/COMMIT/ROLLBACK to conn.begin() context manager
-    # once CompatConnection is removed and callers use raw SA Connection.
-    conn.execute(text("BEGIN"))
-
     try:
         snapshot = {
             "source": dict(source_row),
@@ -200,7 +196,7 @@ def execute_merge(
                 {"ts": ts, "candidate_id": candidate_id},
             )
 
-        conn.execute(text("COMMIT"))
+        conn.commit()
 
         from sable_platform.db.audit import log_audit
         log_audit(conn, merged_by or "system", "entity_merge",
@@ -211,5 +207,5 @@ def execute_merge(
                   source="system")
 
     except Exception:
-        conn.execute(text("ROLLBACK"))
+        conn.rollback()
         raise
