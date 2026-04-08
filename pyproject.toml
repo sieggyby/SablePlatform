@@ -12,6 +12,7 @@ dependencies = [
     "click>=8.0",
     "pyyaml>=6.0",
     "sqlalchemy>=2.0",
+    "alembic>=1.13",
 ]
 
 [project.scripts]

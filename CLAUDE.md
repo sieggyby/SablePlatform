@@ -47,6 +47,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - `StepDefinition` supports `skip_if` (predicate — skips step entirely if True), `max_retries` (default 1; set 0 for steps that must not retry), `retry_delay_seconds` (default 0), and `timeout_seconds` (default None — no timeout). Steps that exceed `timeout_seconds` return `StepResult(status="failed", error="step_timeout")`.
 - To add a new alert type: (1) add `_check_my_condition(conn, org_id)` to `alert_checks.py` — check functions must NOT call `_deliver()`, they only call `create_alert()` and return alert IDs; (2) register it in `evaluate_alerts()` in `alert_evaluator.py`; (3) the caller (CLI or builtin workflow step) calls `deliver_alerts_by_ids(conn, alert_ids)` after evaluation; (4) use `"{alert_type}:{org_id}:{entity_or_run_id}"` as the dedup_key. Always include `org_id` to prevent cross-org collision. Org-scoped alerts with no per-entity key use `"{alert_type}:{org_id}"` (2 parts). Never omit org_id.
 - New alert tests must cover both the fire case and the cooldown suppression case.
+- **Dual-migration requirement:** Schema changes require both a SQL migration file (registered in `_MIGRATIONS` in `connection.py`) for SQLite AND an Alembic revision (`alembic revision --autogenerate`) for Postgres. Missing either causes SQLite/Postgres schema drift.
 
 ## Key Files
 

@@ -51,7 +51,7 @@ Use this context to sharpen prioritization. Prefer repo-specific risk calls over
 
 ### Tier 1 — breaks prod, corrupts data, or breaks cross-suite contracts
 - migration applied out of order or with incorrect version bump
-- schema change without migration (column added/removed in code but not SQL)
+- schema change without migration (column added/removed in code but not SQL) — dual-migration: must update both SQL migration file + `_MIGRATIONS` entry (SQLite) AND Alembic revision (Postgres)
 - workflow resume picking up the wrong step or re-running completed steps
 - subprocess adapter result silently ignored when it signals failure
 - `dedup_key` logic failure causing alert double-fire or silent drop
