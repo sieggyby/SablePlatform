@@ -9,14 +9,20 @@ timeout via event listeners — matching the PRAGMAs in the legacy
 from __future__ import annotations
 
 import os
+import threading
 
 from sqlalchemy import Engine, create_engine, event
 
 from sable_platform.db.connection import sable_db_path
 
+_engine_lock = threading.Lock()
+_engine_cache: dict[str, Engine] = {}
+
 
 def get_engine(url: str | None = None) -> Engine:
     """Return a :class:`sqlalchemy.Engine` for the platform database.
+
+    Engines are cached by URL so repeated calls reuse the same pool.
 
     Resolution order for the connection URL:
 
@@ -30,12 +36,17 @@ def get_engine(url: str | None = None) -> Engine:
         path.parent.mkdir(parents=True, exist_ok=True)
         db_url = f"sqlite:///{path}"
 
-    engine = create_engine(db_url)
+    with _engine_lock:
+        if db_url in _engine_cache:
+            return _engine_cache[db_url]
 
-    if engine.dialect.name == "sqlite":
-        _register_sqlite_pragmas(engine)
+        engine = create_engine(db_url)
 
-    return engine
+        if engine.dialect.name == "sqlite":
+            _register_sqlite_pragmas(engine)
+
+        _engine_cache[db_url] = engine
+        return engine
 
 
 def _register_sqlite_pragmas(engine: Engine) -> None:

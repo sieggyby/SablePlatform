@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from sqlalchemy.exc import OperationalError as SAOperationalError
+
 
 def export_metrics(conn: sqlite3.Connection) -> str:
     """Return a Prometheus text format string with platform metrics.
@@ -51,7 +53,7 @@ def export_metrics(conn: sqlite3.Connection) -> str:
         ).fetchone()
         if meta_row and meta_row[0] is not None:
             age_seconds = round(meta_row[0], 1)
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass
     lines.append(f"sable_last_alert_eval_age_seconds {age_seconds}")
 

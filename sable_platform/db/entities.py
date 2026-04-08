@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
 from sable_platform.errors import SableError, ENTITY_NOT_FOUND, ENTITY_ARCHIVED, ORG_NOT_FOUND
 
 SHARED_HANDLE_MERGE_CONFIDENCE = 0.80
@@ -115,7 +117,7 @@ def add_handle(
             """,
             (entity_id, platform, handle, 1 if is_primary else 0),
         )
-    except sqlite3.IntegrityError:
+    except (sqlite3.IntegrityError, SAIntegrityError):
         pass
 
     conn.execute(

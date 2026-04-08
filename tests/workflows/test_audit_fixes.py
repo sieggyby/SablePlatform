@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
 from sable_platform.db.workflow_store import (
     create_workflow_run,
     create_workflow_step,
@@ -24,17 +22,6 @@ from sable_platform.workflows.models import StepDefinition, StepResult, Workflow
 def _ok_step(name: str, output: dict | None = None) -> StepDefinition:
     out = output or {}
     return StepDefinition(name=name, fn=lambda ctx: StepResult("completed", out), max_retries=0)
-
-
-@pytest.fixture
-def wf_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys=ON")
-    ensure_schema(conn)
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('wf_org', 'WF Test Org')")
-    conn.commit()
-    return conn
 
 
 # ---------------------------------------------------------------------------

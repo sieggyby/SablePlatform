@@ -13,6 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from sqlalchemy import Engine
+from sqlalchemy.exc import OperationalError as SAOperationalError
 from sqlalchemy.engine import Connection as SAConnection
 
 log = logging.getLogger(__name__)
@@ -63,16 +64,44 @@ def sable_db_path() -> Path:
 _sable_db_path = sable_db_path
 
 
-def get_db(db_path: str | Path | None = None) -> sqlite3.Connection:
-    path = Path(db_path) if db_path else _sable_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")
-    ensure_schema(conn)
-    return conn
+def get_db(db_path: str | Path | None = None):
+    """Return a database connection for the platform.
+
+    Returns a :class:`CompatConnection` wrapping a SQLAlchemy connection.
+    The wrapper supports both ``?``-positional and ``:named`` parameter
+    styles plus ``row["col"]`` dict access, so existing code works unchanged.
+    """
+    from sable_platform.db.compat_conn import CompatConnection
+    from sable_platform.db.engine import get_engine
+
+    if db_path:
+        # Explicit path always wins — don't let env var override a caller's
+        # explicit db_path (important for tests, backup, CLI --db-path).
+        path = Path(db_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        url = f"sqlite:///{path}"
+    else:
+        url = os.environ.get("SABLE_DATABASE_URL")
+        if not url:
+            path = _sable_db_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            url = f"sqlite:///{path}"
+
+    engine = get_engine(url)
+
+    if engine.dialect.name == "sqlite":
+        # For SQLite, ensure schema via legacy migration path on the raw
+        # DBAPI connection, then use SA for everything else.
+        raw_proxy = engine.raw_connection()
+        try:
+            dbapi_conn = raw_proxy.dbapi_connection
+            dbapi_conn.row_factory = sqlite3.Row
+            ensure_schema(dbapi_conn)
+        finally:
+            raw_proxy.close()
+
+    sa_conn = engine.connect()
+    return CompatConnection(sa_conn)
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -115,7 +144,7 @@ def _warn_migration_027_autofails(conn: sqlite3.Connection) -> None:
                 "query workflow_runs WHERE error LIKE 'auto-failed by migration 027%%' for details",
                 n,
             )
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # workflow_runs table absent — migration applied to empty DB
 
 

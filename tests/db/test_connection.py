@@ -54,11 +54,13 @@ class TestGetDb:
         finally:
             conn.close()
 
-    def test_row_factory_set(self, tmp_path):
+    def test_compat_connection_returned(self, tmp_path):
+        """get_db() now returns a CompatConnection wrapping SA."""
+        from sable_platform.db.compat_conn import CompatConnection
         db_path = tmp_path / "rf.db"
         conn = get_db(db_path)
         try:
-            assert conn.row_factory is sqlite3.Row
+            assert isinstance(conn, CompatConnection)
         finally:
             conn.close()
 
@@ -85,15 +87,24 @@ class TestGetDb:
 # ---------------------------------------------------------------------------
 
 class TestEnsureSchema:
-    def test_idempotent(self, in_memory_db):
+    def test_idempotent(self):
         """Running ensure_schema twice should not raise or duplicate data."""
-        ensure_schema(in_memory_db)
-        row = in_memory_db.execute("SELECT version FROM schema_version").fetchone()
+        raw = sqlite3.connect(":memory:")
+        raw.row_factory = sqlite3.Row
+        raw.execute("PRAGMA foreign_keys=ON")
+        ensure_schema(raw)
+        ensure_schema(raw)
+        row = raw.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] >= 27  # all migrations applied
+        raw.close()
 
-    def test_applies_all_migrations(self, in_memory_db):
-        row = in_memory_db.execute("SELECT version FROM schema_version").fetchone()
+    def test_applies_all_migrations(self):
+        raw = sqlite3.connect(":memory:")
+        raw.row_factory = sqlite3.Row
+        ensure_schema(raw)
+        row = raw.execute("SELECT version FROM schema_version").fetchone()
         assert row[0] == 30
+        raw.close()
 
     def test_tables_exist(self, in_memory_db):
         """Spot-check that key tables were created."""

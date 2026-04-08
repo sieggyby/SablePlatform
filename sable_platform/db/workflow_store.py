@@ -7,6 +7,8 @@ import os
 import sqlite3
 import uuid
 
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
 from sable_platform.errors import (
     redact_error,
     SableError,
@@ -52,7 +54,7 @@ def create_workflow_run(
             """,
             (run_id, org_id, workflow_name, workflow_version, json.dumps(config), step_fingerprint, operator_id),
         )
-    except sqlite3.IntegrityError as exc:
+    except (sqlite3.IntegrityError, SAIntegrityError) as exc:
         if _is_active_run_lock_error(exc):
             raise SableError(
                 WORKFLOW_ALREADY_RUNNING,

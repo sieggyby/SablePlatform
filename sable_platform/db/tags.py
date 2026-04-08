@@ -5,6 +5,9 @@ import logging
 import sqlite3
 import uuid
 
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
+from sqlalchemy.exc import OperationalError as SAOperationalError
+
 from sable_platform.db.audit import log_audit
 
 log = logging.getLogger(__name__)
@@ -47,7 +50,7 @@ def _record_tag_history(
             (uuid.uuid4().hex, entity_id, org_id, change_type, tag,
              confidence, source, source_ref, expires_at),
         )
-    except sqlite3.OperationalError as exc:
+    except (sqlite3.OperationalError, SAOperationalError) as exc:
         if "no such table" in str(exc):
             pass  # table absent before migration 008 — safe to skip
         else:

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from sqlalchemy.exc import OperationalError as SAOperationalError
+
 
 def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
     """Return a chronological list of events for an entity.
@@ -47,7 +49,7 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
                 "source": r["source"],
                 "expires_at": r["expires_at"],
             })
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # table absent before migration 008
 
     # Action events
@@ -92,7 +94,7 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
                     "timestamp": r["skipped_at"],
                     "title": r["title"],
                 })
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # table absent before migration 007
 
     # Outcome events
@@ -116,7 +118,7 @@ def get_entity_journey(conn: sqlite3.Connection, entity_id: str) -> list[dict]:
                 "metric_before": r["metric_before"],
                 "metric_after": r["metric_after"],
             })
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # table absent before migration 007
 
     events.sort(key=lambda e: e.get("timestamp") or "")
@@ -165,7 +167,7 @@ def entity_funnel(conn: sqlite3.Connection, org_id: str) -> dict:
             (org_id,),
         ).fetchone()
         avg_cultist = round(row["avg_days"], 1) if row and row["avg_days"] is not None else None
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # entity_tag_history absent before migration 008
 
     avg_top_contrib = None
@@ -180,7 +182,7 @@ def entity_funnel(conn: sqlite3.Connection, org_id: str) -> dict:
             (org_id,),
         ).fetchone()
         avg_top_contrib = round(row["avg_days"], 1) if row and row["avg_days"] is not None else None
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # entity_tag_history absent before migration 008
 
     return {
@@ -215,19 +217,19 @@ def get_key_journeys(
             count += conn.execute(
                 "SELECT COUNT(*) FROM entity_tag_history WHERE entity_id=?", (eid,)
             ).fetchone()[0]
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, SAOperationalError):
             pass
         try:
             count += conn.execute(
                 "SELECT COUNT(*) FROM actions WHERE entity_id=?", (eid,)
             ).fetchone()[0]
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, SAOperationalError):
             pass
         try:
             count += conn.execute(
                 "SELECT COUNT(*) FROM outcomes WHERE entity_id=?", (eid,)
             ).fetchone()[0]
-        except sqlite3.OperationalError:
+        except (sqlite3.OperationalError, SAOperationalError):
             pass
         scored.append((count, eid, r["display_name"] or ""))
 

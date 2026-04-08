@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 import uuid
 
+from sqlalchemy.exc import DatabaseError as SADatabaseError
+
 from sable_platform.errors import SableError, INVALID_CONFIG
 from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
 from sable_platform.workflows import registry
@@ -75,7 +77,7 @@ def _create_initial_sync_record(ctx) -> StepResult:
         )
         ctx.db.commit()
         sync_run_id = ctx.db.execute("SELECT last_insert_rowid()").fetchone()[0]
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, SADatabaseError) as exc:
         raise SableError(INVALID_CONFIG, f"sync_run insert failed: {exc}") from exc
     return StepResult("completed", {"sync_run_id": sync_run_id})
 

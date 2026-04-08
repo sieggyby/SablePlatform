@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from sqlalchemy.exc import OperationalError as SAOperationalError
+
 
 def check_db_health(conn: sqlite3.Connection) -> dict:
     """Return a health status dict for the database.
@@ -20,7 +22,7 @@ def check_db_health(conn: sqlite3.Connection) -> dict:
     try:
         version_row = conn.execute("SELECT version FROM schema_version").fetchone()
         migration_version = version_row[0] if version_row else 0
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         return {
             "ok": False,
             "migration_version": 0,
@@ -48,7 +50,7 @@ def check_db_health(conn: sqlite3.Connection) -> dict:
         if meta_row and meta_row["age_hours"] is not None:
             last_eval_age_hours = round(meta_row["age_hours"], 2)
             alert_eval_stale = last_eval_age_hours > 26.0
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, SAOperationalError):
         pass  # platform_meta table absent on old schema
 
     return {

@@ -280,7 +280,7 @@ class TestTagHistorySuppression:
         for change_type which is NOT NULL in the schema. Since we narrowed
         the catch to OperationalError only, IntegrityError now propagates.
         """
-        import sqlite3 as _sqlite3
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
         from sable_platform.db.tags import _record_tag_history
 
         conn, org_id = org_db
@@ -289,13 +289,14 @@ class TestTagHistorySuppression:
         # _record_tag_history with a NULL required field should raise IntegrityError
         # (entity_tag_history.change_type is NOT NULL per migration 008)
         # Since we only catch OperationalError now, this propagates.
-        with pytest.raises(_sqlite3.IntegrityError):
+        # SA wraps sqlite3.IntegrityError in sqlalchemy.exc.IntegrityError.
+        with pytest.raises(SAIntegrityError):
             _record_tag_history(conn, eid, org_id, None, "cultist")
 
 
     def test_non_missing_table_operational_error_propagates(self, org_db):
         """OperationalError other than 'no such table' propagates."""
-        import sqlite3 as _sqlite3
+        from sqlalchemy.exc import OperationalError as SAOperationalError
         from sable_platform.db.tags import _record_tag_history
 
         conn, org_id = org_db
@@ -311,7 +312,8 @@ class TestTagHistorySuppression:
         conn.commit()
 
         # INSERT into a view raises OperationalError but NOT "no such table"
-        with pytest.raises(_sqlite3.OperationalError):
+        # SA wraps sqlite3.OperationalError in sqlalchemy.exc.OperationalError.
+        with pytest.raises(SAOperationalError):
             _record_tag_history(conn, eid, org_id, "added", "cultist")
 
 
@@ -380,7 +382,7 @@ class TestBridgeNodeReplace:
 class TestAddTagEdgeCases:
     def test_add_tag_nonexistent_entity_fk_violation(self, org_db):
         """FK constraint prevents orphan tag row for nonexistent entity."""
-        import sqlite3 as _sqlite3
+        from sqlalchemy.exc import IntegrityError as SAIntegrityError
         conn, _ = org_db
-        with pytest.raises(_sqlite3.IntegrityError):
+        with pytest.raises(SAIntegrityError):
             add_tag(conn, "ghost_entity", "cultist")

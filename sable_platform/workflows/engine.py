@@ -8,6 +8,8 @@ import sqlite3
 import threading
 import time
 
+from sqlalchemy.exc import IntegrityError as SAIntegrityError
+
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
     complete_workflow_run,
@@ -211,7 +213,7 @@ class WorkflowRunner:
                     (run_id,),
                 )
                 conn.commit()
-            except sqlite3.IntegrityError as exc:
+            except (sqlite3.IntegrityError, SAIntegrityError) as exc:
                 if _is_active_run_lock_error(exc):
                     raise SableError(
                         WORKFLOW_ALREADY_RUNNING,
