@@ -10,6 +10,7 @@ Usage (via CLI):
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,6 +94,25 @@ SEQUENCE_TABLES: dict[str, str] = {
     "prospect_scores": "id",
     "playbook_targets": "id",
     "playbook_outcomes": "id",
+}
+
+# Tables with Text primary keys that SQLite allowed to be NULL.
+# Used to generate UUIDs for NULL PKs during migration.
+_TEXT_PK_COLUMNS: dict[str, str] = {
+    "orgs": "org_id",
+    "entities": "entity_id",
+    "content_items": "item_id",
+    "diagnostic_deltas": "delta_id",
+    "jobs": "job_id",
+    "workflow_runs": "run_id",
+    "workflow_steps": "step_id",
+    "workflow_events": "event_id",
+    "actions": "action_id",
+    "outcomes": "outcome_id",
+    "entity_tag_history": "history_id",
+    "alert_configs": "config_id",
+    "alerts": "alert_id",
+    "platform_meta": "key",
 }
 
 
@@ -190,6 +210,20 @@ def run_migration(
                         target_rows=0, status="skipped",
                     ))
                     continue
+
+                # Fix NULL Text PKs — SQLite allows them, Postgres doesn't.
+                pk_col = _TEXT_PK_COLUMNS.get(table_name)
+                if pk_col:
+                    fixed = 0
+                    for row in rows:
+                        if row.get(pk_col) is None:
+                            row[pk_col] = uuid.uuid4().hex
+                            fixed += 1
+                    if fixed:
+                        log.warning(
+                            "Fixed %d NULL %s values in %s",
+                            fixed, pk_col, table_name,
+                        )
 
                 columns = list(rows[0].keys())
                 inserted = 0
