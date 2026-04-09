@@ -112,6 +112,9 @@ cli.add_command(watchlist)
 cli.add_command(webhooks)
 cli.add_command(cron)
 
+from sable_platform.cli.migrate_cmds import migrate
+cli.add_command(migrate)
+
 
 @cli.command("schema")
 @click.option("--output-dir", "-o", default=None, type=click.Path(),

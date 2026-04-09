@@ -104,7 +104,7 @@ Include which SableWeb views correspond to each stage (`/ops` prospect pipeline,
 
 ## SP-DB: SQLite → SQLAlchemy + Postgres Migration
 
-**Status (2026-04-08): Phases 0–7, 9 complete. Phase 8 (dependent repos) partially open.**
+**Status (2026-04-09): Phases 0–9 complete. Phase 8 (dependent repos) done except SableWeb (deferred).**
 
 1056 tests passing. All 24 db modules converted to SQLAlchemy Core `text()` with `:named` params. All SQLite-specific SQL in `db/` layer replaced with dialect-agnostic equivalents. Alembic infrastructure for Postgres added. `backup.py` has `pg_dump` dialect branching. `merge.py` uses SA transaction management.
 
@@ -117,7 +117,7 @@ Include which SableWeb views correspond to each stage (`/ops` prospect pipeline,
 | 4–5 | Test fixtures + CLI callers (done as part of Phase 3) | Done |
 | 6 | Alembic for Postgres (initial migration) | Done |
 | 7 | merge.py SA transactions, backup.py pg_dump | Done |
-| 8 | Dependent repo updates | **Partially open** |
+| 8 | Dependent repo updates | Done (SableWeb deferred) |
 | 9 | SQLite-specific SQL → dialect-agnostic (17 db modules) | Done |
 
 **Phase 9 details:** 63 replacements across 24 files in two passes. Pass 1: 48 replacements across 17 `db/` modules. Pass 2: 15 replacements across 7 workflow/CLI callers. All runtime code now uses `CURRENT_TIMESTAMP`, `ON CONFLICT`, and `compat.py` dialect-aware helpers. `get_dialect(conn)` helper added to `compat.py` for clean dialect detection from any connection type. Migration `.sql` files untouched (SQLite-only; Postgres uses Alembic).
@@ -126,13 +126,13 @@ Include which SableWeb views correspond to each stage (`/ops` prospect pipeline,
 
 | Repo | Impact | What's Needed | Status |
 |------|--------|---------------|--------|
-| **SableTracking** | Medium | `app/platform_sync.py` has ~18 `conn.execute()` calls with `?`-positional params targeting sable.db. Convert to `:named`. Update `sqlite3.Connection` type hints. | Open |
-| **Sable_Cult_Grader** | Low | Mix of helper functions and ~40 direct `conn.execute()` calls with `?` params. CompatConnection handles both. Direct SQL is a future schema-drift risk. | No changes needed today |
-| **Sable_Community_Lead_Identifier** | None | `platform_sync.py` uses only helper functions. CompatConnection handles everything. | No changes needed |
-| **Sable_Slopper** | Low | Re-export facades in `sable/platform/` — verify they work with CompatConnection. Postgres migration of its own `pulse.db`/`meta.db` is a separate concern. | Verify only |
-| **SableWeb** | High | Reads sable.db via `better-sqlite3` (Node.js). For Postgres: needs `pg` driver or API layer. Connection config in `db.ts`/`db-write.ts` needs `SABLE_DATABASE_URL` support. | Open (when Postgres is deployed) |
+| **SableTracking** | Medium | `:named` param conversion in `platform_sync.py` | Done (2026-04-09) |
+| **Sable_Cult_Grader** | Low | 41 direct SQL calls converted to `:named` params | Done (2026-04-08) |
+| **Sable_Community_Lead_Identifier** | None | Uses only helper functions — no changes needed | N/A |
+| **Sable_Slopper** | Medium | 7 `datetime('now')` + ~10 `?`-positional queries converted (SS-DIALECT) | Done (2026-04-09) |
+| **SableWeb** | High | Reads sable.db via `better-sqlite3` (Node.js). Needs `pg` driver when Postgres deployed. | Deferred |
 
-**Key insight:** CompatConnection's `?`-positional param support means most dependent repos work with zero changes today. Cult Grader (~40 direct SQL calls) and SableTracking (~18) both use `?` params but get their connection via `get_db()` which returns CompatConnection — transparent at runtime. When CompatConnection is eventually retired, both repos will need `:named` param conversion. SableWeb is the biggest lift because it uses a different language entirely (TypeScript/better-sqlite3).
+**Key insight:** SableWeb is the only remaining lift — it uses TypeScript/`better-sqlite3` and needs a `pg` driver swap when Postgres is deployed in production. All Python repos are fully converted.
 
 ---
 

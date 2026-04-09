@@ -15,6 +15,9 @@ dependencies = [
     "alembic>=1.13",
 ]
 
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9"]
+
 [project.scripts]
 sable-platform = "sable_platform.cli.main:cli"
 
