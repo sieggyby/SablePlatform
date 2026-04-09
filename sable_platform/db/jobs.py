@@ -50,7 +50,7 @@ def start_step(conn: Connection, step_id: int) -> None:
     conn.execute(
         text(
             "UPDATE job_steps"
-            " SET status='running', started_at=datetime('now')"
+            " SET status='running', started_at=CURRENT_TIMESTAMP"
             " WHERE step_id=:step_id"
         ),
         {"step_id": step_id},
@@ -62,7 +62,7 @@ def complete_step(conn: Connection, step_id: int, output: dict | None = None) ->
     conn.execute(
         text(
             "UPDATE job_steps"
-            " SET status='completed', completed_at=datetime('now'), output_json=:output_json"
+            " SET status='completed', completed_at=CURRENT_TIMESTAMP, output_json=:output_json"
             " WHERE step_id=:step_id"
         ),
         {"output_json": json.dumps(output or {}), "step_id": step_id},

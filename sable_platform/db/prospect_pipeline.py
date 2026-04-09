@@ -4,6 +4,8 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import days_since_int
+
 
 def query_prospect_pipeline(
     conn: Connection,
@@ -22,7 +24,9 @@ def query_prospect_pipeline(
     diagnostic_date, days_since_last_diagnostic, recommended_action.
     """
     # Subquery: latest completed diagnostic per org_id
-    query = """
+    _dialect = conn.dialect.name
+    _days_expr = days_since_int("d.completed_at", _dialect)
+    query = f"""
         SELECT
             ps.org_id,
             ps.composite_score,
@@ -34,7 +38,7 @@ def query_prospect_pipeline(
             d.completed_at AS diagnostic_date,
             CASE
                 WHEN d.completed_at IS NOT NULL
-                THEN CAST(julianday('now') - julianday(d.completed_at) AS INTEGER)
+                THEN {_days_expr}
                 ELSE NULL
             END AS days_since_last_diagnostic
         FROM prospect_scores ps
@@ -55,9 +59,9 @@ def query_prospect_pipeline(
         params["tier"] = tier
 
     if stale_days is not None:
-        query += """
+        query += f"""
             AND (d.completed_at IS NULL
-                 OR CAST(julianday('now') - julianday(d.completed_at) AS INTEGER) > :stale_days)
+                 OR {_days_expr} > :stale_days)
         """
         params["stale_days"] = stale_days
 

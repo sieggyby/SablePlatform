@@ -65,7 +65,7 @@ def sync_centrality_scores(
                 degree_centrality = excluded.degree_centrality,
                 in_centrality = excluded.in_centrality,
                 out_centrality = excluded.out_centrality,
-                scored_at = datetime('now'),
+                scored_at = CURRENT_TIMESTAMP,
                 run_date = excluded.run_date
             """),
             {"org_id": org_id, "entity_id": entity_id, "degree": degree,

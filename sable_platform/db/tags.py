@@ -25,7 +25,7 @@ _REPLACE_CURRENT_TAGS: frozenset[str] = frozenset({
     "bridge_node",
 })
 
-_ACTIVE_PREDICATE = "is_current = 1 AND (expires_at IS NULL OR expires_at > datetime('now'))"
+_ACTIVE_PREDICATE = "is_current = 1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
 
 
 def _record_tag_history(
@@ -96,7 +96,7 @@ def add_tag(
         conn.execute(
             text(f"""
             UPDATE entity_tags
-            SET is_current = 0, deactivated_at = datetime('now')
+            SET is_current = 0, deactivated_at = CURRENT_TIMESTAMP
             WHERE entity_id = :entity_id AND tag = :tag AND {_ACTIVE_PREDICATE}
             """),
             {"entity_id": entity_id, "tag": tag},
@@ -116,7 +116,7 @@ def add_tag(
          "confidence": confidence, "expires_at": expires_at},
     )
     conn.execute(
-        text("UPDATE entities SET updated_at=datetime('now') WHERE entity_id=:entity_id"),
+        text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()
@@ -156,13 +156,13 @@ def deactivate_tag(
     conn.execute(
         text(f"""
         UPDATE entity_tags
-        SET is_current = 0, deactivated_at = datetime('now')
+        SET is_current = 0, deactivated_at = CURRENT_TIMESTAMP
         WHERE entity_id = :entity_id AND tag = :tag AND {_ACTIVE_PREDICATE}
         """),
         {"entity_id": entity_id, "tag": tag},
     )
     conn.execute(
-        text("UPDATE entities SET updated_at=datetime('now') WHERE entity_id=:entity_id"),
+        text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()

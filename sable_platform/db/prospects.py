@@ -80,7 +80,7 @@ def sync_prospect_scores(
                 "  timing_urgency = excluded.timing_urgency,"
                 "  graduated_at = COALESCE(prospect_scores.graduated_at, excluded.graduated_at),"
                 "  rejected_at = COALESCE(prospect_scores.rejected_at, excluded.rejected_at),"
-                "  scored_at = datetime('now')"
+                "  scored_at = CURRENT_TIMESTAMP"
             ),
             {
                 "org_id": org_id,
@@ -158,7 +158,7 @@ def graduate_prospect(conn: Connection, project_id: str) -> int:
     Returns the number of rows updated.
     """
     cursor = conn.execute(
-        text("UPDATE prospect_scores SET graduated_at = datetime('now') WHERE org_id = :org_id AND graduated_at IS NULL"),
+        text("UPDATE prospect_scores SET graduated_at = CURRENT_TIMESTAMP WHERE org_id = :org_id AND graduated_at IS NULL"),
         {"org_id": project_id},
     )
     conn.commit()
@@ -172,7 +172,7 @@ def reject_prospect(conn: Connection, project_id: str) -> int:
     Returns the number of rows updated.
     """
     cursor = conn.execute(
-        text("UPDATE prospect_scores SET rejected_at = datetime('now') WHERE org_id = :org_id AND rejected_at IS NULL"),
+        text("UPDATE prospect_scores SET rejected_at = CURRENT_TIMESTAMP WHERE org_id = :org_id AND rejected_at IS NULL"),
         {"org_id": project_id},
     )
     conn.commit()

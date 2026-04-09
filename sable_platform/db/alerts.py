@@ -115,7 +115,7 @@ def acknowledge_alert(conn: Connection, alert_id: str, operator: str) -> None:
     conn.execute(
         text("""
         UPDATE alerts
-        SET status='acknowledged', acknowledged_at=datetime('now'), acknowledged_by=:operator
+        SET status='acknowledged', acknowledged_at=CURRENT_TIMESTAMP, acknowledged_by=:operator
         WHERE alert_id=:alert_id
         """),
         {"operator": operator, "alert_id": alert_id},
@@ -130,7 +130,7 @@ def acknowledge_alert(conn: Connection, alert_id: str, operator: str) -> None:
 def resolve_alert(conn: Connection, alert_id: str) -> None:
     row = conn.execute(text("SELECT org_id FROM alerts WHERE alert_id=:alert_id"), {"alert_id": alert_id}).fetchone()
     conn.execute(
-        text("UPDATE alerts SET status='resolved', resolved_at=datetime('now') WHERE alert_id=:alert_id"),
+        text("UPDATE alerts SET status='resolved', resolved_at=CURRENT_TIMESTAMP WHERE alert_id=:alert_id"),
         {"alert_id": alert_id},
     )
     conn.commit()
@@ -156,7 +156,7 @@ def get_last_delivered_at(conn: Connection, dedup_key: str) -> str | None:
 def mark_delivered(conn: Connection, dedup_key: str) -> None:
     """Set last_delivered_at=now on the current 'new' alert for this dedup_key."""
     conn.execute(
-        text("UPDATE alerts SET last_delivered_at=datetime('now'), last_delivery_error=NULL "
+        text("UPDATE alerts SET last_delivered_at=CURRENT_TIMESTAMP, last_delivery_error=NULL "
              "WHERE dedup_key=:dedup_key AND status='new'"),
         {"dedup_key": dedup_key},
     )

@@ -134,7 +134,7 @@ def record_failure(conn: Connection, subscription_id: int, error: str) -> None:
         text("""
         UPDATE webhook_subscriptions
         SET consecutive_failures = consecutive_failures + 1,
-            last_failure_at = datetime('now'),
+            last_failure_at = CURRENT_TIMESTAMP,
             last_failure_error = :error
         WHERE id=:id
         """),

@@ -26,7 +26,7 @@ def add_to_watchlist(
         raise SableError(ORG_NOT_FOUND, f"Org '{org_id}' not found")
 
     cursor = conn.execute(
-        text("INSERT OR IGNORE INTO entity_watchlist (org_id, entity_id, added_by, note) VALUES (:org_id, :entity_id, :added_by, :note)"),
+        text("INSERT INTO entity_watchlist (org_id, entity_id, added_by, note) VALUES (:org_id, :entity_id, :added_by, :note) ON CONFLICT (org_id, entity_id) DO NOTHING"),
         {"org_id": org_id, "entity_id": entity_id, "added_by": added_by, "note": note},
     )
     conn.commit()
@@ -78,7 +78,7 @@ def _take_snapshot(conn: Connection, org_id: str, entity_id: str) -> None:
         text("""
         SELECT tag FROM entity_tags
         WHERE entity_id=:entity_id AND is_current=1
-          AND (expires_at IS NULL OR expires_at > datetime('now'))
+          AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
         """),
         {"entity_id": entity_id},
     ).fetchall()

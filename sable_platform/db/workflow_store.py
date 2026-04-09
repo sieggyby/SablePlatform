@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from sable_platform.db.compat import now_offset_param
 from sable_platform.errors import (
     redact_error,
     SableError,
@@ -77,7 +78,7 @@ def create_workflow_run(
 
 def start_workflow_run(conn: Connection, run_id: str) -> None:
     conn.execute(
-        text("UPDATE workflow_runs SET status='running', started_at=datetime('now') WHERE run_id=:run_id"),
+        text("UPDATE workflow_runs SET status='running', started_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
         {"run_id": run_id},
     )
     conn.commit()
@@ -85,7 +86,7 @@ def start_workflow_run(conn: Connection, run_id: str) -> None:
 
 def complete_workflow_run(conn: Connection, run_id: str) -> None:
     conn.execute(
-        text("UPDATE workflow_runs SET status='completed', completed_at=datetime('now') WHERE run_id=:run_id"),
+        text("UPDATE workflow_runs SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
         {"run_id": run_id},
     )
     conn.commit()
@@ -93,7 +94,7 @@ def complete_workflow_run(conn: Connection, run_id: str) -> None:
 
 def fail_workflow_run(conn: Connection, run_id: str, error: str) -> None:
     conn.execute(
-        text("UPDATE workflow_runs SET status='failed', completed_at=datetime('now'), error=:error WHERE run_id=:run_id"),
+        text("UPDATE workflow_runs SET status='failed', completed_at=CURRENT_TIMESTAMP, error=:error WHERE run_id=:run_id"),
         {"error": redact_error(error), "run_id": run_id},
     )
     conn.commit()
@@ -103,7 +104,7 @@ def unlock_workflow_run(conn: Connection, run_id: str) -> bool:
     """Force-fail a stuck workflow run. Returns True if a row was updated."""
     cursor = conn.execute(
         text(
-            "UPDATE workflow_runs SET status='failed', completed_at=datetime('now'),"
+            "UPDATE workflow_runs SET status='failed', completed_at=CURRENT_TIMESTAMP,"
             " error='manually unlocked via CLI'"
             " WHERE run_id=:run_id AND status IN ('pending', 'running')"
         ),
@@ -140,7 +141,7 @@ def create_workflow_step(
 
 def start_workflow_step(conn: Connection, step_id: str) -> None:
     conn.execute(
-        text("UPDATE workflow_steps SET status='running', started_at=datetime('now') WHERE step_id=:step_id"),
+        text("UPDATE workflow_steps SET status='running', started_at=CURRENT_TIMESTAMP WHERE step_id=:step_id"),
         {"step_id": step_id},
     )
     conn.commit()
@@ -150,7 +151,7 @@ def complete_workflow_step(conn: Connection, step_id: str, output: dict) -> None
     conn.execute(
         text(
             "UPDATE workflow_steps"
-            " SET status='completed', completed_at=datetime('now'), output_json=:output_json"
+            " SET status='completed', completed_at=CURRENT_TIMESTAMP, output_json=:output_json"
             " WHERE step_id=:step_id"
         ),
         {"output_json": json.dumps(output), "step_id": step_id},
@@ -162,7 +163,7 @@ def skip_workflow_step(conn: Connection, step_id: str, reason: str) -> None:
     conn.execute(
         text(
             "UPDATE workflow_steps"
-            " SET status='skipped', completed_at=datetime('now'), output_json=:output_json"
+            " SET status='skipped', completed_at=CURRENT_TIMESTAMP, output_json=:output_json"
             " WHERE step_id=:step_id"
         ),
         {"output_json": json.dumps({"_skip_reason": reason}), "step_id": step_id},
@@ -174,7 +175,7 @@ def fail_workflow_step(conn: Connection, step_id: str, error: str) -> None:
     conn.execute(
         text(
             "UPDATE workflow_steps"
-            " SET status='failed', completed_at=datetime('now'), retries=retries+1, error=:error"
+            " SET status='failed', completed_at=CURRENT_TIMESTAMP, retries=retries+1, error=:error"
             " WHERE step_id=:step_id"
         ),
         {"error": redact_error(error), "step_id": step_id},
@@ -184,18 +185,19 @@ def fail_workflow_step(conn: Connection, step_id: str, error: str) -> None:
 
 def mark_timed_out_runs(conn: Connection, hours: int = 6) -> list[str]:
     """Mark workflow_runs stuck in 'running' for >hours as 'timed_out'."""
+    _cutoff = now_offset_param("offset", conn.dialect.name)
     rows = conn.execute(
         text(
             "SELECT run_id FROM workflow_runs"
             " WHERE status='running'"
-            "   AND started_at < datetime('now', :offset || ' hours')"
+            f"   AND started_at < {_cutoff}"
         ),
-        {"offset": f"-{hours}"},
+        {"offset": f"-{hours} hours"},
     ).fetchall()
     run_ids = [r["run_id"] for r in rows]
     for run_id in run_ids:
         conn.execute(
-            text("UPDATE workflow_runs SET status='timed_out', completed_at=datetime('now') WHERE run_id=:run_id"),
+            text("UPDATE workflow_runs SET status='timed_out', completed_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
             {"run_id": run_id},
         )
     conn.commit()
@@ -213,7 +215,7 @@ def cancel_workflow_run(conn: Connection, run_id: str) -> None:
     if row["status"] in ("completed", "failed", "cancelled", "timed_out"):
         raise SableError(STEP_EXECUTION_ERROR, f"Cannot cancel run '{run_id}': already {row['status']}")
     conn.execute(
-        text("UPDATE workflow_runs SET status='cancelled', completed_at=datetime('now') WHERE run_id=:run_id"),
+        text("UPDATE workflow_runs SET status='cancelled', completed_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
         {"run_id": run_id},
     )
     conn.commit()

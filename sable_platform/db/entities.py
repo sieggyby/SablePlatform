@@ -28,7 +28,7 @@ def create_entity(
     conn.execute(
         text("""
         INSERT INTO entities (entity_id, org_id, display_name, status, source, updated_at)
-        VALUES (:entity_id, :org_id, :display_name, :status, :source, datetime('now'))
+        VALUES (:entity_id, :org_id, :display_name, :status, :source, CURRENT_TIMESTAMP)
         """),
         {"entity_id": entity_id, "org_id": org_id, "display_name": display_name,
          "status": status, "source": source},
@@ -77,7 +77,7 @@ def update_display_name(
     if row["status"] == "confirmed" and source != "manual":
         return
     conn.execute(
-        text("UPDATE entities SET display_name=:display_name, updated_at=datetime('now') WHERE entity_id=:entity_id"),
+        text("UPDATE entities SET display_name=:display_name, updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
         {"display_name": display_name, "entity_id": entity_id},
     )
     conn.commit()
@@ -125,7 +125,7 @@ def add_handle(
         pass
 
     conn.execute(
-        text("UPDATE entities SET updated_at=datetime('now') WHERE entity_id=:entity_id"),
+        text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()
@@ -183,7 +183,7 @@ def list_entity_notes(
 def archive_entity(conn: Connection, entity_id: str) -> None:
     row = get_entity(conn, entity_id)
     conn.execute(
-        text("UPDATE entities SET status='archived', updated_at=datetime('now') WHERE entity_id=:entity_id"),
+        text("UPDATE entities SET status='archived', updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()

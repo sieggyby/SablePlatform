@@ -42,8 +42,9 @@ def create_merge_candidate(
 
     conn.execute(
         text(
-            "INSERT OR IGNORE INTO merge_candidates (entity_a_id, entity_b_id, confidence, reason, status)"
+            "INSERT INTO merge_candidates (entity_a_id, entity_b_id, confidence, reason, status)"
             " VALUES (:entity_a_id, :entity_b_id, :confidence, :reason, :status)"
+            " ON CONFLICT (entity_a_id, entity_b_id) DO NOTHING"
         ),
         {
             "entity_a_id": entity_a_id,

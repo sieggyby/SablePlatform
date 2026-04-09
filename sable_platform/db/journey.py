@@ -7,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
+from sable_platform.db.compat import days_between
+
 
 def get_entity_journey(conn: Connection, entity_id: str) -> list[dict]:
     """Return a chronological list of events for an entity.
@@ -140,7 +142,7 @@ def entity_funnel(conn: Connection, org_id: str) -> dict:
             " FROM entities e"
             " JOIN entity_tags t ON e.entity_id = t.entity_id"
             " WHERE e.org_id=:org_id AND t.tag='cultist_candidate'"
-            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))"
+            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > CURRENT_TIMESTAMP)"
         ),
         {"org_id": org_id},
     ).fetchone()[0]
@@ -151,17 +153,18 @@ def entity_funnel(conn: Connection, org_id: str) -> dict:
             " FROM entities e"
             " JOIN entity_tags t ON e.entity_id = t.entity_id"
             " WHERE e.org_id=:org_id AND t.tag='top_contributor'"
-            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > datetime('now'))"
+            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > CURRENT_TIMESTAMP)"
         ),
         {"org_id": org_id},
     ).fetchone()[0]
 
     # Average days from entity creation to first cultist_candidate tag
+    _days_expr = days_between("h.effective_at", "e.created_at", conn.dialect.name)
     avg_cultist = None
     try:
         row = conn.execute(
             text(
-                "SELECT AVG(julianday(h.effective_at) - julianday(e.created_at)) AS avg_days"
+                f"SELECT AVG({_days_expr}) AS avg_days"
                 " FROM entity_tag_history h"
                 " JOIN entities e ON h.entity_id = e.entity_id"
                 " WHERE e.org_id=:org_id AND h.tag='cultist_candidate' AND h.change_type='added'"
@@ -176,7 +179,7 @@ def entity_funnel(conn: Connection, org_id: str) -> dict:
     try:
         row = conn.execute(
             text(
-                "SELECT AVG(julianday(h.effective_at) - julianday(e.created_at)) AS avg_days"
+                f"SELECT AVG({_days_expr}) AS avg_days"
                 " FROM entity_tag_history h"
                 " JOIN entities e ON h.entity_id = e.entity_id"
                 " WHERE e.org_id=:org_id AND h.tag='top_contributor' AND h.change_type='added'"

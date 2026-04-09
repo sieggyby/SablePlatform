@@ -6,6 +6,7 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import days_between
 from sable_platform.errors import SableError, ENTITY_NOT_FOUND
 
 
@@ -44,7 +45,7 @@ def claim_action(conn: Connection, action_id: str, operator: str) -> None:
     conn.execute(
         text("""
         UPDATE actions
-        SET status='claimed', operator=:operator, claimed_at=datetime('now')
+        SET status='claimed', operator=:operator, claimed_at=CURRENT_TIMESTAMP
         WHERE action_id=:action_id
         """),
         {"operator": operator, "action_id": action_id},
@@ -62,7 +63,7 @@ def complete_action(
     conn.execute(
         text("""
         UPDATE actions
-        SET status='completed', completed_at=datetime('now'), outcome_notes=:outcome_notes
+        SET status='completed', completed_at=CURRENT_TIMESTAMP, outcome_notes=:outcome_notes
         WHERE action_id=:action_id
         """),
         {"outcome_notes": outcome_notes, "action_id": action_id},
@@ -80,7 +81,7 @@ def skip_action(
     conn.execute(
         text("""
         UPDATE actions
-        SET status='skipped', skipped_at=datetime('now'), outcome_notes=:outcome_notes
+        SET status='skipped', skipped_at=CURRENT_TIMESTAMP, outcome_notes=:outcome_notes
         WHERE action_id=:action_id
         """),
         {"outcome_notes": outcome_notes, "action_id": action_id},
@@ -136,9 +137,10 @@ def action_summary(conn: Connection, org_id: str) -> dict:
     denominator = completed + skipped + pending
     execution_rate = (completed / denominator) if denominator > 0 else 0.0
 
+    _days_expr = days_between("completed_at", "created_at", conn.dialect.name)
     avg_row = conn.execute(
-        text("""
-        SELECT AVG(julianday(completed_at) - julianday(created_at)) AS avg_days
+        text(f"""
+        SELECT AVG({_days_expr}) AS avg_days
         FROM actions
         WHERE org_id=:org_id AND status='completed' AND completed_at IS NOT NULL
         """),

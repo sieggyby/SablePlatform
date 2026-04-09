@@ -7,6 +7,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
+from sable_platform.db.compat import hours_since
+
 
 def check_db_health(conn: Connection) -> dict:
     """Return a health status dict for the database.
@@ -47,7 +49,7 @@ def check_db_health(conn: Connection) -> dict:
     try:
         meta_row = conn.execute(
             text(
-                "SELECT CAST((julianday('now') - julianday(value)) * 24 AS REAL) as age_hours"
+                f"SELECT CAST({hours_since('value', conn.dialect.name)} AS REAL) as age_hours"
                 " FROM platform_meta WHERE key='last_alert_eval_at'"
             )
         ).fetchone()

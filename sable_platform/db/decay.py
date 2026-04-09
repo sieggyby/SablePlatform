@@ -69,7 +69,7 @@ def sync_decay_scores(
             ON CONFLICT (org_id, entity_id) DO UPDATE SET
                 decay_score = excluded.decay_score,
                 risk_tier = excluded.risk_tier,
-                scored_at = datetime('now'),
+                scored_at = CURRENT_TIMESTAMP,
                 run_date = excluded.run_date,
                 factors_json = excluded.factors_json
             """),

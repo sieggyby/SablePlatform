@@ -20,13 +20,20 @@ def upsert_discord_pulse_run(
     """Insert or replace a discord pulse run row. Idempotent on (org_id, project_slug, run_date)."""
     conn.execute(
         text(
-            "INSERT OR REPLACE INTO discord_pulse_runs"
+            "INSERT INTO discord_pulse_runs"
             " (org_id, project_slug, run_date,"
             "  wow_retention_rate, echo_rate, avg_silence_gap_hours,"
             "  weekly_active_posters, retention_delta, echo_rate_delta)"
             " VALUES (:org_id, :project_slug, :run_date,"
             "  :wow_retention_rate, :echo_rate, :avg_silence_gap_hours,"
             "  :weekly_active_posters, :retention_delta, :echo_rate_delta)"
+            " ON CONFLICT (org_id, project_slug, run_date) DO UPDATE SET"
+            "  wow_retention_rate = excluded.wow_retention_rate,"
+            "  echo_rate = excluded.echo_rate,"
+            "  avg_silence_gap_hours = excluded.avg_silence_gap_hours,"
+            "  weekly_active_posters = excluded.weekly_active_posters,"
+            "  retention_delta = excluded.retention_delta,"
+            "  echo_rate_delta = excluded.echo_rate_delta"
         ),
         {
             "org_id": org_id,
