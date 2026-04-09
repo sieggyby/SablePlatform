@@ -120,7 +120,7 @@ Include which SableWeb views correspond to each stage (`/ops` prospect pipeline,
 | 8 | Dependent repo updates | **Partially open** |
 | 9 | SQLite-specific SQL → dialect-agnostic (17 db modules) | Done |
 
-**Phase 9 details:** 48 replacements across 17 files: `datetime('now')` → `CURRENT_TIMESTAMP` (34), `INSERT OR REPLACE/IGNORE` → `ON CONFLICT` (3), `julianday()` → `compat.py` helpers (6), `datetime('now', offset)` → `compat.now_offset_param()` (5). Migration `.sql` files untouched (SQLite-only; Postgres uses Alembic). Workflow/CLI callers (`alert_evaluator.py`, `alert_checks.py`, `engine.py`, `metrics.py`, `dashboard_cmds.py`) still use raw `sqlite3.Connection` with SQLite-specific SQL — these need conversion when migrated to SA connections.
+**Phase 9 details:** 63 replacements across 24 files in two passes. Pass 1: 48 replacements across 17 `db/` modules. Pass 2: 15 replacements across 7 workflow/CLI callers. All runtime code now uses `CURRENT_TIMESTAMP`, `ON CONFLICT`, and `compat.py` dialect-aware helpers. `get_dialect(conn)` helper added to `compat.py` for clean dialect detection from any connection type. Migration `.sql` files untouched (SQLite-only; Postgres uses Alembic).
 
 ### Phase 8: Dependent Repo Changes
 
