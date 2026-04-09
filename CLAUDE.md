@@ -17,7 +17,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5** is complete. 1056 tests passing. SQLAlchemy Core migration (Phases 0–7) complete — all db modules use SA `text()` with `:named` params, Alembic for Postgres, `pg_dump` backup support.
+**v0.5** is complete. 1056 tests passing. SQLAlchemy Core migration (Phases 0–7, 9) complete — all db modules use SA `text()` with `:named` params and dialect-agnostic SQL (no `datetime('now')`, `julianday()`, or `INSERT OR REPLACE/IGNORE` in runtime code). Alembic for Postgres, `pg_dump` backup support. Workflow/CLI callers still use raw `sqlite3.Connection` with SQLite-specific SQL — tracked for future migration.
 
 - **DB:** 30 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export

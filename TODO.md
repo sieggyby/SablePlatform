@@ -104,9 +104,9 @@ Include which SableWeb views correspond to each stage (`/ops` prospect pipeline,
 
 ## SP-DB: SQLite → SQLAlchemy + Postgres Migration
 
-**Status (2026-04-08): Phases 0–3, 6, 7 complete. Phase 8 (dependent repos) open.**
+**Status (2026-04-08): Phases 0–7, 9 complete. Phase 8 (dependent repos) partially open.**
 
-1056 tests passing. All 24 db modules converted to SQLAlchemy Core `text()` with `:named` params. Alembic infrastructure for Postgres added. `backup.py` has `pg_dump` dialect branching. `merge.py` uses SA transaction management.
+1056 tests passing. All 24 db modules converted to SQLAlchemy Core `text()` with `:named` params. All SQLite-specific SQL in `db/` layer replaced with dialect-agnostic equivalents. Alembic infrastructure for Postgres added. `backup.py` has `pg_dump` dialect branching. `merge.py` uses SA transaction management.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
@@ -117,7 +117,10 @@ Include which SableWeb views correspond to each stage (`/ops` prospect pipeline,
 | 4–5 | Test fixtures + CLI callers (done as part of Phase 3) | Done |
 | 6 | Alembic for Postgres (initial migration) | Done |
 | 7 | merge.py SA transactions, backup.py pg_dump | Done |
-| 8 | Dependent repo updates | **Open** |
+| 8 | Dependent repo updates | **Partially open** |
+| 9 | SQLite-specific SQL → dialect-agnostic (17 db modules) | Done |
+
+**Phase 9 details:** 48 replacements across 17 files: `datetime('now')` → `CURRENT_TIMESTAMP` (34), `INSERT OR REPLACE/IGNORE` → `ON CONFLICT` (3), `julianday()` → `compat.py` helpers (6), `datetime('now', offset)` → `compat.now_offset_param()` (5). Migration `.sql` files untouched (SQLite-only; Postgres uses Alembic). Workflow/CLI callers (`alert_evaluator.py`, `alert_checks.py`, `engine.py`, `metrics.py`, `dashboard_cmds.py`) still use raw `sqlite3.Connection` with SQLite-specific SQL — these need conversion when migrated to SA connections.
 
 ### Phase 8: Dependent Repo Changes
 
