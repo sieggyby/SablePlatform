@@ -10,6 +10,7 @@ import time
 
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
+from sable_platform.db.compat import get_dialect, hours_since
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
     complete_workflow_run,
@@ -257,9 +258,11 @@ class WorkflowRunner:
         # Use started_at for running runs, created_at for pending (never-started) runs
         age_reference = row["started_at"] or row["created_at"]
         if age_reference:
+            _dialect = get_dialect(conn)
+            _expr = hours_since(":ts", _dialect)
             age = conn.execute(
-                "SELECT (julianday('now') - julianday(?)) * 24 AS hours_old",
-                (age_reference,),
+                f"SELECT {_expr} AS hours_old",
+                {"ts": age_reference},
             ).fetchone()
             if age and age["hours_old"] is not None and age["hours_old"] >= _STALE_LOCK_HOURS:
                 # Auto-fail stale run

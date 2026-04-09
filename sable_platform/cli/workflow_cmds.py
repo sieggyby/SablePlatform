@@ -9,6 +9,7 @@ import click
 
 log = logging.getLogger(__name__)
 
+from sable_platform.db.compat import get_dialect, now_offset_param
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
     cancel_workflow_run,
@@ -246,13 +247,15 @@ def workflow_preflight(org_id: str | None) -> None:
                 failures.append(f"org_active — org '{oid}' status is '{org_row['status']}'")
 
             # 2. No stuck runs
+            _dialect = get_dialect(conn)
+            _cutoff = now_offset_param("offset", _dialect)
             stuck = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) as cnt FROM workflow_runs
-                WHERE org_id=? AND status='running'
-                  AND started_at < datetime('now', '-2 hours')
+                WHERE org_id=:oid AND status='running'
+                  AND started_at < {_cutoff}
                 """,
-                (oid,),
+                {"oid": oid, "offset": "-2 hours"},
             ).fetchone()
             if stuck and stuck["cnt"] > 0:
                 failures.append(f"stuck_runs — {stuck['cnt']} run(s) stuck > 2 hours")

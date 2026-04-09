@@ -9,7 +9,24 @@ callers can branch once at connection time and pass it through.
 """
 from __future__ import annotations
 
+from typing import Any
+
 _SUPPORTED_DIALECTS = ("sqlite", "postgresql")
+
+
+def get_dialect(conn: Any) -> str:
+    """Extract the dialect name string from a connection object.
+
+    Works with CompatConnection (has ``.dialect`` property returning the SA
+    dialect object), native SA Connection, and raw ``sqlite3.Connection``
+    (falls back to ``"sqlite"``).
+    """
+    dialect = getattr(conn, "dialect", None)
+    if dialect is None:
+        return "sqlite"
+    # SA dialect objects have a .name attribute; CompatConnection.dialect
+    # returns the SA dialect object directly.
+    return getattr(dialect, "name", "sqlite")
 
 
 def _check_dialect(dialect: str) -> None:

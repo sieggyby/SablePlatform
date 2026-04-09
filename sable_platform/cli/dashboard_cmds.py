@@ -9,6 +9,7 @@ log = logging.getLogger(__name__)
 
 import click
 
+from sable_platform.db.compat import days_since_int, get_dialect, now_offset_param
 from sable_platform.db.connection import get_db
 from sable_platform.db.alerts import list_alerts
 from sable_platform.db.cost import get_weekly_spend
@@ -41,26 +42,29 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
                 alerts_by_sev[sev] = alerts_by_sev.get(sev, 0) + 1
 
             # Stale data
+            _dialect = get_dialect(conn)
+            _age_expr = days_since_int("MAX(completed_at)", _dialect)
             sync_rows = conn.execute(
-                """
+                f"""
                 SELECT sync_type,
                        MAX(completed_at) as latest,
-                       CAST(julianday('now') - julianday(MAX(completed_at)) AS INTEGER) as age_days
-                FROM sync_runs WHERE org_id=? AND status='completed'
+                       {_age_expr} as age_days
+                FROM sync_runs WHERE org_id=:oid AND status='completed'
                 GROUP BY sync_type
                 """,
-                (oid,),
+                {"oid": oid},
             ).fetchall()
             stale = {r["sync_type"]: r["age_days"] for r in sync_rows if r["age_days"] and r["age_days"] > 7}
 
             # Stuck runs
+            _cutoff = now_offset_param("offset", _dialect)
             stuck_row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) as cnt FROM workflow_runs
-                WHERE org_id=? AND status='running'
-                  AND started_at < datetime('now', '-2 hours')
+                WHERE org_id=:oid AND status='running'
+                  AND started_at < {_cutoff}
                 """,
-                (oid,),
+                {"oid": oid, "offset": "-2 hours"},
             ).fetchone()
             stuck_count = stuck_row["cnt"] if stuck_row else 0
 

@@ -63,7 +63,7 @@ def evaluate_alerts(
 
     try:
         conn.execute(
-            "INSERT INTO platform_meta (key, value, updated_at) VALUES ('last_alert_eval_at', datetime('now'), datetime('now'))"
+            "INSERT INTO platform_meta (key, value, updated_at) VALUES ('last_alert_eval_at', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
             " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
         )
         conn.commit()

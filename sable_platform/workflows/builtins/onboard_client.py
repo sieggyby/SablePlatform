@@ -71,7 +71,7 @@ def _create_initial_sync_record(ctx) -> StepResult:
         ctx.db.execute(
             """
             INSERT INTO sync_runs (org_id, sync_type, cult_run_id, started_at, status, records_synced)
-            VALUES (?, 'onboarding', ?, datetime('now'), 'pending', 0)
+            VALUES (?, 'onboarding', ?, CURRENT_TIMESTAMP, 'pending', 0)
             """,
             (ctx.org_id, cult_run_id),
         )

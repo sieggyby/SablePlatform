@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 from sable_platform.db.alerts import get_last_delivered_at, mark_delivered, mark_delivery_failed
+from sable_platform.db.compat import get_dialect, hours_since
 
 log = logging.getLogger(__name__)
 
@@ -79,9 +80,11 @@ def _deliver(
         if cooldown_hours > 0:
             last_ts = get_last_delivered_at(conn, dedup_key)
             if last_ts:
+                _dialect = get_dialect(conn)
+                _expr = hours_since(":last_ts", _dialect)
                 check = conn.execute(
-                    "SELECT (julianday('now') - julianday(?)) * 24 AS hours_since",
-                    (last_ts,),
+                    f"SELECT {_expr} AS hours_since",
+                    {"last_ts": last_ts},
                 ).fetchone()
                 if check and check["hours_since"] is not None and check["hours_since"] < cooldown_hours:
                     log.debug(

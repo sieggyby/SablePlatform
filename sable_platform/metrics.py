@@ -5,6 +5,8 @@ import sqlite3
 
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
+from sable_platform.db.compat import get_dialect, seconds_since
+
 
 def export_metrics(conn: sqlite3.Connection) -> str:
     """Return a Prometheus text format string with platform metrics.
@@ -47,8 +49,10 @@ def export_metrics(conn: sqlite3.Connection) -> str:
     lines.append("# TYPE sable_last_alert_eval_age_seconds gauge")
     age_seconds = -1.0
     try:
+        _dialect = get_dialect(conn)
+        _expr = seconds_since("value", _dialect)
         meta_row = conn.execute(
-            "SELECT CAST((julianday('now') - julianday(value)) * 86400 AS REAL) as age_secs"
+            f"SELECT CAST({_expr} AS REAL) as age_secs"
             " FROM platform_meta WHERE key='last_alert_eval_at'"
         ).fetchone()
         if meta_row and meta_row[0] is not None:

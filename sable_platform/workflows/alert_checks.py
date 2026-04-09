@@ -7,6 +7,7 @@ import sqlite3
 
 from sable_platform.db.alerts import create_alert
 from sable_platform.db.centrality import BRIDGE_CENTRALITY_THRESHOLD, BRIDGE_DECAY_THRESHOLD
+from sable_platform.db.compat import days_since, days_until, get_dialect, now_offset_param
 from sable_platform.db.decay import DECAY_WARNING_THRESHOLD, DECAY_CRITICAL_THRESHOLD
 from sable_platform.db.watchlist import take_all_snapshots, get_watchlist_changes
 log = logging.getLogger(__name__)
@@ -42,9 +43,11 @@ def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
     if not row or not row["completed_at"]:
         is_stale = True
     else:
+        _dialect = get_dialect(conn)
+        _expr = days_since(":ts", _dialect)
         stale_check = conn.execute(
-            "SELECT julianday('now') - julianday(?) AS age_days",
-            (row["completed_at"],),
+            f"SELECT {_expr} AS age_days",
+            {"ts": row["completed_at"]},
         ).fetchone()
         if stale_check and stale_check["age_days"] is not None:
             age_days = int(stale_check["age_days"])
@@ -72,18 +75,20 @@ def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
 def _check_cultist_tag_expiring(conn: sqlite3.Connection, org_id: str) -> list[str]:
     """Warning: cultist_candidate tag expires within 7 days."""
     try:
+        _dialect = get_dialect(conn)
+        _expr = days_until("t.expires_at", _dialect)
         rows = conn.execute(
-            """
+            f"""
             SELECT t.entity_id, t.expires_at
             FROM entity_tags t
             JOIN entities e ON t.entity_id = e.entity_id
-            WHERE e.org_id=?
+            WHERE e.org_id=:org_id
               AND t.tag='cultist_candidate'
               AND t.is_current=1
               AND t.expires_at IS NOT NULL
-              AND julianday(t.expires_at) - julianday('now') BETWEEN 0 AND 7
+              AND {_expr} BETWEEN 0 AND 7
             """,
-            (org_id,),
+            {"org_id": org_id},
         ).fetchall()
     except Exception as e:
         log.warning("Alert check cultist_tag_expiring failed: %s", e)
@@ -180,14 +185,16 @@ def _check_mvl_score_change(conn: sqlite3.Connection, org_id: str) -> list[str]:
 def _check_actions_unclaimed(conn: sqlite3.Connection, org_id: str) -> list[str]:
     """Info: actions pending for more than 7 days without being claimed."""
     try:
+        _dialect = get_dialect(conn)
+        _expr = days_since("created_at", _dialect)
         rows = conn.execute(
-            """
+            f"""
             SELECT action_id, title
             FROM actions
-            WHERE org_id=? AND status='pending'
-              AND julianday('now') - julianday(created_at) > 7
+            WHERE org_id=:org_id AND status='pending'
+              AND {_expr} > 7
             """,
-            (org_id,),
+            {"org_id": org_id},
         ).fetchall()
     except Exception as e:
         log.warning("Alert check action_unclaimed failed: %s", e)
@@ -216,11 +223,13 @@ def _check_workflow_failures(
     org_id: str | None,
 ) -> list[str]:
     """Critical: workflow_runs with status='failed' that have no open alert."""
-    conditions = "WHERE status='failed' AND (created_at IS NULL OR created_at > datetime('now', '-30 days'))"
-    params: list = []
+    _dialect = get_dialect(conn)
+    _cutoff = now_offset_param("cutoff", _dialect)
+    conditions = f"WHERE status='failed' AND (created_at IS NULL OR created_at > {_cutoff})"
+    params: dict = {"cutoff": "-30 days"}
     if org_id:
-        conditions += " AND org_id=?"
-        params.append(org_id)
+        conditions += " AND org_id=:org_id"
+        params["org_id"] = org_id
 
     rows = conn.execute(
         f"SELECT run_id, org_id, workflow_name FROM workflow_runs {conditions}",
@@ -315,9 +324,11 @@ def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[st
     if not row:
         is_stale = True
     else:
+        _dialect = get_dialect(conn)
+        _expr = days_since(":ts", _dialect)
         stale_check = conn.execute(
-            "SELECT julianday('now') - julianday(?) AS age_days",
-            (row["run_date"],),
+            f"SELECT {_expr} AS age_days",
+            {"ts": row["run_date"]},
         ).fetchone()
         if stale_check and stale_check["age_days"] is not None:
             age_days = int(stale_check["age_days"])
@@ -354,13 +365,15 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
         log.warning("Failed to parse stuck_run config for org %s, using defaults: %s", org_id, e)
 
     try:
+        _dialect = get_dialect(conn)
+        _cutoff = now_offset_param("offset", _dialect)
         rows = conn.execute(
-            """
+            f"""
             SELECT run_id, workflow_name FROM workflow_runs
-            WHERE org_id=? AND status='running'
-              AND started_at < datetime('now', ?)
+            WHERE org_id=:org_id AND status='running'
+              AND started_at < {_cutoff}
             """,
-            (org_id, f'-{threshold_hours} hours'),
+            {"org_id": org_id, "offset": f'-{threshold_hours} hours'},
         ).fetchall()
     except Exception as e:
         log.warning("Alert check stuck_runs failed: %s", e)
