@@ -17,7 +17,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5** is complete. 1056 tests passing. SQLAlchemy Core migration (Phases 0–7, 9) complete — all runtime SQL is dialect-agnostic (no `datetime('now')`, `julianday()`, or `INSERT OR REPLACE/IGNORE`). `db/` modules use SA `text()` with `:named` params. Workflow/CLI callers use `compat.py` helpers + `get_dialect()` for dialect-aware SQL. Alembic for Postgres, `pg_dump` backup support.
+**v0.5** is complete. 1069 tests passing. SQLAlchemy Core migration (Phases 0–9) complete — all runtime SQL is dialect-agnostic. `db/` modules use SA `text()` with `:named` params. Workflow/CLI callers use `compat.py` helpers + `get_dialect()` for dialect-aware SQL. Alembic for Postgres, `pg_dump` backup support. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09 via `sable-platform migrate to-postgres`).
 
 - **DB:** 30 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export
@@ -25,7 +25,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - **5 builtin workflows:** prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery (with auto Cult Grader trigger for Tier 1), onboard_client
 - **12 alert checks:** tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes. Alert creation decoupled from delivery (`deliver_alerts_by_ids()` called after commit).
 - **Delivery:** Telegram, Discord, HMAC-SHA256 webhooks. Cooldown (4h default), per-org config, mute/unmute.
-- **CLI:** full operator surface — workflows, alerts, inspect (13 subcommands including prospect_pipeline), actions, outcomes, journey, dashboard, watchlist, webhooks, cron, org config (sector/stage enums, numeric range validation), backup, init, gc, health-server, metrics
+- **CLI:** full operator surface — workflows, alerts, inspect (13 subcommands including prospect_pipeline), actions, outcomes, journey, dashboard, watchlist, webhooks, cron, org config (sector/stage enums, numeric range validation), backup, init, gc, health-server, metrics, migrate
 - **Adapters:** subprocess-based for CultGrader, SableTracking, Slopper, LeadIdentifier
 - **Infra:** Dockerfile, CI (ruff + pytest), structured JSON logging, cron scheduler
 
