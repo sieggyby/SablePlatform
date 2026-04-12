@@ -10,6 +10,18 @@ from sqlalchemy.exc import OperationalError as SAOperationalError
 from sable_platform.db.compat import hours_since
 
 
+def _row_value(row, key: str, index: int):
+    if row is None:
+        return None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return mapping[key]
+    try:
+        return row[key]
+    except (TypeError, KeyError, IndexError):
+        return row[index]
+
+
 def check_db_health(conn: Connection) -> dict:
     """Return a health status dict for the database.
 
@@ -37,12 +49,12 @@ def check_db_health(conn: Connection) -> dict:
         }
 
     org_row = conn.execute(text("SELECT COUNT(*) as cnt FROM orgs")).fetchone()
-    org_count = org_row["cnt"] if org_row else 0
+    org_count = _row_value(org_row, "cnt", 0) or 0
 
     diag_row = conn.execute(
         text("SELECT MAX(started_at) as latest FROM diagnostic_runs")
     ).fetchone()
-    latest_diag = diag_row["latest"] if diag_row else None
+    latest_diag = _row_value(diag_row, "latest", 0)
 
     last_eval_age_hours: float | None = None
     alert_eval_stale = True
@@ -53,8 +65,9 @@ def check_db_health(conn: Connection) -> dict:
                 " FROM platform_meta WHERE key='last_alert_eval_at'"
             )
         ).fetchone()
-        if meta_row and meta_row["age_hours"] is not None:
-            last_eval_age_hours = round(meta_row["age_hours"], 2)
+        age_hours = _row_value(meta_row, "age_hours", 0)
+        if age_hours is not None:
+            last_eval_age_hours = round(age_hours, 2)
             alert_eval_stale = last_eval_age_hours > 26.0
     except (sqlite3.OperationalError, SAOperationalError):
         pass  # platform_meta table absent on old schema

@@ -85,10 +85,10 @@ sable_platform/
 
 ## DB schema ownership
 
-`sable_platform` owns `get_db()` and all 30 migrations. The DB file stays at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses `importlib.resources` so the package works from any install location. `get_db()` sets `PRAGMA busy_timeout=5000` for concurrent access reliability.
+`sable_platform` owns `get_db()` and all 30 migrations. Runtime DB resolution is `SABLE_DATABASE_URL` first, then SQLite at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses packaged Alembic assets via `importlib.resources`, so the Postgres migration path works from wheels and containers as well as source checkouts. SQLite connections still set `PRAGMA busy_timeout=5000` for concurrent access reliability.
 
-**Three separate SQLite databases exist in the suite — only sable.db is owned here:**
-- `~/.sable/sable.db` — platform cross-tool store (owned by SablePlatform)
+**Three separate suite databases exist — only sable.db is owned here:**
+- `~/.sable/sable.db` (SQLite fallback) or `SABLE_DATABASE_URL` (runtime target) — platform cross-tool store (owned by SablePlatform)
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
@@ -113,7 +113,7 @@ StepDefinition
 StepContext
   run_id, step_id, org_id, step_name, step_index
   input_data: dict      # merged: config + all prior step outputs
-  db: sqlite3.Connection
+  db: CompatConnection   # works with SQLite and Postgres (use text() + :named params)
   config: dict          # original config unchanged
 
 StepResult

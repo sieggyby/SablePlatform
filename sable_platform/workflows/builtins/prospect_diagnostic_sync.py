@@ -160,14 +160,17 @@ def _register_artifacts(ctx) -> StepResult:
         for fname in ["report_internal.md", "report_outreach.md", "report_executive.md", "report_card.md"]:
             fpath = checkpoint / fname
             if fpath.exists():
-                cur = ctx.db.execute(
+                row = ctx.db.execute(
                     """
                     INSERT INTO artifacts (org_id, artifact_type, path, metadata_json)
                     VALUES (?, ?, ?, ?)
+                    RETURNING artifact_id
                     """,
                     (ctx.org_id, "cult_doctor_report", str(fpath), json.dumps({"source": "prospect_diagnostic_sync", "run_id": ctx.run_id})),
-                )
-                artifact_ids.append(cur.lastrowid)
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("INSERT INTO artifacts did not return artifact_id")
+                artifact_ids.append(row[0])
         ctx.db.commit()
 
     return StepResult(

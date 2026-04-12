@@ -83,15 +83,18 @@ def create_subscription(
             f"Org '{org_id}' already has {MAX_SUBSCRIPTIONS_PER_ORG} active subscriptions",
         )
 
-    cursor = conn.execute(
+    row = conn.execute(
         text("""
         INSERT INTO webhook_subscriptions (org_id, url, event_types, secret)
         VALUES (:org_id, :url, :event_types, :secret)
+        RETURNING id
         """),
         {"org_id": org_id, "url": url, "event_types": json.dumps(event_types), "secret": secret},
-    )
+    ).fetchone()
     conn.commit()
-    return cursor.lastrowid
+    if row is None:
+        raise RuntimeError("INSERT INTO webhook_subscriptions did not return id")
+    return row[0]
 
 
 def list_subscriptions(conn: Connection, org_id: str) -> list[dict]:

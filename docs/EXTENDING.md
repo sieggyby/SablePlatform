@@ -24,7 +24,7 @@ from sable_platform.workflows import registry
 
 def _step_one(ctx) -> StepResult:
     org_id = ctx.org_id
-    # ctx.db is an open sqlite3.Connection
+    # ctx.db is a CompatConnection (works with both SQLite and Postgres)
     # ctx.input_data is the merged dict of config + all prior step outputs
     # ctx.config is the original config dict (unchanged across steps)
     result = {"some_key": "some_value"}
@@ -166,12 +166,14 @@ def _run_my_adapter(ctx) -> StepResult:
 ### 1. Add the check function to `alert_checks.py`
 
 ```python
-def _check_my_condition(conn: sqlite3.Connection, org_id: str) -> list[str]:
+from sqlalchemy import text
+
+def _check_my_condition(conn, org_id: str) -> list[str]:
     """Warning: short description of what triggers this alert."""
     try:
         rows = conn.execute(
-            "SELECT entity_id FROM entities WHERE org_id=? AND ...",
-            (org_id,),
+            text("SELECT entity_id FROM entities WHERE org_id = :oid AND ..."),
+            {"oid": org_id},
         ).fetchall()
     except Exception as e:
         log.warning("Alert check my_condition failed: %s", e)
@@ -231,7 +233,10 @@ MY_THRESHOLD = 0.5  # module-level default
 def _check_my_condition(conn, org_id):
     threshold = MY_THRESHOLD
     try:
-        org_row = conn.execute("SELECT config_json FROM orgs WHERE org_id=?", (org_id,)).fetchone()
+        org_row = conn.execute(
+            text("SELECT config_json FROM orgs WHERE org_id = :oid"),
+            {"oid": org_id},
+        ).fetchone()
         if org_row and org_row["config_json"]:
             cfg = json.loads(org_row["config_json"])
             threshold = cfg.get("my_condition_threshold", threshold)
@@ -264,17 +269,20 @@ def test_my_condition_cooldown(db_conn):
 
 ## Adding a Migration
 
-### 1. Create the SQL file
+**Dual-migration requirement:** Schema changes require BOTH a SQL migration file (for SQLite) AND an Alembic revision (for Postgres). Missing either causes SQLite/Postgres schema drift.
+
+### 1. Create the SQL file (SQLite)
 
 ```
 sable_platform/db/migrations/031_my_change.sql
 ```
 
-Migrations must be:
+SQLite migration SQL files must be:
 - **Append-only.** Never modify existing migrations.
 - **Idempotent.** Use `IF NOT EXISTS`, `ON CONFLICT IGNORE`, etc.
 - **Non-destructive.** No `DROP TABLE` or `DROP COLUMN` without explicit operator approval.
 - **Self-versioning.** Each migration SQL must include its own `UPDATE schema_version` statement (required because DDL auto-commits in Python sqlite3, breaking the `with conn:` context manager pattern).
+- **SQLite dialect.** These files are only applied to SQLite databases. Use `datetime('now')` etc. freely.
 
 Example:
 
@@ -305,9 +313,18 @@ _MIGRATIONS = [
 
 **If the entry is missing here, the migration will never run.** The SQL file alone is not enough.
 
-### 3. Update version assertions
+### 3. Create the Alembic revision (Postgres)
 
-Find and update the version assertion in `tests/test_init.py`:
+```bash
+cd /path/to/SablePlatform
+alembic revision --autogenerate -m "031 my change"
+```
+
+This reads the SA metadata from `sable_platform/db/schema.py` and generates a migration in `sable_platform/alembic/versions/`. Review the generated file — autogenerate is not perfect for all DDL.
+
+### 4. Update version assertions
+
+Find and update the version assertion in `tests/test_init.py`, `tests/test_migrations.py`, `tests/test_connection.py`, `tests/test_health.py`, and `docs/CLI_REFERENCE.md`:
 
 ```python
 # Before
@@ -318,15 +335,17 @@ assert version == 31
 
 Also update the schema head comment in `ARCHITECTURE.md` (§ DB schema ownership).
 
-### 4. Verify
+### 5. Verify
 
 ```bash
 # Apply migration to your local DB
 sable-platform init
 
-# Check version
-sqlite3 ~/.sable/sable.db "SELECT value FROM schema_version LIMIT 1;"
-# Should print 31
+# Check version (SQLite)
+sqlite3 ~/.sable/sable.db "SELECT version FROM schema_version LIMIT 1;"
+
+# Check version (PostgreSQL)
+psql "$SABLE_DATABASE_URL" -c "SELECT version FROM schema_version;"
 
 # Run tests
 python3 -m pytest tests/ -q

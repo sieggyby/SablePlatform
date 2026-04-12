@@ -399,17 +399,17 @@ def _run_alembic_upgrade(database_url: str) -> None:
     from alembic import command
     from alembic.config import Config
 
-    # Resolve script_location from the package so it works regardless
-    # of the caller's working directory.
-    pkg_root = importlib.resources.files("sable_platform").joinpath("..").resolve()
-    script_location = str(pkg_root / "alembic")
+    # Resolve script_location from package-owned assets so migrations work
+    # from installed wheels and container images, not just source checkouts.
+    alembic_root = importlib.resources.files("sable_platform.alembic")
 
-    alembic_cfg = Config()
-    alembic_cfg.set_main_option("script_location", script_location)
-    alembic_cfg.set_main_option("sqlalchemy.url", database_url)
+    with importlib.resources.as_file(alembic_root) as script_dir:
+        alembic_cfg = Config()
+        alembic_cfg.set_main_option("script_location", str(script_dir))
+        alembic_cfg.set_main_option("sqlalchemy.url", database_url)
 
-    # Suppress Alembic's default logging to avoid leaking credentials
-    # in the connection URL.  Errors still propagate as exceptions.
-    logging.getLogger("alembic").setLevel(logging.WARNING)
+        # Suppress Alembic's default logging to avoid leaking credentials
+        # in the connection URL.  Errors still propagate as exceptions.
+        logging.getLogger("alembic").setLevel(logging.WARNING)
 
-    command.upgrade(alembic_cfg, "head")
+        command.upgrade(alembic_cfg, "head")

@@ -66,6 +66,9 @@ def dispatch_event(
     event_type: str,
     org_id: str,
     payload: dict,
+    *,
+    subscription_ids: list[int] | None = None,
+    bypass_event_filters: bool = False,
 ) -> int:
     """Dispatch event to matching webhook subscriptions.
 
@@ -78,12 +81,15 @@ def dispatch_event(
         "SELECT * FROM webhook_subscriptions WHERE org_id=? AND enabled=1",
         (org_id,),
     ).fetchall()
+    if subscription_ids is not None:
+        allowed_ids = set(subscription_ids)
+        rows = [row for row in rows if row["id"] in allowed_ids]
 
     # Build (sub_id, url, secret, body_bytes) for each matching subscription.
     deliveries: list[tuple[int, str, str, bytes]] = []
     for row in rows:
         sub_events = json.loads(row["event_types"])
-        if event_type not in sub_events:
+        if not bypass_event_filters and event_type not in sub_events:
             continue
         body = {
             "event_type": event_type,

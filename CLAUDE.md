@@ -17,7 +17,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5** is complete. 1069 tests passing. SQLAlchemy Core migration (Phases 0–9) complete — all runtime SQL is dialect-agnostic. `db/` modules use SA `text()` with `:named` params. Workflow/CLI callers use `compat.py` helpers + `get_dialect()` for dialect-aware SQL. Alembic for Postgres, `pg_dump` backup support. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09 via `sable-platform migrate to-postgres`).
+**v0.5 is production-ready.** 1093 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
 
 - **DB:** 30 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export
@@ -33,7 +33,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 - **Synchronous workflow execution.** Threading is used only for per-step timeouts (`StepDefinition.timeout_seconds`). `poll_diagnostic` step requires manual `sable-platform workflow resume` after CultGrader finishes.
 - **Subprocess adapters.** Clean boundary. No cross-repo imports in production paths.
-- **DB path.** `SABLE_DB_PATH` env var or `~/.sable/sable.db`. Same file as before.
+- **DB target.** `SABLE_DATABASE_URL` when set; otherwise `SABLE_DB_PATH` or `~/.sable/sable.db`.
 - **Migration path.** `importlib.resources` — no `SABLE_PROJECT_PATH` needed.
 - **Jobs vs workflow tables.** Both coexist. `jobs/job_steps` = Slopper-internal. `workflow_runs/workflow_steps` = cross-suite coordination.
 

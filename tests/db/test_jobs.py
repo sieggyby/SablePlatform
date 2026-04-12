@@ -58,6 +58,8 @@ class TestAddStep:
         jid = create_job(conn, org_id, "test")
         sid = add_step(conn, jid, "step_1")
         assert isinstance(sid, int)
+        row = conn.execute("SELECT step_id FROM job_steps WHERE step_id=?", (sid,)).fetchone()
+        assert row["step_id"] == sid
 
     def test_add_with_order_and_input(self, org_db):
         conn, org_id = org_db

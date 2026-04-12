@@ -23,15 +23,18 @@ def upsert_playbook_targets(
 
     Returns the row id of the inserted record.
     """
-    row_id = conn.execute(
+    row = conn.execute(
         text(
             "INSERT INTO playbook_targets (org_id, artifact_id, targets_json)"
             " VALUES (:org_id, :artifact_id, :targets_json)"
+            " RETURNING id"
         ),
         {"org_id": org_id, "artifact_id": artifact_id, "targets_json": json.dumps(targets)},
-    ).lastrowid
+    ).fetchone()
     conn.commit()
-    return row_id
+    if row is None:
+        raise RuntimeError("INSERT INTO playbook_targets did not return id")
+    return row[0]
 
 
 def get_latest_playbook_targets(
@@ -69,15 +72,18 @@ def record_playbook_outcomes(
 
     Returns the row id of the inserted record.
     """
-    row_id = conn.execute(
+    row = conn.execute(
         text(
             "INSERT INTO playbook_outcomes (org_id, targets_artifact_id, outcomes_json)"
             " VALUES (:org_id, :targets_artifact_id, :outcomes_json)"
+            " RETURNING id"
         ),
         {"org_id": org_id, "targets_artifact_id": targets_artifact_id, "outcomes_json": json.dumps(outcomes)},
-    ).lastrowid
+    ).fetchone()
     conn.commit()
-    return row_id
+    if row is None:
+        raise RuntimeError("INSERT INTO playbook_outcomes did not return id")
+    return row[0]
 
 
 def get_latest_playbook_outcomes(

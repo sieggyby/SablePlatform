@@ -18,6 +18,7 @@ def test_dockerfile_has_healthcheck():
     """Dockerfile contains HEALTHCHECK instruction."""
     content = (_PROJECT_ROOT / "Dockerfile").read_text()
     assert "HEALTHCHECK" in content
+    assert "db-health" in content
 
 
 def test_dockerfile_creates_sable_user():
@@ -44,10 +45,29 @@ def test_compose_has_healthchecks():
     """docker-compose.yaml has healthcheck on the main service."""
     content = (_PROJECT_ROOT / "docker-compose.yaml").read_text()
     assert "healthcheck:" in content
+    assert "db-health" in content
 
 
-def test_compose_no_sleep_loop():
-    """docker-compose.yaml alerts-cron does not use a bare sleep loop."""
+def test_dockerfile_installs_postgres_extra():
+    """Dockerfile must install the optional Postgres dependency bundle."""
+    content = (_PROJECT_ROOT / "Dockerfile").read_text()
+    assert '".[postgres]"' in content or ".[postgres]" in content
+
+
+def test_compose_runs_long_lived_platform_service():
+    """docker-compose.yaml should keep the main platform service alive."""
     content = (_PROJECT_ROOT / "docker-compose.yaml").read_text()
-    # Old pattern was: "while true; do sable-platform alerts evaluate; sleep 14400; done"
-    assert "sleep 14400" not in content
+    assert "health-server" in content
+
+
+def test_compose_alerts_cron_uses_evaluate_loop():
+    """docker-compose.yaml alerts-cron uses direct 'alerts evaluate' loop."""
+    content = (_PROJECT_ROOT / "docker-compose.yaml").read_text()
+    assert "alerts evaluate" in content
+    assert "cron run" not in content
+
+
+def test_compose_no_crontab_dependency():
+    """docker-compose.yaml must not depend on crontab binary (host tool, not container tool)."""
+    content = (_PROJECT_ROOT / "docker-compose.yaml").read_text()
+    assert "crontab" not in content

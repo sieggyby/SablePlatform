@@ -4,31 +4,38 @@ services:
     volumes:
       - sable-data:/data
     environment:
+      - SABLE_DATABASE_URL=${SABLE_DATABASE_URL:-}
       - SABLE_DB_PATH=/data/sable.db
-      - SABLE_OPERATOR_ID=${SABLE_OPERATOR_ID:-docker}
+      - SABLE_OPERATOR_ID=${SABLE_OPERATOR_ID:-platform}
+      - SABLE_HEALTH_TOKEN=${SABLE_HEALTH_TOKEN:-}
       - SABLE_TELEGRAM_BOT_TOKEN=${SABLE_TELEGRAM_BOT_TOKEN:-}
-    command: ["init"]
+    entrypoint: ["sh", "-c"]
+    command: ["sable-platform init && exec sable-platform health-server"]
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "sable-platform", "inspect", "health", "--json"]
+      test: ["CMD", "sable-platform", "db-health", "--json"]
       interval: 60s
       timeout: 5s
       start_period: 10s
       retries: 3
 
-  # Alert evaluation on a 4-hour cron schedule (replaces sleep loop)
+  # Alert evaluation on a 4-hour loop (direct evaluate, no OS cron needed)
   alerts-cron:
     build: .
     volumes:
       - sable-data:/data
+    depends_on:
+      - sable-platform
     environment:
+      - SABLE_DATABASE_URL=${SABLE_DATABASE_URL:-}
       - SABLE_DB_PATH=/data/sable.db
       - SABLE_OPERATOR_ID=cron
       - SABLE_TELEGRAM_BOT_TOKEN=${SABLE_TELEGRAM_BOT_TOKEN:-}
     entrypoint: ["sh", "-c"]
-    command: ["sable-platform cron add --preset alert_check 2>/dev/null; while true; do sable-platform cron run; sleep 3600; done"]
+    command: ["while true; do sable-platform alerts evaluate; sleep 14400; done"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "sable-platform", "inspect", "health", "--json"]
+      test: ["CMD", "sable-platform", "db-health", "--json"]
       interval: 300s
       timeout: 5s
       start_period: 30s

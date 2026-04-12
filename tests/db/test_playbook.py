@@ -47,6 +47,8 @@ class TestUpsertPlaybookTargets:
         conn, org_id = org_db
         row_id = upsert_playbook_targets(conn, org_id, _sample_targets())
         assert row_id is not None and row_id > 0
+        row = conn.execute("SELECT id FROM playbook_targets WHERE id=?", (row_id,)).fetchone()
+        assert row["id"] == row_id
 
     def test_targets_json_round_trip(self, org_db):
         conn, org_id = org_db
@@ -128,6 +130,8 @@ class TestRecordPlaybookOutcomes:
         conn, org_id = org_db
         row_id = record_playbook_outcomes(conn, org_id, _sample_outcomes())
         assert row_id is not None and row_id > 0
+        row = conn.execute("SELECT id FROM playbook_outcomes WHERE id=?", (row_id,)).fetchone()
+        assert row["id"] == row_id
 
     def test_outcomes_json_round_trip(self, org_db):
         conn, org_id = org_db

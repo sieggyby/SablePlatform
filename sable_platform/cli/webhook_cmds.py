@@ -10,6 +10,7 @@ from sable_platform.db.connection import get_db
 from sable_platform.db.webhooks import (
     create_subscription,
     delete_subscription,
+    get_subscription,
     list_subscriptions,
 )
 
@@ -98,7 +99,25 @@ def webhooks_test(org_id: str, subscription_id: int) -> None:
 
     conn = get_db()
     try:
-        count = dispatch_event(conn, "webhook.test", org_id, {"test": True})
+        row = get_subscription(conn, subscription_id)
+        if row is None:
+            click.echo(f"Subscription {subscription_id} not found.", err=True)
+            raise SystemExit(1)
+        if row["org_id"] != org_id:
+            click.echo(
+                f"Subscription {subscription_id} belongs to org '{row['org_id']}', not '{org_id}'.",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        count = dispatch_event(
+            conn,
+            "webhook.test",
+            org_id,
+            {"test": True, "subscription_id": subscription_id},
+            subscription_ids=[subscription_id],
+            bypass_event_filters=True,
+        )
     finally:
         conn.close()
 

@@ -35,15 +35,18 @@ def add_step(
     step_order: int = 0,
     input_data: dict | None = None,
 ) -> int:
-    cursor = conn.execute(
+    row = conn.execute(
         text(
             "INSERT INTO job_steps (job_id, step_name, step_order, status, input_json)"
             " VALUES (:job_id, :step_name, :step_order, 'pending', :input_json)"
+            " RETURNING step_id"
         ),
         {"job_id": job_id, "step_name": step_name, "step_order": step_order, "input_json": json.dumps(input_data or {})},
-    )
+    ).fetchone()
     conn.commit()
-    return cursor.lastrowid
+    if row is None:
+        raise RuntimeError("INSERT INTO job_steps did not return step_id")
+    return row[0]
 
 
 def start_step(conn: Connection, step_id: int) -> None:

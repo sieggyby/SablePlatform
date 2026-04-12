@@ -31,3 +31,40 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -q
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      SABLE_TEST_POSTGRES_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      SABLE_OPERATOR_ID: ci
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Postgres test dependencies
+        run: |
+          pip install -e ".[postgres]"
+          pip install pytest
+
+      - name: Run live Postgres integration tests
+        run: python -m pytest tests/postgres/ -q

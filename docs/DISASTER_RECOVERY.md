@@ -2,6 +2,10 @@
 
 Procedures for handling DB corruption, backup restore, migration rollback, and cron recovery.
 
+Backend-specific commands differ in a few places:
+- SQLite operators work directly with the `sable.db` file.
+- PostgreSQL operators use `sable-platform backup`, `psql`, and `sable-platform db-health` against `SABLE_DATABASE_URL`.
+
 ---
 
 ## 1. Backup and Restore
@@ -9,10 +13,12 @@ Procedures for handling DB corruption, backup restore, migration rollback, and c
 ### 1.1 Create a manual backup
 
 ```bash
-sable-platform backup --dest-dir ~/.sable/backups --label manual
+sable-platform backup --dest ~/.sable/backups --label manual
 ```
 
-This uses SQLite's online backup API and is safe while the platform is running. The backup file is written as `~/.sable/backups/sable_YYYYMMDDTHHMMSSz_manual.db`.
+For SQLite, this uses the online backup API and is safe while the platform is running. The backup file is written as `~/.sable/backups/sable_YYYYMMDDTHHMMSSz_manual.db`.
+
+When `SABLE_DATABASE_URL` points at PostgreSQL, the same command shells out to `pg_dump` and writes `~/.sable/backups/sable_YYYYMMDDTHHMMSSz_manual.sql`.
 
 The automated backup cron preset runs daily at 03:00 UTC:
 
@@ -21,6 +27,8 @@ sable-platform cron add --preset backup --org <org_id>
 ```
 
 ### 1.2 Restore from backup
+
+#### SQLite restore
 
 **Stop any running processes first** (the CLI is synchronous so this is just ensuring no active `sable-platform` command is running):
 
@@ -32,16 +40,36 @@ ls -lt ~/.sable/backups/
 cp ~/.sable/backups/sable_<timestamp>.db ~/.sable/sable.db
 
 # Verify the restored DB
-sable-platform inspect health
+sable-platform db-health
 ```
 
 If `SABLE_DB_PATH` is set to a non-default location, use that path instead of `~/.sable/sable.db`.
 
+#### PostgreSQL restore
+
+Stop writers first, create or point `SABLE_DATABASE_URL` at an empty replacement database, then restore with `psql`:
+
+```bash
+# Identify the backup to restore
+ls -lt ~/.sable/backups/
+
+# Restore into the empty replacement Postgres DB
+psql "$SABLE_DATABASE_URL" -f ~/.sable/backups/sable_<timestamp>.sql
+
+# Verify the restored DB
+sable-platform db-health
+```
+
 ### 1.3 Verify backup integrity
 
 ```bash
+# SQLite
 sqlite3 ~/.sable/backups/sable_<timestamp>.db "PRAGMA integrity_check;"
 # Expected output: ok
+
+# PostgreSQL
+# Restore into a disposable empty database and then run:
+sable-platform db-health
 ```
 
 ---
@@ -50,12 +78,24 @@ sqlite3 ~/.sable/backups/sable_<timestamp>.db "PRAGMA integrity_check;"
 
 ### 2.1 Detect corruption
 
+#### SQLite
+
 ```bash
 sqlite3 ~/.sable/sable.db "PRAGMA integrity_check;"
 ```
 
 - `ok` — no corruption
 - Any other output — corruption detected; proceed to restore
+
+#### PostgreSQL
+
+Use the backend-neutral healthcheck first:
+
+```bash
+sable-platform db-health
+```
+
+If that fails, inspect the server with `psql` and your Postgres logs. Corruption handling is a PostgreSQL operational concern rather than a local-file repair flow.
 
 ### 2.2 Attempt WAL recovery
 
@@ -107,7 +147,11 @@ Then redeploy the previous version of `sable-platform` before retrying the migra
 ### 3.2 Check current schema version
 
 ```bash
+# SQLite
 sqlite3 ~/.sable/sable.db "SELECT version FROM schema_version;"
+
+# PostgreSQL
+psql "$SABLE_DATABASE_URL" -c "SELECT version FROM schema_version;"
 ```
 
 ### 3.3 Migration 027: duplicate active run auto-fail
@@ -228,13 +272,14 @@ GC is FK-safe and audit-log-immune (audit entries are never deleted). The weekly
 
 ```bash
 # Programmatic health check (exits non-zero on failure)
-sable-platform inspect health
+sable-platform db-health
 
-# DB integrity
+# SQLite DB integrity
 sqlite3 "$SABLE_DB_PATH" "PRAGMA integrity_check;"
 
 # Schema version
 sqlite3 "$SABLE_DB_PATH" "SELECT version FROM schema_version;"
+psql "$SABLE_DATABASE_URL" -c "SELECT version FROM schema_version;"
 
 # Active workflow runs
 sable-platform workflow list --status running

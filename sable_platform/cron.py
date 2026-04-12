@@ -55,7 +55,7 @@ WORKFLOW_PRESETS: dict[str, WorkflowPreset] = {
         schedule="0 */4 * * *",  # every 4 hours
         workflow="alert_check",
         description="Evaluate alerts every 4 hours",
-        command_template="{cli_bin} alerts evaluate --all-orgs",
+        command_template="{cli_bin} alerts evaluate",
     ),
     "gc": WorkflowPreset(
         schedule="0 4 * * 0",  # Sunday 04:00 UTC

@@ -62,7 +62,7 @@ def test_onboard_client_creates_sync_run_row(wf_db):
     runner = WorkflowRunner(ONBOARD_CLIENT)
     original = {v: os.environ.pop(v, None) for v in ["SABLE_TRACKING_PATH", "SABLE_SLOPPER_PATH", "SABLE_CULT_GRADER_PATH"]}
     try:
-        runner.run("wf_org", {}, conn=wf_db)
+        run_id = runner.run("wf_org", {}, conn=wf_db)
     finally:
         for v, val in original.items():
             if val is not None:
@@ -73,6 +73,14 @@ def test_onboard_client_creates_sync_run_row(wf_db):
     ).fetchone()
     assert row is not None
     assert row["status"] == "pending"
+
+    import json
+    step = wf_db.execute(
+        "SELECT output_json FROM workflow_steps WHERE run_id=? AND step_name='create_initial_sync_record'",
+        (run_id,),
+    ).fetchone()
+    sync_run_id = json.loads(step["output_json"])["sync_run_id"]
+    assert row["sync_id"] == sync_run_id
 
 
 def test_onboard_client_fails_for_unknown_org(wf_db):

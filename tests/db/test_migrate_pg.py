@@ -7,6 +7,7 @@ against a real Postgres instance.
 """
 from __future__ import annotations
 
+import importlib.resources
 import uuid
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from sable_platform.db.migrate_pg import (
     TABLE_LOAD_ORDER,
     _check_target_empty,
     _insert_batch,
+    _run_alembic_upgrade,
     _read_all_rows,
     _validate_counts,
     run_migration,
@@ -321,4 +323,28 @@ class TestAlembicUpgradeCalled:
                 except Exception:
                     pass  # May fail on PG-specific SQL, but alembic should be called
                 mock_alembic.assert_called_once()
-            target.dispose()
+
+
+def test_packaged_alembic_assets_present():
+    """Packaged Alembic assets must exist for installed Postgres upgrades."""
+    alembic_root = importlib.resources.files("sable_platform.alembic")
+    assert alembic_root.joinpath("env.py").is_file()
+    assert alembic_root.joinpath("script.py.mako").is_file()
+
+    revisions = [
+        entry.name
+        for entry in alembic_root.joinpath("versions").iterdir()
+        if entry.is_file() and entry.name.endswith(".py")
+    ]
+    assert any(name != "__init__.py" for name in revisions)
+
+
+def test_run_alembic_upgrade_uses_packaged_script_location():
+    """_run_alembic_upgrade must point Alembic at packaged migration assets."""
+    with patch("alembic.command.upgrade") as mock_upgrade:
+        _run_alembic_upgrade("postgresql://user:secret@localhost/sable")
+
+    cfg = mock_upgrade.call_args.args[0]
+    script_location = cfg.get_main_option("script_location")
+    assert script_location is not None
+    assert script_location.endswith("sable_platform/alembic")

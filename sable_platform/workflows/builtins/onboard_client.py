@@ -68,15 +68,18 @@ def _create_initial_sync_record(ctx) -> StepResult:
     """Insert a sync_runs row with status='pending' and sync_type='onboarding'."""
     cult_run_id = uuid.uuid4().hex
     try:
-        ctx.db.execute(
+        row = ctx.db.execute(
             """
             INSERT INTO sync_runs (org_id, sync_type, cult_run_id, started_at, status, records_synced)
             VALUES (?, 'onboarding', ?, CURRENT_TIMESTAMP, 'pending', 0)
+            RETURNING sync_id
             """,
             (ctx.org_id, cult_run_id),
-        )
+        ).fetchone()
         ctx.db.commit()
-        sync_run_id = ctx.db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        if row is None:
+            raise RuntimeError("INSERT INTO sync_runs did not return sync_id")
+        sync_run_id = row[0]
     except (sqlite3.Error, SADatabaseError) as exc:
         raise SableError(INVALID_CONFIG, f"sync_run insert failed: {exc}") from exc
     return StepResult("completed", {"sync_run_id": sync_run_id})

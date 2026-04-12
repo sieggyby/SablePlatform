@@ -90,7 +90,7 @@ SablePlatform never imports from downstream repos. All integration happens via s
 
 **What flows back:** Lead prospects as entities.
 
-**Automated Cult Grader trigger:** The `lead_discovery` workflow's `trigger_cult_grader_for_tier1` step automatically runs Cult Grader diagnostics for Tier 1 prospects (composite >= 0.50). Bounded to max 10 diagnostics per run. Each diagnostic is budget-checked via `check_budget()`. Individual diagnostic failures do not fail the workflow step — errors are logged and remaining prospects are processed.
+**Automated Cult Grader trigger:** The `lead_discovery` workflow's `trigger_cult_grader_for_tier1` step automatically runs Cult Grader diagnostics for canonical Tier 1 prospects (composite >= 0.70 via `PURSUE_THRESHOLD`). Bounded to max 10 diagnostics per run. Each diagnostic is budget-checked via `check_budget()`. Individual diagnostic failures do not fail the workflow step — errors are logged and remaining prospects are processed.
 
 ---
 
@@ -138,7 +138,7 @@ Steps:
 3. parse_leads           — read sable_leads_latest.json, filter pursue+monitor
 4. create_entities       — create/find entities, tag as bd_prospect
 5. sync_scores           — upsert to prospect_scores table
-6. trigger_cult_grader_for_tier1 — auto-diagnose Tier 1 (composite >= 0.50)
+6. trigger_cult_grader_for_tier1 — auto-diagnose Tier 1 (composite >= 0.70)
                            • Max 10 per run (cost bound)
                            • check_budget() before each
                            • Individual failures logged, not fatal
@@ -148,7 +148,7 @@ Steps:
 10. mark_complete        — summary
 ```
 
-Schedule via cron preset: `sable-platform cron add-preset lead_discovery --org <org>` (Monday 22:00 UTC).
+Schedule via cron preset: `sable-platform cron add --preset lead_discovery --org <org>` (Monday 22:00 UTC).
 
 ---
 

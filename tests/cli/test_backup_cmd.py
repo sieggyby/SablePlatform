@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from unittest.mock import Mock
 
 from click.testing import CliRunner
 
@@ -108,3 +110,27 @@ class TestBackupCommand:
 
         backups = list((tmp_path / "backups").glob("sable_*.db"))
         assert len(backups) == 2
+
+    def test_backup_prefers_postgres_env_over_sable_db_path_env(self, tmp_path, monkeypatch):
+        """When both env vars are set, backup without --db-path must use Postgres."""
+        db_path = str(tmp_path / "env_sable.db")
+        _create_test_db(db_path)
+        dest_dir = tmp_path / "backups"
+        dest_dir.mkdir()
+        pg_backup = dest_dir / "sable_pg.sql"
+        pg_backup.write_text("-- pg_dump output")
+
+        monkeypatch.setenv("SABLE_DB_PATH", db_path)
+        monkeypatch.setenv("SABLE_DATABASE_URL", "postgresql://user:secret@localhost/sable")
+        monkeypatch.setattr(
+            "sable_platform.db.backup.backup_database_pg",
+            lambda database_url, dest_dir, **kwargs: pg_backup,
+        )
+        sqlite_backup = Mock(side_effect=AssertionError("SQLite backup should not run"))
+        monkeypatch.setattr("sable_platform.db.backup.backup_database", sqlite_backup)
+        monkeypatch.setattr("sable_platform.db.backup.get_backup_size", lambda path: "1.0 B")
+
+        result = CliRunner().invoke(cli, ["backup", "--dest", str(dest_dir)])
+
+        assert result.exit_code == 0
+        assert "Backup created" in result.output

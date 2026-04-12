@@ -188,6 +188,24 @@ class TestBackupDatabasePg:
         assert result.suffix == ".sql"
         assert "_test" in result.name
 
+    def test_uses_pgpassword_env_instead_of_password_in_argv(self, tmp_path):
+        seen: dict[str, object] = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["env"] = kwargs.get("env", {})
+            for i, arg in enumerate(cmd):
+                if arg == "-f" and i + 1 < len(cmd):
+                    Path(cmd[i + 1]).write_text("-- pg_dump output")
+            return type("Result", (), {"returncode": 0, "stderr": ""})()
+
+        with patch("sable_platform.db.backup.shutil.which", return_value="/usr/bin/pg_dump"):
+            with patch("sable_platform.db.backup.subprocess.run", side_effect=fake_run):
+                backup_database_pg("postgresql://user:secret@localhost/test", tmp_path)
+
+        assert "secret" not in " ".join(seen["cmd"])
+        assert seen["env"]["PGPASSWORD"] == "secret"
+
     def test_prunes_old_pg_backups(self, tmp_path):
         # Pre-create old backups
         for i in range(5):

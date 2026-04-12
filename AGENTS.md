@@ -20,11 +20,11 @@ This repo is the backbone for the Sable tool stack. It owns `sable.db`, all DB m
 | Trait | Repo-specific assumption |
 |---|---|
 | External dependencies | No direct external API calls. Subprocess adapters shell out to Cult Grader, SableTracking, and Slopper — each of which may call Anthropic, SocialData, or Replicate |
-| Architecture | Synchronous workflow engine with deterministic step execution, retry, skip_if, and resume. All state persisted in SQLite (`sable.db`). Migrations are append-only and versioned |
+| Architecture | Synchronous workflow engine with deterministic step execution, retry, skip_if, and resume. State persisted in SQLite (`sable.db`) or PostgreSQL (via `SABLE_DATABASE_URL`). SQLite migrations are append-only SQL files; Postgres uses Alembic. Dual-migration required for schema changes |
 | Reliability risk | Workflow partial failure leaves steps in `running` or `pending` state; resume must correctly identify the restart point. Migration version drift causes schema mismatches across the suite |
 | Auth surface | HTTP `/health` endpoint requires `SABLE_HEALTH_TOKEN` Bearer token. CLI requires `SABLE_OPERATOR_ID` (exits 1 if unset, except `init`). No API keys owned by this repo. Subprocess adapters inherit env from caller. |
 | Output formats | SQLite rows, CLI table output (fixed-width), Pydantic JSON contracts passed between suite repos |
-| Deployment | Local CLI + in-process library. `sable.db` at `~/.sable/sable.db` or `$SABLE_DB_PATH` |
+| Deployment | Local CLI + in-process library + Docker compose. SQLite at `~/.sable/sable.db` or `$SABLE_DB_PATH` for local dev; PostgreSQL via `$SABLE_DATABASE_URL` for production (live on Hetzner VPS). Container runs `health-server` + `alerts evaluate` loop |
 | Cost sensitivity | No direct API cost. Subprocess adapter calls may trigger spend in downstream repos — flag unbounded adapter call loops |
 
 ### Repo-specific cost targets

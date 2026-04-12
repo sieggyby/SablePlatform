@@ -1,10 +1,15 @@
 """sable-platform CLI entry point."""
 from __future__ import annotations
 
+import json
 import logging
+import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 import click
+from sqlalchemy.engine import make_url
 
 from sable_platform.cli.workflow_cmds import workflow
 from sable_platform.cli.inspect_cmds import inspect
@@ -19,19 +24,73 @@ from sable_platform.cli.webhook_cmds import webhooks
 from sable_platform.cli.cron_cmds import cron
 
 
+@dataclass(frozen=True)
+class CliDatabaseTarget:
+    dialect: str
+    connection_url: str
+    display: str
+    sqlite_path: Path | None = None
+
+
+def _resolve_cli_database_target(explicit_db_path: str | None) -> CliDatabaseTarget:
+    from sable_platform.db.connection import sable_db_path
+
+    if explicit_db_path:
+        sqlite_path = Path(explicit_db_path).expanduser()
+        return CliDatabaseTarget(
+            dialect="sqlite",
+            connection_url=f"sqlite:///{sqlite_path}",
+            display=str(sqlite_path),
+            sqlite_path=sqlite_path,
+        )
+
+    database_url = os.environ.get("SABLE_DATABASE_URL", "")
+    if database_url:
+        parsed = make_url(database_url)
+        dialect = parsed.get_backend_name()
+        if dialect == "sqlite":
+            sqlite_path = None
+            display = parsed.render_as_string(hide_password=True)
+            if parsed.database and parsed.database != ":memory:":
+                sqlite_path = Path(parsed.database).expanduser()
+                display = str(sqlite_path)
+            return CliDatabaseTarget(
+                dialect=dialect,
+                connection_url=database_url,
+                display=display,
+                sqlite_path=sqlite_path,
+            )
+        return CliDatabaseTarget(
+            dialect=dialect,
+            connection_url=database_url,
+            display=parsed.render_as_string(hide_password=True),
+        )
+
+    sqlite_path = sable_db_path()
+    return CliDatabaseTarget(
+        dialect="sqlite",
+        connection_url=f"sqlite:///{sqlite_path}",
+        display=str(sqlite_path),
+        sqlite_path=sqlite_path,
+    )
+
+
+def _sqlite_db_arg(target: CliDatabaseTarget) -> str | None:
+    return str(target.sqlite_path) if target.sqlite_path else None
+
+
 @click.group()
 @click.pass_context
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.option("--json-log", is_flag=True, default=False, help="Emit structured JSON logs")
 def cli(ctx: click.Context, verbose: bool, json_log: bool) -> None:
     """Sable Platform — suite-level workflow and inspection CLI."""
-    import os
     from sable_platform.logging_config import configure_logging
     level = logging.DEBUG if verbose else logging.INFO
     configure_logging(json_mode=json_log, level=level)
 
-    # init is the bootstrap command — exempt from operator identity requirement.
-    if ctx.invoked_subcommand not in (None, "init"):
+    # Bootstrap and health commands must work before operator identity exists.
+    if ctx.invoked_subcommand not in (None, "init", "db-health"):
         _op = os.environ.get("SABLE_OPERATOR_ID", "")
         if not _op or _op == "unknown":
             click.echo(
@@ -44,26 +103,31 @@ def cli(ctx: click.Context, verbose: bool, json_log: bool) -> None:
 
 
 @cli.command("init")
-@click.option("--db-path", default=None, envvar="SABLE_DB_PATH",
+@click.option("--db-path", default=None,
               help="Path to sable.db. Defaults to ~/.sable/sable.db")
 def init(db_path: str | None) -> None:
-    """Initialize sable.db and apply all schema migrations."""
+    """Initialize the configured database and apply schema migrations."""
     from sable_platform.db.connection import get_db
+
+    target = _resolve_cli_database_target(db_path)
     try:
-        conn = get_db(db_path)
-        row = conn.execute("PRAGMA database_list").fetchone()
-        resolved_path = row[2] if row else (db_path or "~/.sable/sable.db")
+        if target.dialect == "postgresql":
+            from sable_platform.db.migrate_pg import _run_alembic_upgrade
+
+            _run_alembic_upgrade(target.connection_url)
+
+        conn = get_db(_sqlite_db_arg(target))
         version_row = conn.execute("SELECT version FROM schema_version").fetchone()
         version = version_row[0] if version_row else 0
         conn.close()
     except Exception as e:
         click.echo(f"Init failed: {e}", err=True)
         sys.exit(1)
-    click.echo(f"sable.db initialized at {resolved_path} (schema version {version}).")
+    click.echo(f"Database initialized at {target.display} (schema version {version}).")
 
 
 @cli.command("backup")
-@click.option("--db-path", default=None, envvar="SABLE_DB_PATH",
+@click.option("--db-path", default=None,
               help="Path to sable.db. Defaults to ~/.sable/sable.db")
 @click.option("--dest", default=None, type=click.Path(),
               help="Backup directory. Defaults to ~/.sable/backups/")
@@ -74,20 +138,24 @@ def init(db_path: str | None) -> None:
               help="Max backups to retain (0 = unlimited).")
 def backup(db_path: str | None, dest: str | None, label: str | None, max_backups: int) -> None:
     """Create a backup of sable.db (SQLite online backup or pg_dump)."""
-    import os
     from pathlib import Path
     from sable_platform.db.backup import backup_database, backup_database_pg, get_backup_size
-    from sable_platform.db.connection import sable_db_path
 
-    database_url = os.environ.get("SABLE_DATABASE_URL", "")
-    is_postgres = database_url.startswith("postgresql")
+    target = _resolve_cli_database_target(db_path)
 
     try:
-        if is_postgres and not db_path:
+        if target.dialect == "postgresql":
             dest_dir = Path(dest) if dest else Path.home() / ".sable" / "backups"
-            result = backup_database_pg(database_url, dest_dir, label=label, max_backups=max_backups)
+            result = backup_database_pg(
+                target.connection_url,
+                dest_dir,
+                label=label,
+                max_backups=max_backups,
+            )
         else:
-            source = Path(db_path) if db_path else sable_db_path()
+            if target.sqlite_path is None:
+                raise ValueError("SQLite backups require a file-backed database path.")
+            source = target.sqlite_path
             dest_dir = Path(dest) if dest else source.parent / "backups"
             result = backup_database(source, dest_dir, label=label, max_backups=max_backups)
         size = get_backup_size(result)
@@ -97,6 +165,56 @@ def backup(db_path: str | None, dest: str | None, label: str | None, max_backups
         sys.exit(1)
     except Exception as e:
         click.echo(f"Backup failed: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command("db-health")
+@click.option("--db-path", default=None,
+              help="Path to sable.db. Defaults to ~/.sable/sable.db")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def db_health(db_path: str | None, as_json: bool) -> None:
+    """Check database health without requiring an org-scoped inspect command."""
+    from sable_platform.db.engine import get_engine
+    from sable_platform.db.health import check_db_health
+
+    target = _resolve_cli_database_target(db_path)
+    if target.sqlite_path is not None and not target.sqlite_path.exists():
+        result: dict[str, object] = {
+            "ok": False,
+            "migration_version": 0,
+            "org_count": 0,
+            "latest_diagnostic_run": None,
+            "last_alert_eval_age_hours": None,
+            "alert_eval_stale": True,
+            "error": f"Database not found: {target.sqlite_path}",
+        }
+    else:
+        try:
+            with get_engine(target.connection_url).connect() as conn:
+                result = dict(check_db_health(conn))
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "migration_version": 0,
+                "org_count": 0,
+                "latest_diagnostic_run": None,
+                "last_alert_eval_age_hours": None,
+                "alert_eval_stale": True,
+                "error": str(exc),
+            }
+
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+    elif result["ok"]:
+        click.echo(
+            f"ok schema_version={result['migration_version']} org_count={result['org_count']}"
+        )
+    else:
+        error = result.get("error")
+        detail = f": {error}" if error else ""
+        click.echo(f"unhealthy{detail}", err=True)
+
+    if not result["ok"]:
         sys.exit(1)
 
 

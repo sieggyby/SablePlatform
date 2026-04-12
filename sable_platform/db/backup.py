@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+
+from sqlalchemy.engine import URL, make_url
 
 log = logging.getLogger(__name__)
 
@@ -121,10 +124,24 @@ def backup_database_pg(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     suffix = f"_{label}" if label else ""
     dest_path = dest_dir / f"sable_{timestamp}{suffix}.sql"
+    parsed_url = make_url(database_url)
+    pg_dump_url = URL.create(
+        drivername=parsed_url.drivername,
+        username=parsed_url.username,
+        password=None,
+        host=parsed_url.host,
+        port=parsed_url.port,
+        database=parsed_url.database,
+        query=parsed_url.query,
+    ).render_as_string(hide_password=False)
+    env = os.environ.copy()
+    if parsed_url.password:
+        env["PGPASSWORD"] = parsed_url.password
 
     try:
         result = subprocess.run(
-            ["pg_dump", "--no-owner", "--no-acl", "-f", str(dest_path), database_url],
+            ["pg_dump", "--no-owner", "--no-acl", "-f", str(dest_path), pg_dump_url],
+            env=env,
             capture_output=True,
             text=True,
             timeout=300,

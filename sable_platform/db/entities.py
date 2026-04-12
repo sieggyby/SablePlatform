@@ -156,15 +156,18 @@ def add_entity_note(
     if row["status"] == "archived":
         raise SableError(ENTITY_ARCHIVED, f"Entity '{entity_id}' is archived")
 
-    cur = conn.execute(
+    row = conn.execute(
         text("""
         INSERT INTO entity_notes (entity_id, body, source)
         VALUES (:entity_id, :body, :source)
+        RETURNING note_id
         """),
         {"entity_id": entity_id, "body": body, "source": source},
-    )
+    ).fetchone()
     conn.commit()
-    return cur.lastrowid
+    if row is None:
+        raise RuntimeError("INSERT INTO entity_notes did not return note_id")
+    return row[0]
 
 
 def list_entity_notes(

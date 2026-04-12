@@ -21,7 +21,7 @@ Lead Identifier found a prospect matching Sable's scoring criteria.
 Cult Grader ran a full diagnostic on the prospect.
 
 **How it happens:**
-- Automatically via the `trigger_cult_grader_for_tier1` step in `lead_discovery` (Tier 1 prospects, max 10 per run).
+- Automatically via the `trigger_cult_grader_for_tier1` step in `lead_discovery` (Tier 1 prospects, composite >= 0.70, max 10 per run).
 - Manually: `sable-platform workflow run prospect_diagnostic_sync --org <org>`
 
 **Inspect:** `sable-platform inspect prospect_pipeline --tier "Tier 1"` (shows fit_score and diagnostic date).
@@ -89,7 +89,7 @@ The weekly client loop runs:
 Ongoing steady-state operations.
 
 **How it happens:**
-- `sable-platform alerts evaluate --org <org>` (or `--all-orgs`)
+- `sable-platform alerts evaluate --org <org>` (or omit `--org` to sweep all active orgs)
 - `sable-platform dashboard`
 - Cron presets: `alert_check` (every 4h), `backup` (daily), `gc` (weekly)
 

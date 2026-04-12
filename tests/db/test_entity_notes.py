@@ -19,6 +19,10 @@ class TestAddEntityNote:
         note_id = add_entity_note(conn, entity_id, "First note", source="test")
         assert isinstance(note_id, int)
         assert note_id > 0
+        row = conn.execute(
+            "SELECT note_id FROM entity_notes WHERE note_id=?", (note_id,)
+        ).fetchone()
+        assert row["note_id"] == note_id
 
     def test_note_persists_in_db(self, org_db):
         conn, org_id = org_db

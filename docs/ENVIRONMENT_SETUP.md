@@ -6,8 +6,9 @@ Complete setup guide for using SablePlatform as the orchestration hub for the Sa
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - Virtual environment: `python3 -m venv .venv && source .venv/bin/activate && pip install -e .`
+- If you plan to run the PostgreSQL migration or PostgreSQL backups: `pip install -e ".[postgres]"`
 - All 4 downstream repos cloned under `~/Projects/` (or wherever — just set the env vars below)
 
 ---
@@ -20,6 +21,7 @@ Complete setup guide for using SablePlatform as the orchestration hub for the Sa
 |----------|----------|---------|---------|
 | `SABLE_OPERATOR_ID` | **Yes** | — | Your operator identity. Stamped on workflow runs and audit log. CLI exits 1 if unset (only `init` is exempt). |
 | `SABLE_HEALTH_TOKEN` | **Yes (health-server)** | — | Bearer token for the `/health` HTTP endpoint. Required before starting `sable-platform health-server`. Generate: `openssl rand -hex 32`. |
+| `SABLE_DATABASE_URL` | No | — | SQLAlchemy database URL. When set, runtime commands use it instead of `SABLE_DB_PATH`. |
 | `SABLE_DB_PATH` | No | `~/.sable/sable.db` | Path to the shared SQLite database |
 | `SABLE_HOME` | No | `~/.sable` | Root dir for config files |
 | `SABLE_TELEGRAM_BOT_TOKEN` | No | — | Telegram bot token for alert delivery. If unset, Telegram delivery is silently skipped |
@@ -69,6 +71,9 @@ export SABLE_OPERATOR_ID="your_name"
 # Health server token (required if running sable-platform health-server)
 export SABLE_HEALTH_TOKEN="$(openssl rand -hex 32)"
 
+# Optional: PostgreSQL runtime target
+# export SABLE_DATABASE_URL="postgresql://USER:PASS@HOST/DB"
+
 # Sable adapter paths
 export SABLE_CULT_GRADER_PATH="$HOME/Projects/Sable_Cult_Grader"
 export SABLE_SLOPPER_PATH="$HOME/Projects/Sable_Slopper"
@@ -89,11 +94,13 @@ export ANTHROPIC_API_KEY="your_key_here"
 cd ~/Projects/SablePlatform
 source .venv/bin/activate
 
-# 2. Initialize DB (creates ~/.sable/sable.db with all 30 migrations)
-# Safe to run multiple times — migrations are append-only and idempotent
+# 2. Initialize DB
+# Safe to run multiple times — creates ~/.sable/sable.db for SQLite targets
+# and runs Alembic when SABLE_DATABASE_URL points at PostgreSQL
 sable-platform init
 
 # 3. Verify
+sable-platform db-health
 sable-platform inspect orgs   # Should return empty table
 
 # 4. Create your first org
@@ -113,8 +120,8 @@ sable-platform workflow preflight --org tig
 Run after setup to confirm everything works:
 
 ```bash
-# DB exists and schema is current
-ls ~/.sable/sable.db
+# DB is reachable and schema is current
+sable-platform db-health
 
 # CLI responds
 sable-platform --help
@@ -124,6 +131,28 @@ sable-platform workflow preflight --org tig
 
 # Test suite passes (optional but recommended)
 python3 -m pytest tests/ -q
+```
+
+---
+
+## Optional: PostgreSQL Cutover
+
+Use this after you already have a working SQLite-backed install.
+
+```bash
+# 1. Install the optional PostgreSQL driver bundle
+pip install -e ".[postgres]"
+
+# 2. Migrate the current SQLite dataset into PostgreSQL
+sable-platform migrate to-postgres --target-url postgresql://USER:PASS@HOST/DB
+
+# 3. Point future runtime commands at PostgreSQL
+export SABLE_DATABASE_URL="postgresql://USER:PASS@HOST/DB"
+
+# 4. `init` / `db-health` / `backup` now target PostgreSQL automatically
+sable-platform init
+sable-platform db-health
+sable-platform backup
 ```
 
 ---

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from unittest.mock import Mock
 
 from click.testing import CliRunner
 
@@ -64,3 +66,40 @@ def test_cli_init_exempt_from_operator_id(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["init", "--db-path", db_path])
     assert result.exit_code == 0
     assert "initialized" in result.output
+
+
+def test_init_uses_postgres_env_and_hides_password(monkeypatch):
+    """Postgres init must run Alembic and avoid echoing credentials."""
+
+    class _Conn:
+        def execute(self, query):
+            assert "schema_version" in str(query)
+            return type("Result", (), {"fetchone": lambda self: (30,)})()
+
+        def close(self):
+            return None
+
+    mock_alembic = Mock()
+    monkeypatch.delenv("SABLE_DB_PATH", raising=False)
+    monkeypatch.setenv("SABLE_DATABASE_URL", "postgresql://user:secret@localhost/sable")
+    monkeypatch.setattr("sable_platform.db.migrate_pg._run_alembic_upgrade", mock_alembic)
+    monkeypatch.setattr("sable_platform.db.connection.get_db", lambda db_path=None: _Conn())
+
+    result = CliRunner().invoke(cli, ["init"])
+
+    assert result.exit_code == 0
+    assert "initialized" in result.output
+    assert "secret" not in result.output
+    assert "***" in result.output
+    mock_alembic.assert_called_once_with("postgresql://user:secret@localhost/sable")
+
+
+def test_init_db_path_overrides_postgres_env(tmp_path, monkeypatch):
+    """Explicit --db-path must force SQLite even if SABLE_DATABASE_URL is set."""
+    db_path = str(tmp_path / "forced_sqlite.db")
+    monkeypatch.setenv("SABLE_DATABASE_URL", "postgresql://user:secret@localhost/sable")
+
+    result = CliRunner().invoke(cli, ["init", "--db-path", db_path])
+
+    assert result.exit_code == 0
+    assert Path(db_path).exists()

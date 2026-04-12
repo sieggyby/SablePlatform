@@ -16,6 +16,8 @@ SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a 
 
 ```bash
 pip install -e /path/to/SablePlatform
+# or, if you plan to run the PostgreSQL migration / backup path:
+pip install -e "/path/to/SablePlatform[postgres]"
 ```
 
 ## CLI quickstart
@@ -24,6 +26,7 @@ pip install -e /path/to/SablePlatform
 # Initialize DB
 export SABLE_OPERATOR_ID=your_name   # required before all commands except init
 sable-platform init
+sable-platform db-health             # backend-neutral DB healthcheck for Docker/automation
 
 # Run a workflow
 sable-platform workflow run weekly_client_loop --org tig
@@ -59,6 +62,7 @@ sable-platform metrics              # Prometheus text format to stdout
 |----------|----------|---------|
 | `SABLE_OPERATOR_ID` | **Yes** | Operator identity stamped on workflow runs and audit log. CLI exits 1 if unset (except `init`). |
 | `SABLE_HEALTH_TOKEN` | **Yes (health-server)** | Bearer token for `/health` endpoint. Generate: `openssl rand -hex 32`. |
+| `SABLE_DATABASE_URL` | No | SQLAlchemy database URL. When set, runtime connections use it instead of `SABLE_DB_PATH`. |
 | `SABLE_DB_PATH` | No | Path to sable.db (default: `~/.sable/sable.db`) |
 | `SABLE_HOME` | No | Root dir for config (default: `~/.sable`) |
 | `SABLE_TELEGRAM_BOT_TOKEN` | No | Telegram bot token for alert delivery (optional) |
@@ -66,6 +70,23 @@ sable-platform metrics              # Prometheus text format to stdout
 | `SABLE_SLOPPER_PATH` | No | Path to Sable_Slopper repo |
 | `SABLE_TRACKING_PATH` | No | Path to SableTracking repo |
 | `SABLE_LEAD_IDENTIFIER_PATH` | No | Path to Sable_Community_Lead_Identifier repo |
+
+## Postgres Migration Path
+
+SQLite remains the default bootstrap path. To move an existing `sable.db` into PostgreSQL:
+
+```bash
+# 1. Install the optional driver bundle
+pip install -e "/path/to/SablePlatform[postgres]"
+
+# 2. Migrate the local SQLite data set into Postgres
+sable-platform migrate to-postgres --target-url postgresql://USER:PASS@HOST/DB
+
+# 3. Point the runtime at Postgres
+export SABLE_DATABASE_URL=postgresql://USER:PASS@HOST/DB
+```
+
+When `SABLE_DATABASE_URL` points at PostgreSQL, `sable-platform init` applies Alembic migrations to that database, normal runtime commands use it, `sable-platform db-health` checks it without needing an org ID, and `sable-platform backup` switches to `pg_dump` automatically.
 
 ## Repo structure
 

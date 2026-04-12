@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sable_platform.contracts.leads import PURSUE_THRESHOLD
 from sable_platform.errors import SableError, BUDGET_EXCEEDED
 from sable_platform.workflows.builtins.lead_discovery import (
     LEAD_DISCOVERY,
@@ -69,11 +70,11 @@ class TestStepRegistration:
 
 class TestTier1Filtering:
     def test_only_tier1_triggered(self, wf_db):
-        """Only leads with composite >= 0.50 are triggered."""
+        """Only leads at or above the canonical Tier 1 threshold are triggered."""
         leads = [
             _make_lead("high", 0.80),
-            _make_lead("mid", 0.50),
-            _make_lead("low", 0.40),
+            _make_lead("boundary", PURSUE_THRESHOLD),
+            _make_lead("near_miss", PURSUE_THRESHOLD - 0.01),
         ]
         ctx = _make_ctx(wf_db, leads)
 

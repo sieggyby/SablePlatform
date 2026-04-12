@@ -26,7 +26,12 @@ where = ["."]
 include = ["sable_platform*"]
 
 [tool.setuptools.package-data]
-sable_platform = ["db/migrations/*.sql"]
+sable_platform = [
+    "db/migrations/*.sql",
+    "alembic/*.py",
+    "alembic/*.mako",
+    "alembic/versions/*.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

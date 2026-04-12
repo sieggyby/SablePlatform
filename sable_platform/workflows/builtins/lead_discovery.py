@@ -189,16 +189,17 @@ def _sync_scores(ctx) -> StepResult:
 
 
 def _trigger_cult_grader_for_tier1(ctx) -> StepResult:
-    """Trigger Cult Grader diagnostic for new Tier 1 prospects (composite >= 0.50).
+    """Trigger Cult Grader diagnostic for new Tier 1 prospects.
 
     BOUNDED: max 10 diagnostics per run. Checks budget before each.
     Individual failures are logged but do not fail the step.
     """
     from sable_platform.adapters.cult_grader import CultGraderAdapter
+    from sable_platform.contracts.leads import PURSUE_THRESHOLD
     from sable_platform.db.cost import check_budget
 
     leads = ctx.input_data.get("leads", [])
-    tier1 = [l for l in leads if l.get("composite_score", 0) >= 0.50]
+    tier1 = [l for l in leads if l.get("composite_score", 0) >= PURSUE_THRESHOLD]
 
     triggered = 0
     failed = 0
@@ -278,10 +279,11 @@ def _register_artifacts(ctx) -> StepResult:
         # Register the latest JSON file if present
         latest = Path(output_dir) / "sable_leads_latest.json"
         path_to_register = str(latest) if latest.exists() else output_dir
-        cur = ctx.db.execute(
+        row = ctx.db.execute(
             """
             INSERT INTO artifacts (org_id, artifact_type, path, metadata_json)
             VALUES (?, 'lead_identifier_output', ?, ?)
+            RETURNING artifact_id
             """,
             (
                 ctx.org_id,
@@ -289,8 +291,10 @@ def _register_artifacts(ctx) -> StepResult:
                 json.dumps({"source": "lead_discovery", "run_id": ctx.run_id,
                             "lead_count": ctx.input_data.get("lead_count", 0)}),
             ),
-        )
-        artifact_ids.append(cur.lastrowid)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("INSERT INTO artifacts did not return artifact_id")
+        artifact_ids.append(row[0])
         ctx.db.commit()
 
     return StepResult("completed", {"artifact_ids": artifact_ids, "artifact_count": len(artifact_ids)})

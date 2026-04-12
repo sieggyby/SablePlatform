@@ -32,10 +32,11 @@ def log_audit(
     """Record an audit event. Returns the row id."""
     resolved_actor = _resolve_actor(actor)
     detail_json = json.dumps(detail) if detail else None
-    cursor = conn.execute(
+    row = conn.execute(
         text(
             "INSERT INTO audit_log (actor, action, org_id, entity_id, detail_json, source)"
             " VALUES (:actor, :action, :org_id, :entity_id, :detail_json, :source)"
+            " RETURNING id"
         ),
         {
             "actor": resolved_actor,
@@ -45,9 +46,11 @@ def log_audit(
             "detail_json": detail_json,
             "source": source,
         },
-    )
+    ).fetchone()
     conn.commit()
-    return cursor.lastrowid
+    if row is None:
+        raise RuntimeError("INSERT INTO audit_log did not return id")
+    return row[0]
 
 
 def list_audit_log(

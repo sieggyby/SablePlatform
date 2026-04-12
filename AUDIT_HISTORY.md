@@ -398,3 +398,64 @@ Completed work, moved from TODO.md to keep the roadmap forward-looking only.
 
 ### Cross-repo TODO correction
 > **Resolved:** SablePlatform TODO.md was showing P7-1/P7-2/P7-3 and F-REJECT-3 as pending. All were already shipped: P7-1/P7-2/P7-3 in SableTracking `platform_sync.py` (in SableTracking AUDIT_HISTORY), `pull-feedback` in Lead Identifier §9A (2026-04-04), `RelationshipGraph.tsx` and DATA-7 in SableWeb (2026-04-04/05). All cross-repo integration items now marked complete in SablePlatform TODO.
+
+---
+
+## Codex Audit Remediation (2026-04-11) — 1092 tests
+
+Full-repo Codex audit found 0 data integrity issues, 1 critical deployment bug, and 4 maintainability gaps. All resolved in a single batch with adversarial QA loop (3 rounds on plan, 1 round on implementation).
+
+### CA-1: Broken alerts-cron compose service + preset bug (Critical)
+> **Resolved:** `docker-compose.yaml` `alerts-cron` command replaced from broken `sable-platform cron add --preset alert_check 2>/dev/null; while true; do sable-platform cron run; sleep 3600; done` (3 bugs: missing `--org`, nonexistent `cron run` command, no `crontab` binary in image) to working `while true; do sable-platform alerts evaluate; sleep 14400; done`. Added `SABLE_OPERATOR_ID=${SABLE_OPERATOR_ID:-platform}` to main compose service. Fixed `alert_check` preset `command_template` in `cron.py` — removed `--all-orgs` (nonexistent flag; omitting `--org` already sweeps all orgs). QA-found: the `--all-orgs` bug was discovered by adversarial QA agent during plan review (not in original Codex audit). 3 regression tests: `test_compose_alerts_cron_uses_evaluate_loop`, `test_compose_no_crontab_dependency`, `test_cron_preset_commands_use_valid_flags`.
+
+### CA-2: Cron preset doc syntax (Maintainability)
+> **Resolved:** `docs/CLI_REFERENCE.md` and `docs/CROSS_REPO_INTEGRATION.md` both corrected from `cron add-preset` to `cron add --preset`. Regression test: `test_cron_docs_use_correct_preset_syntax`.
+
+### CA-3: AGENTS.md stale for Postgres (Maintainability)
+> **Resolved:** `AGENTS.md` Architecture and Deployment rows updated to reflect dual-backend (SQLite for local dev, PostgreSQL via `SABLE_DATABASE_URL` for production). Mentions Docker compose, Hetzner VPS, dual-migration requirement. Regression test: `test_agents_md_mentions_postgres`.
+
+### CA-4: Duplicate repo-root Alembic tree (Maintainability)
+> **Resolved:** Deleted `alembic/` at repo root (was identical to `sable_platform/alembic/` but unused at runtime — `migrate_pg.py` uses `importlib.resources` to load the packaged tree). Updated `alembic.ini` `script_location` from `alembic` to `sable_platform/alembic` so developer `alembic revision` commands target the correct tree. Regression test: `test_no_duplicate_alembic_tree`.
+
+### CA-DOC: Stale documentation post-SA-migration (Maintainability)
+> **Resolved:** Fixed 4 docs with stale SQLite-only content after SA migration:
+> - `docs/EXTENDING.md`: SQL examples updated from `?` positional params to `text()` + `:named` params. `sqlite3.Connection` type hint → `CompatConnection`. Added dual-migration requirement section (SQLite SQL file + Alembic revision). Added Alembic step to migration guide. Updated version assertion file list.
+> - `docs/ARCHITECTURE.md`: `StepContext.db` type updated from `sqlite3.Connection` to `CompatConnection`.
+> - `docs/ALERT_SYSTEM.md`: Removed nonexistent `_platform`/`_all` workflow invocation pattern from "Running Evaluations" section.
+> - `docs/WORKFLOWS.md`: Updated "recorded in sable.db" to mention PostgreSQL via `SABLE_DATABASE_URL`.
+
+### CA-5: Parity test gaps (Maintainability)
+> **Resolved:** 6 new parity tests added, 1 obsolete test deleted (`test_compose_no_sleep_loop` — its `sleep 14400` assertion conflicted with the new legitimate evaluate+sleep loop). Net +5 tests (1087 → 1092). Tests cover: compose command validity, crontab absence, doc syntax, AGENTS.md Postgres mention, Alembic tree uniqueness, preset flag validity.
+
+---
+
+## TODO Cleanup (2026-04-11) — shipped items moved from TODO
+
+All items below were in TODO.md as "Historical Build Notes" and are confirmed shipped.
+
+### SP-LEAD: `lead_discovery` workflow
+> **Shipped.** 10-step automated prospecting pipeline: Lead Identifier → score → Tier 1 Cult Grader trigger (max 10, budget-checked). `LeadIdentifierAdapter`, `lead_discovery` cron preset. See CLAUDE.md § 5 builtin workflows.
+
+### SP-INSPECT: `prospect_pipeline` inspect command
+> **Shipped.** 13th inspect subcommand. JOINs `prospect_scores` with `diagnostic_runs`. `--tier`, `--stale-days`, `--json` flags. See CLI_REFERENCE.md § Prospect Pipeline.
+
+### SP-LIFECYCLE: Client lifecycle documentation
+> **Shipped.** `docs/CLIENT_LIFECYCLE.md` — 6 stages from Discovered to Monitoring, CLI commands + SableWeb views per stage.
+
+### SP-TAGS: `cultist_candidate` / `bridge_node` replace-current tags
+> **Shipped.** Added to `_REPLACE_CURRENT_TAGS` in `tags.py`. Prevents duplicate tag accumulation on `--force` re-runs.
+
+### ORG-CONFIG: `org config set/get/list`
+> **Shipped 2026-04-05.** Sector/stage enums, numeric threshold validation. 6 tests.
+
+### ORG-JOURNEY: `journey top`
+> **Shipped 2026-04-05.** `get_key_journeys()`, CLI command, SableWeb feed. 4 tests.
+
+### SP-DB: SQLite → SQLAlchemy + Postgres Migration (Phases 0–13)
+> **Shipped 2026-04-09.** Full SA Core migration across 24 db modules. `CompatConnection`, `RETURNING` for insert-ID portability, packaged Alembic, Docker/compose Postgres-aware, `pg_dump` backup. 1092 tests. Postgres live on Hetzner VPS.
+
+### Cross-Repo Integration (all 6 items)
+> **Shipped 2026-04-04/05.** TRACK-5 (P7-1/2/3), F-REJECT-3, RelationshipGraph.tsx, DATA-7.
+
+### SS-COMPAT: Slopper test-fixture compatibility
+> **Resolved 2026-04-11 (in Slopper repo).** 96 test failures from SablePlatform's SA migration fixed by replacing raw `sqlite3.Connection` test fixtures with `CompatConnection`-wrapped SQLAlchemy connections. No SablePlatform changes needed — cross-repo dependency cleared.

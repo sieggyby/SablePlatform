@@ -214,13 +214,11 @@ sable-platform alerts evaluate            # all active orgs
 **Via workflow (schedulable):**
 ```bash
 sable-platform workflow run alert_check --org tig
-# Or for all orgs:
-sable-platform workflow run alert_check --org _platform --config '{"org_id": "_all"}'
 ```
 
 **Via cron (recommended for production):**
 ```bash
-sable-platform cron add --schedule "0 * * * *" -- sable-platform alerts evaluate
+sable-platform cron add --preset alert_check --org tig
 ```
 
 ---

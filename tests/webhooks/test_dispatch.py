@@ -77,6 +77,46 @@ def test_dispatch_returns_success_count(mock_urlopen):
 
 
 @patch("sable_platform.webhooks.dispatch.urllib.request.urlopen")
+def test_dispatch_can_target_specific_subscription(mock_urlopen):
+    conn = _make_conn()
+    org_id = _insert_org(conn)
+    sub_a = create_subscription(conn, org_id, "https://a.com/h", ["alert.created"], _SECRET)
+    create_subscription(conn, org_id, "https://b.com/h", ["alert.created"], _SECRET)
+
+    count = dispatch_event(
+        conn,
+        "alert.created",
+        org_id,
+        {"test": True},
+        subscription_ids=[sub_a],
+    )
+
+    assert count == 1
+    assert mock_urlopen.call_count == 1
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url == "https://a.com/h"
+
+
+@patch("sable_platform.webhooks.dispatch.urllib.request.urlopen")
+def test_dispatch_can_bypass_event_filters_for_targeted_test(mock_urlopen):
+    conn = _make_conn()
+    org_id = _insert_org(conn)
+    sub_id = create_subscription(conn, org_id, _URL, ["alert.created"], _SECRET)
+
+    count = dispatch_event(
+        conn,
+        "webhook.test",
+        org_id,
+        {"test": True},
+        subscription_ids=[sub_id],
+        bypass_event_filters=True,
+    )
+
+    assert count == 1
+    assert mock_urlopen.call_count == 1
+
+
+@patch("sable_platform.webhooks.dispatch.urllib.request.urlopen")
 def test_deliver_webhook_computes_hmac(mock_urlopen):
     """_deliver_webhook sends correct HMAC signature."""
     conn = _make_conn()

@@ -54,6 +54,21 @@ def test_lead_discovery_happy_path(tmp_path, monkeypatch, wf_db):
     ).fetchone()[0]
     assert entities >= 1
 
+    artifacts = wf_db.execute(
+        "SELECT artifact_id, artifact_type, path FROM artifacts WHERE org_id='wf_org'"
+    ).fetchall()
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "lead_identifier_output"
+    assert artifacts[0]["path"].endswith("sable_leads_latest.json")
+
+    step = wf_db.execute(
+        "SELECT output_json FROM workflow_steps WHERE run_id=? AND step_name='register_artifacts'",
+        (run_id,),
+    ).fetchone()
+    summary = json.loads(step["output_json"])
+    assert summary["artifact_count"] == 1
+    assert summary["artifact_ids"] == [artifacts[0]["artifact_id"]]
+
 
 def test_lead_discovery_fails_without_env(monkeypatch, wf_db):
     """Workflow fails at validate_env when SABLE_LEAD_IDENTIFIER_PATH is not set."""

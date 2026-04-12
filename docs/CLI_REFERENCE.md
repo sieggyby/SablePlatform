@@ -1,6 +1,6 @@
 # CLI Reference — `sable-platform`
 
-Complete command reference for the SablePlatform CLI. All commands operate on `sable.db` at `~/.sable/sable.db` (override with `SABLE_DB_PATH`).
+Complete command reference for the SablePlatform CLI. Commands operate on `sable.db` at `~/.sable/sable.db` by default (`SABLE_DB_PATH` override). When `SABLE_DATABASE_URL` is set, runtime DB commands use that SQLAlchemy URL instead.
 
 ---
 
@@ -13,13 +13,15 @@ Complete command reference for the SablePlatform CLI. All commands operate on `s
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 30 migrations
-sable-platform init --db-path /alt/path  # Use non-default DB location
+sable-platform init                      # Create sable.db + apply all 30 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init --db-path /alt/path  # Force a specific SQLite file
+sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
+sable-platform db-health --json          # JSON output for Docker/automation
 ```
 
 ## backup — Database Backup
 
-Uses SQLite's online backup API — safe for live WAL-mode databases.
+Uses SQLite's online backup API for file-backed SQLite databases. When `SABLE_DATABASE_URL` points at PostgreSQL and `--db-path` is omitted, it shells out to `pg_dump`.
 
 ```bash
 sable-platform backup                                    # Backup to ~/.sable/backups/
@@ -28,6 +30,25 @@ sable-platform backup --label pre_migration              # Label in filename (al
 sable-platform backup --max-backups 5                    # Keep only 5 most recent (default: 10, 0=unlimited)
 sable-platform backup --db-path /alt/sable.db            # Backup a non-default DB
 ```
+
+---
+
+## migrate — SQLite to PostgreSQL Migration
+
+Requires the optional PostgreSQL extra:
+
+```bash
+pip install -e ".[postgres]"
+```
+
+```bash
+sable-platform migrate to-postgres --target-url postgresql://USER:PASS@HOST/DB
+sable-platform migrate to-postgres --target-url postgresql://USER:PASS@HOST/DB --source-db /path/to/sable.db
+sable-platform migrate to-postgres --target-url postgresql://USER:PASS@HOST/DB --force
+sable-platform migrate to-postgres --target-url postgresql://USER:PASS@HOST/DB --skip-backup
+```
+
+`--force` truncates the target before copying. By default the command creates a SQLite safety backup first, runs Alembic on the target, copies all tables in FK-safe order, then validates row counts.
 
 ---
 
@@ -55,7 +76,7 @@ sable-platform cron presets
 
 ```bash
 # Install a bundled workflow preset
-sable-platform cron add-preset lead_discovery --org tig   # Weekly Monday 22:00 UTC
+sable-platform cron add --preset lead_discovery --org tig   # Weekly Monday 22:00 UTC
 ```
 
 **Presets:** `hourly`, `daily`, `twice-weekly`, `weekly-monday` through `weekly-sunday`. Or pass any 5-field cron expression directly.
@@ -358,13 +379,14 @@ Watchlist uses snapshot-based change detection — `snapshot` captures current s
 sable-platform webhooks add <ORG_ID> --url https://example.com/hook --events "alert.created,workflow.completed" [--secret mysecretkey1234567] [--generate-secret]
 sable-platform webhooks list <ORG_ID> [--json]
 sable-platform webhooks remove <SUBSCRIPTION_ID>
-sable-platform webhooks test <ORG_ID> <SUBSCRIPTION_ID>   # Send test event
+sable-platform webhooks test <ORG_ID> <SUBSCRIPTION_ID>   # Send test event to that subscription only
 ```
 
 - Secrets must be >= 16 characters. Use `--generate-secret` for auto-generation.
 - Webhooks sign payloads with HMAC-SHA256 (`X-Sable-Signature` header).
 - Auto-disabled after 10 consecutive delivery failures.
 - SSRF-hardened: localhost, private IPs, IPv6 loopback, link-local addresses are blocked.
+- `webhooks test` bypasses normal event-type filters so you can verify delivery without adding `webhook.test` to the subscription config.
 
 ---
 

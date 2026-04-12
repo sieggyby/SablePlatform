@@ -9,8 +9,12 @@ from unittest.mock import patch
 import pytest
 
 from sable_platform.workflows.engine import WorkflowRunner
-from sable_platform.workflows.builtins.prospect_diagnostic_sync import PROSPECT_DIAGNOSTIC_SYNC
+from sable_platform.workflows.builtins.prospect_diagnostic_sync import (
+    PROSPECT_DIAGNOSTIC_SYNC,
+    _register_artifacts,
+)
 from sable_platform.db.workflow_store import get_workflow_run, get_workflow_steps
+from sable_platform.workflows.models import StepContext
 
 
 @pytest.fixture
@@ -246,3 +250,32 @@ def test_project_name_missing_all_raises(wf_db, tmp_path):
             "wf_org", {"prospect_yaml_path": str(p), "org_id": "wf_org"}, conn=wf_db,
         )
     assert "project_name" in exc_info.value.message
+
+
+def test_register_artifacts_returns_inserted_ids(wf_db, tmp_path):
+    """register_artifacts returns the inserted artifact IDs, not a SQLite-only side channel."""
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    for name in ("report_internal.md", "report_card.md"):
+        (checkpoint / name).write_text(f"# {name}\n", encoding="utf-8")
+
+    ctx = StepContext(
+        run_id="run_test",
+        step_id="step_test",
+        org_id="wf_org",
+        step_name="register_artifacts",
+        step_index=0,
+        input_data={"checkpoint_path": str(checkpoint)},
+        db=wf_db,
+        config={},
+    )
+
+    result = _register_artifacts(ctx)
+
+    rows = wf_db.execute(
+        "SELECT artifact_id FROM artifacts WHERE org_id=? ORDER BY artifact_id",
+        ("wf_org",),
+    ).fetchall()
+    artifact_ids = [row["artifact_id"] for row in rows]
+    assert result.output["artifact_count"] == 2
+    assert result.output["artifact_ids"] == artifact_ids

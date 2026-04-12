@@ -1,6 +1,6 @@
 # Workflows
 
-SablePlatform ships five builtin deterministic workflows. Each run is fully durable — every step's input, output, error, and timing is recorded in `sable.db`. Runs can be resumed after interruption.
+SablePlatform ships five builtin deterministic workflows. Each run is fully durable — every step's input, output, error, and timing is recorded in the platform database (SQLite or PostgreSQL via `SABLE_DATABASE_URL`). Runs can be resumed after interruption.
 
 ---
 
