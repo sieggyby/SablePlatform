@@ -16,6 +16,11 @@ under "TIG trial build". Real check-in logic migrates to Sable_Client_Comms post
 from sable_platform.checkin.collector import CheckinInputs, collect_inputs
 from sable_platform.checkin.deltas import MetricDelta, DeltaReport, compute_deltas
 from sable_platform.checkin.render import render_data_sections
+from sable_platform.checkin.synthesize import (
+    DEFAULT_MODEL,
+    SynthesisResult,
+    synthesize,
+)
 
 __all__ = [
     "CheckinInputs",
@@ -24,4 +29,7 @@ __all__ = [
     "DeltaReport",
     "compute_deltas",
     "render_data_sections",
+    "DEFAULT_MODEL",
+    "SynthesisResult",
+    "synthesize",
 ]
