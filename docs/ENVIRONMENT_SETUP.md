@@ -161,7 +161,7 @@ sable-platform backup
 
 ```
 ~/.sable/
-├── sable.db          # Shared SQLite database (30 migrations)
+├── sable.db          # Shared SQLite database (31 migrations)
 ├── config.yaml       # Optional: budget cap overrides, platform config
 └── profiles/         # Slopper account profiles
     └── @handle/

@@ -1,7 +1,7 @@
 """SQLAlchemy Core table definitions for sable.db.
 
 This module is the single source of truth for the platform schema.  Every
-table defined here mirrors the cumulative result of migrations 001–030.
+table defined here mirrors the cumulative result of migrations 001–031.
 
 Usage::
 
@@ -733,4 +733,22 @@ playbook_outcomes = Table(
     Column("outcomes_json", Text, nullable=False),
     Column("created_at", Text, nullable=False, server_default=func.now()),
     Index("idx_playbook_outcomes_org", "org_id"),
+)
+
+# ------------------------------------------------------------------
+# Metric snapshots (Migration 031) — week-over-week persistence for
+# client_checkin_loop. One row per (org_id, snapshot_date).
+# ------------------------------------------------------------------
+
+metric_snapshots = Table(
+    "metric_snapshots",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("snapshot_date", Text, nullable=False),
+    Column("metrics_json", Text, nullable=False, server_default=text("'{}'")),
+    Column("source", Text, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("org_id", "snapshot_date"),
+    Index("idx_metric_snapshots_org_date", "org_id", "snapshot_date"),
 )

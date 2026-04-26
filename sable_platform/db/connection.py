@@ -49,6 +49,7 @@ _MIGRATIONS = [
     ("028_platform_meta.sql", 28),
     ("029_prospect_score_fields.sql", 29),
     ("030_performance_indexes.sql", 30),
+    ("031_metric_snapshots.sql", 31),
 ]
 
 

@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 BATCH_SIZE = 1000
 
-# All 36 tables in FK-safe insertion order (parents before children).
+# All 37 tables in FK-safe insertion order (parents before children).
 # Derived from sable_platform/db/schema.py ForeignKey declarations.
 TABLE_LOAD_ORDER: list[str] = [
     # Tier 0 — no FKs
@@ -55,6 +55,7 @@ TABLE_LOAD_ORDER: list[str] = [
     "prospect_scores",
     "playbook_targets",
     "playbook_outcomes",
+    "metric_snapshots",
     "discord_pulse_runs",
     # Tier 2 — FK -> entities
     "entity_handles",
@@ -94,6 +95,7 @@ SEQUENCE_TABLES: dict[str, str] = {
     "prospect_scores": "id",
     "playbook_targets": "id",
     "playbook_outcomes": "id",
+    "metric_snapshots": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

@@ -39,6 +39,8 @@ EXPECTED_TABLES = {
     "playbook_targets", "playbook_outcomes",
     # Migration 028: platform metadata
     "platform_meta",
+    # Migration 031: metric snapshots
+    "metric_snapshots",
 }
 
 
@@ -53,7 +55,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 30
+    assert row["version"] == 31
 
 
 def test_all_tables_exist():
@@ -72,7 +74,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 30
+    assert row["version"] == 31
 
 
 def test_workflow_tables_columns():

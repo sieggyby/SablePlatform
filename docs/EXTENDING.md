@@ -328,9 +328,9 @@ Find and update the version assertion in `tests/test_init.py`, `tests/test_migra
 
 ```python
 # Before
-assert version == 30
-# After
 assert version == 31
+# After
+assert version == 32
 ```
 
 Also update the schema head comment in `ARCHITECTURE.md` (§ DB schema ownership).
