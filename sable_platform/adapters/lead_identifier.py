@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Literal
 
@@ -56,7 +55,7 @@ class LeadIdentifierAdapter(SubprocessAdapterMixin):
         """Run the Lead Identifier pipeline (pass-1 only by default). Blocks until done."""
         repo = self._repo_path()
         pass1_only = input_data.get("pass1_only", True)
-        cmd = [sys.executable, "main.py", "run"]
+        cmd = [self._python_for(repo), "main.py", "run"]
         if pass1_only:
             cmd.append("--pass1-only")
 

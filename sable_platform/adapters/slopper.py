@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from typing import Literal
 
 from sable_platform.adapters.base import SubprocessAdapterMixin
@@ -23,8 +22,8 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
         """Trigger strategy/advise generation for an org. Blocks until completion.
 
         Slopper's ``sable advise`` expects a Twitter handle, not an org_id.
-        This adapter resolves the org's primary Twitter handle via entity_handles
-        before invoking the subprocess.
+        Resolution order: orgs.twitter_handle (canonical org account) → primary-flagged
+        entity handle → any non-archived entity handle.
         """
         org_id = input_data.get("org_id")
         if not org_id:
@@ -33,21 +32,30 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
         handle = self._resolve_primary_handle(org_id)
 
         repo = self._repo_path()
+        sable_bin = repo / ".venv" / "bin" / "sable"
+        cmd = [str(sable_bin)] if sable_bin.exists() else [self._python_for(repo), "-m", "sable.cli"]
         self._run_subprocess(
-            [sys.executable, "-m", "sable", "advise", handle],
+            [*cmd, "advise", handle],
             cwd=repo,
             timeout=600,
         )
         return {"status": "completed", "job_ref": org_id, "org_id": org_id}
 
     def _resolve_primary_handle(self, org_id: str) -> str:
-        """Look up the primary Twitter handle for an org.
+        """Look up the canonical Twitter handle for an org.
 
-        Falls back to any Twitter handle if no primary is set.
-        Raises SableError if no Twitter handle exists for the org.
+        Resolution order: orgs.twitter_handle → entity flagged is_primary=1 →
+        any non-archived twitter entity. Raises if none of these exist.
         """
         conn = get_db()
         try:
+            row = conn.execute(
+                "SELECT twitter_handle FROM orgs WHERE org_id = ?",
+                (org_id,),
+            ).fetchone()
+            if row and row["twitter_handle"]:
+                return f"@{row['twitter_handle']}"
+
             row = conn.execute(
                 """
                 SELECT h.handle FROM entity_handles h
@@ -61,7 +69,6 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
             if row:
                 return f"@{row['handle']}"
 
-            # Fallback: any non-archived twitter handle for this org
             row = conn.execute(
                 """
                 SELECT h.handle FROM entity_handles h
@@ -78,7 +85,7 @@ class SlopperAdvisoryAdapter(SubprocessAdapterMixin):
             raise SableError(
                 INVALID_CONFIG,
                 f"No Twitter handle found for org '{org_id}'. "
-                "Register a Twitter handle on an entity before running advise.",
+                "Set orgs.twitter_handle or register a Twitter handle on an entity.",
             )
         finally:
             conn.close()

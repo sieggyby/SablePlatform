@@ -116,7 +116,7 @@ sable-platform org config list                       # Config for all orgs
 sable-platform org config list --json
 ```
 
-**Valid sectors:** `DeFi`, `Gaming`, `Infrastructure`, `L1/L2`, `Social`, `DAO`, `NFT`, `AI`, `Other`
+**Valid sectors:** `DeFi`, `DeSci`, `Gaming`, `Infrastructure`, `L1/L2`, `Social`, `DAO`, `NFT`, `AI`, `Other`
 
 **Valid stages:** `pre_launch`, `launch`, `growth`, `mature`, `declining`
 

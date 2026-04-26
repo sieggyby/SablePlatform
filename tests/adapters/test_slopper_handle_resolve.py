@@ -1,6 +1,7 @@
 """Tests for SlopperAdvisoryAdapter handle resolution."""
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -95,7 +96,7 @@ def test_run_passes_handle_not_org_id(adapter_db):
     mock_proc.pid = 12345
 
     with patch("sable_platform.adapters.slopper.get_db", return_value=adapter_db), \
-         patch.object(adapter, "_repo_path", return_value="/fake/slopper"), \
+         patch.object(adapter, "_repo_path", return_value=Path("/fake/slopper")), \
          patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
         result = adapter.run({"org_id": "psy_protocol"})
 

@@ -5,6 +5,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -33,6 +34,18 @@ class SubprocessAdapterMixin:
         if not p.is_dir():
             raise SableError(INVALID_CONFIG, f"{env_var} does not exist: {p}")
         return p
+
+    def _python_for(self, repo: Path) -> str:
+        """Interpreter to use when subprocessing into a target repo.
+
+        Each Sable subrepo carries its own deps in <repo>/.venv, so the platform
+        venv's sys.executable can't import them. Prefer the repo's own venv
+        python; fall back to sys.executable only when no venv is present.
+        """
+        venv_py = repo / ".venv" / "bin" / "python"
+        if venv_py.exists():
+            return str(venv_py)
+        return sys.executable
 
     def _run_subprocess(
         self,

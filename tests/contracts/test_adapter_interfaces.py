@@ -116,16 +116,17 @@ def test_tracking_sync_command_shape():
 
 
 def test_slopper_command_shape():
-    """SlopperAdvisoryAdapter constructs 'python -m sable advise <@handle>'."""
+    """SlopperAdvisoryAdapter falls back to 'python -m sable.cli advise <@handle>' when no repo venv exists."""
     adapter = SlopperAdvisoryAdapter()
     with patch.dict("os.environ", {"SABLE_SLOPPER_PATH": "/fake/path"}), \
          patch("pathlib.Path.is_dir", return_value=True), \
+         patch("pathlib.Path.exists", return_value=False), \
          patch.object(adapter, "_resolve_primary_handle", return_value="@test_handle"), \
          patch.object(adapter, "_run_subprocess") as mock_sub:
         mock_sub.return_value = MagicMock(returncode=0)
         adapter.run({"org_id": "test_org"})
         cmd = mock_sub.call_args[0][0]
-        assert cmd == [sys.executable, "-m", "sable", "advise", "@test_handle"]
+        assert cmd == [sys.executable, "-m", "sable.cli", "advise", "@test_handle"]
 
 
 # ---------------------------------------------------------------------------

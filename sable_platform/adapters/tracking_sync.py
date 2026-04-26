@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from typing import Literal
 
 from sable_platform.adapters.base import SubprocessAdapterMixin
@@ -27,7 +26,7 @@ class SableTrackingAdapter(SubprocessAdapterMixin):
 
         repo = self._repo_path()
         self._run_subprocess(
-            [sys.executable, "-m", "app.platform_sync_runner", org_id],
+            [self._python_for(repo), "-m", "app.platform_sync_runner", org_id],
             cwd=repo,
             timeout=600,
         )

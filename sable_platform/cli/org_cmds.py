@@ -103,7 +103,7 @@ def org_reject(prospect_project_id: str, reason: str | None) -> None:
         conn.close()
 
 
-_VALID_SECTORS = {"DeFi", "Gaming", "Infrastructure", "L1/L2", "Social", "DAO", "NFT", "AI", "Other"}
+_VALID_SECTORS = {"DeFi", "DeSci", "Gaming", "Infrastructure", "L1/L2", "Social", "DAO", "NFT", "AI", "Other"}
 _VALID_STAGES = {"pre_launch", "launch", "growth", "mature", "declining"}
 
 

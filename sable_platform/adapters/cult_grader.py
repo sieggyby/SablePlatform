@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from pathlib import Path
 from typing import Literal
 
@@ -30,7 +29,7 @@ class CultGraderAdapter(SubprocessAdapterMixin):
         repo = self._repo_path()
 
         self._run_subprocess(
-            [sys.executable, "diagnose.py", "--config", handoff.prospect_yaml_path],
+            [self._python_for(repo), "diagnose.py", "--config", handoff.prospect_yaml_path],
             cwd=repo,
             timeout=3600,  # CultGrader runs can take up to ~1h
         )

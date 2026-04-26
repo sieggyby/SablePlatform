@@ -131,7 +131,7 @@ Step-name SHA1 fingerprint stored on `run()`, checked on `resume()`. Mismatch bl
 
 `orgs.config_json` is a JSON blob used for three purposes: (1) cost cap overrides, (2) alert threshold overrides, (3) org metadata (sector/stage). Set via `sable-platform org config set ORG KEY VALUE`.
 
-**Sector** (validated enum): `DeFi`, `Gaming`, `Infrastructure`, `L1/L2`, `Social`, `DAO`, `NFT`, `AI`, `Other`
+**Sector** (validated enum): `DeFi`, `DeSci`, `Gaming`, `Infrastructure`, `L1/L2`, `Social`, `DAO`, `NFT`, `AI`, `Other`
 
 **Stage** (validated enum): `pre_launch`, `launch`, `growth`, `mature`, `declining`
 
