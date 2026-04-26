@@ -15,8 +15,8 @@ from sable_platform.checkin.deltas import DeltaReport, MetricDelta
 _TIER1_LABELS = {
     "fletcher_followers": "Fletcher followers",
     "tig_followers": "TIG followers",
-    "discord_joins": "Discord joins",
-    "discord_velocity": "Discord velocity",
+    "discord_active_posters_weekly": "Discord active posters (7d)",
+    "discord_retention_delta": "Discord retention Δ (WoW)",
     "twitter_mentions": "Twitter unique mentioners",
 }
 

@@ -49,8 +49,8 @@ def test_extract_tier1_tier2_maps_keys(tmp_path):
     assert tier1 == {
         "fletcher_followers": 3457,
         "tig_followers": 8538,
-        "discord_joins": None,
-        "discord_velocity": None,
+        "discord_active_posters_weekly": None,
+        "discord_retention_delta": None,
         "twitter_mentions": 1807,
     }
     assert tier2 == {
@@ -60,6 +60,19 @@ def test_extract_tier1_tier2_maps_keys(tmp_path):
         "named_subsquads_publicly": None,
     }
     assert run_meta["run_id"] == "run_abc"
+
+
+def test_extract_uses_discord_pulse_when_provided(tmp_path):
+    run_dir = _seed_cult_grader_run(tmp_path)
+    pulse = {
+        "run_date": "2026-04-26",
+        "weekly_active_posters": 42,
+        "retention_delta": 0.05,
+        "echo_rate": 0.8,
+    }
+    tier1, _tier2, _ = extract_tier1_tier2(run_dir, discord_pulse=pulse)
+    assert tier1["discord_active_posters_weekly"] == 42
+    assert tier1["discord_retention_delta"] == 0.05
 
 
 def test_extract_handles_missing_files(tmp_path):
@@ -175,6 +188,41 @@ def test_collect_inputs_no_cult_grader_dir(org_db, tmp_path):
     )
     assert inputs.tier1 == {}
     assert inputs.cult_grader_meta == {}
+
+
+def test_collect_inputs_reads_latest_discord_pulse(org_db, tmp_path):
+    conn, org_id = org_db
+    cult_grader_repo = tmp_path
+    _seed_cult_grader_run(cult_grader_repo)
+
+    # Seed two pulse rows; collector must pick the newer one.
+    conn.execute(
+        """
+        INSERT INTO discord_pulse_runs
+            (org_id, project_slug, run_date, weekly_active_posters, retention_delta, echo_rate)
+        VALUES (?, ?, '2026-04-19', 30, NULL, NULL)
+        """,
+        (org_id, "the-innovation-game_tigfoundation"),
+    )
+    conn.execute(
+        """
+        INSERT INTO discord_pulse_runs
+            (org_id, project_slug, run_date, weekly_active_posters, retention_delta, echo_rate)
+        VALUES (?, ?, '2026-04-26', 47, 0.12, 0.7)
+        """,
+        (org_id, "the-innovation-game_tigfoundation"),
+    )
+    conn.commit()
+
+    inputs = collect_inputs(
+        conn, org_id,
+        run_date="2026-05-01",
+        cult_grader_repo=cult_grader_repo,
+        project_slug="the-innovation-game_tigfoundation",
+    )
+    assert inputs.tier1["discord_active_posters_weekly"] == 47
+    assert inputs.tier1["discord_retention_delta"] == 0.12
+    assert inputs.cult_grader_meta["discord_pulse_date"] == "2026-04-26"
 
 
 def test_collect_inputs_no_previous_snapshot(org_db, tmp_path):

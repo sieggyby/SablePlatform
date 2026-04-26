@@ -19,12 +19,14 @@ from sqlalchemy.engine import Connection
 from sable_platform.db import snapshots as snapshot_store
 
 
-# Tier 1 — TIG's stated 5 metrics. Discord fields stay None until pulse data lands.
+# Tier 1 — TIG's stated 5 metrics. Discord fields are proxies: cult_grader tracks
+# pulse (active posters + retention movement), not literal joins. Labels in render.py
+# call this out so we don't claim something we're not measuring.
 TIER1_KEYS = (
     "fletcher_followers",
     "tig_followers",
-    "discord_joins",
-    "discord_velocity",
+    "discord_active_posters_weekly",
+    "discord_retention_delta",
     "twitter_mentions",
 )
 
@@ -82,11 +84,17 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
-def extract_tier1_tier2(cult_grader_run_dir: Path) -> tuple[dict, dict, dict]:
-    """Read computed_metrics + raw_twitter + run_meta and project them onto Tier 1/2 keys.
+def extract_tier1_tier2(
+    cult_grader_run_dir: Path,
+    discord_pulse: dict | None = None,
+) -> tuple[dict, dict, dict]:
+    """Project cult_grader output onto Tier 1/2 keys.
 
-    Returns (tier1, tier2, run_meta). Discord-derived Tier 1 fields stay None
-    until pulse data is wired (gated on Discord mod access).
+    Twitter fields come from the cult_grader run dir's computed_metrics +
+    raw_twitter. Discord fields come from the latest discord_pulse_runs row
+    in sable.db (passed in by the caller as `discord_pulse`); pulse data may
+    be None when the bot is freshly added and no pulse has run yet, or when
+    no row exists for this org.
     """
     computed = _read_json(cult_grader_run_dir / "computed_metrics.json")
     raw_twitter = _read_json(cult_grader_run_dir / "raw_twitter.json")
@@ -94,12 +102,13 @@ def extract_tier1_tier2(cult_grader_run_dir: Path) -> tuple[dict, dict, dict]:
 
     twitter = computed.get("twitter") or {}
     team_followers = raw_twitter.get("team_follower_counts") or {}
+    pulse = discord_pulse or {}
 
     tier1 = {
         "fletcher_followers": team_followers.get("dr_johnfletcher"),
         "tig_followers": twitter.get("follower_count"),
-        "discord_joins": None,
-        "discord_velocity": None,
+        "discord_active_posters_weekly": pulse.get("weekly_active_posters"),
+        "discord_retention_delta": pulse.get("retention_delta"),
         "twitter_mentions": twitter.get("unique_mentioners_count"),
     }
     tier2 = {
@@ -107,10 +116,29 @@ def extract_tier1_tier2(cult_grader_run_dir: Path) -> tuple[dict, dict, dict]:
         "lateral_reply_count": twitter.get("lateral_reply_count"),
         "recurring_engaged_accounts": twitter.get("recurring_engaged_accounts"),
         # Subsquad public-naming count is not directly produced by cult_grader.
-        # Track manually for now; the renderer surfaces it as "(manual)" when None.
+        # Track manually for now; the renderer surfaces it as "—" when None.
         "named_subsquads_publicly": None,
     }
     return tier1, tier2, run_meta
+
+
+def get_latest_discord_pulse(conn, org_id: str) -> dict | None:
+    """Fetch the most recent discord_pulse_runs row for an org as a dict."""
+    row = conn.execute(
+        text(
+            """
+            SELECT run_date, weekly_active_posters, wow_retention_rate, echo_rate,
+                   retention_delta, echo_rate_delta, avg_silence_gap_hours
+            FROM discord_pulse_runs
+            WHERE org_id = :org_id
+            ORDER BY run_date DESC LIMIT 1
+            """
+        ),
+        {"org_id": org_id},
+    ).fetchone()
+    if not row:
+        return None
+    return dict(row._mapping)
 
 
 def collect_actions_this_week(
@@ -186,13 +214,15 @@ def collect_inputs(
 
     run_dir = _resolve_cult_grader_run_dir(cult_grader_repo, project_slug)
     if run_dir is not None:
-        tier1, tier2, run_meta = extract_tier1_tier2(run_dir)
+        discord_pulse = get_latest_discord_pulse(conn, org_id)
+        tier1, tier2, run_meta = extract_tier1_tier2(run_dir, discord_pulse=discord_pulse)
         inputs.tier1 = tier1
         inputs.tier2 = tier2
         inputs.cult_grader_meta = {
             "run_id": run_meta.get("run_id"),
             "run_date": run_meta.get("run_date"),
             "checkpoint_path": str(run_dir),
+            "discord_pulse_date": discord_pulse.get("run_date") if discord_pulse else None,
         }
 
     prev = snapshot_store.get_latest_snapshot(conn, org_id, before_date=run_date)

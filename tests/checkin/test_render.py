@@ -13,8 +13,8 @@ def _inputs(**overrides) -> CheckinInputs:
         tier1={
             "fletcher_followers": 3457,
             "tig_followers": 8538,
-            "discord_joins": None,
-            "discord_velocity": None,
+            "discord_active_posters_weekly": None,
+            "discord_retention_delta": None,
             "twitter_mentions": 1807,
         },
         tier2={
@@ -73,7 +73,8 @@ def test_tier1_table_shape_and_arrows():
     assert "TIG followers" in table
     assert "▲" in table  # at least one up
     # discord rows render as em-dash placeholders
-    assert "Discord joins" in table
+    assert "Discord active posters" in table
+    assert "Discord retention" in table
 
 
 def test_team_reply_rate_renders_as_percent():
