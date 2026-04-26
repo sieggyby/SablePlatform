@@ -19,6 +19,7 @@ from sable_platform.adapters.lead_identifier import LeadIdentifierAdapter
 from sable_platform.adapters.cult_grader import CultGraderAdapter
 from sable_platform.adapters.tracking_sync import SableTrackingAdapter
 from sable_platform.adapters.slopper import SlopperAdvisoryAdapter
+from sable_platform.adapters.client_comms import SableClientCommsAdapter
 from sable_platform.contracts.leads import Lead, DimensionScores, ProspectHandoff
 from sable_platform.contracts.tracking import TrackingMetadata
 from sable_platform.contracts.entities import Entity, EntityHandle, EntityTag
@@ -33,6 +34,7 @@ _ADAPTER_CLASSES = [
     CultGraderAdapter,
     SableTrackingAdapter,
     SlopperAdvisoryAdapter,
+    SableClientCommsAdapter,
 ]
 
 
@@ -127,6 +129,20 @@ def test_slopper_command_shape():
         adapter.run({"org_id": "test_org"})
         cmd = mock_sub.call_args[0][0]
         assert cmd == [sys.executable, "-m", "sable.cli", "advise", "@test_handle"]
+
+
+def test_client_comms_command_shape_module_fallback():
+    """SableClientCommsAdapter falls back to 'python -m sable_client_comms.cli ...' when no repo venv exists."""
+    adapter = SableClientCommsAdapter()
+    fake_json = json.dumps({"status": "ok", "noop": True})
+    with patch.dict("os.environ", {"SABLE_CLIENT_COMMS_PATH": "/fake/path"}), \
+         patch("pathlib.Path.is_dir", return_value=True), \
+         patch("pathlib.Path.exists", return_value=False), \
+         patch.object(adapter, "_run_subprocess") as mock_sub:
+        mock_sub.return_value = MagicMock(returncode=0, stdout=fake_json, stderr="")
+        adapter.run({"argv": ["send", "--org", "tig"]})
+        cmd = mock_sub.call_args[0][0]
+        assert cmd == [sys.executable, "-m", "sable_client_comms.cli", "send", "--org", "tig"]
 
 
 # ---------------------------------------------------------------------------

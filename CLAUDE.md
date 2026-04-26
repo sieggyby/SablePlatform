@@ -17,7 +17,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5 is production-ready.** 1101 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
+**v0.5 is production-ready.** 1111 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
 
 **TIG trial build (in flight, target 5/1):** new `sable_platform/checkin/` module + `client_checkin_loop` workflow generates a weekly client-facing check-in (auto-sent to internal client TG chat for operator forwarding). Migration 031 added `metric_snapshots` for week-over-week deltas. Architecture: thin `Sable_Client_Comms` repo as a stub for the Adapter-pattern boundary; V1 LLM logic (Anthropic SDK direct, Opus 4.7 + prompt caching) lives in `sable_platform/checkin/` and migrates out post-trial. **First direct LLM dep on the platform** — contained to checkin module, acknowledged deviation from "no business logic" rule.
 
@@ -28,7 +28,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - **12 alert checks:** tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes. Alert creation decoupled from delivery (`deliver_alerts_by_ids()` called after commit).
 - **Delivery:** Telegram, Discord, HMAC-SHA256 webhooks. Cooldown (4h default), per-org config, mute/unmute.
 - **CLI:** full operator surface — workflows, alerts, inspect (13 subcommands including prospect_pipeline), actions, outcomes, journey, dashboard, watchlist, webhooks, cron, org config (sector/stage enums, numeric range validation), backup, init, gc, health-server, metrics, migrate
-- **Adapters:** subprocess-based for CultGrader, SableTracking, Slopper, LeadIdentifier
+- **Adapters:** subprocess-based for CultGrader, SableTracking, Slopper, LeadIdentifier, ClientComms (V1 stub)
 - **Infra:** Dockerfile, CI (ruff + pytest), structured JSON logging, cron scheduler
 
 ## Architecture Decisions
@@ -112,6 +112,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `SABLE_TRACKING_PATH` | No | Path to SableTracking repo. Required by `SableTrackingAdapter`. |
 | `SABLE_SLOPPER_PATH` | No | Path to Slopper repo. Required by `SlopperAdvisoryAdapter`. |
 | `SABLE_LEAD_IDENTIFIER_PATH` | No | Path to Lead Identifier repo. Required by `LeadIdentifierAdapter`. |
+| `SABLE_CLIENT_COMMS_PATH` | No | Path to Sable_Client_Comms repo. Required by `SableClientCommsAdapter` (V1 stub — no-op exit 0; real check-in synthesis lives in `sable_platform.checkin` until post-trial migration). |
 
 ## Alert Dedup & Delivery
 
