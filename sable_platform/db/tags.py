@@ -25,7 +25,7 @@ _REPLACE_CURRENT_TAGS: frozenset[str] = frozenset({
     "bridge_node",
 })
 
-_ACTIVE_PREDICATE = "is_current = 1 AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)"
+_ACTIVE_PREDICATE = "is_current = 1 AND (expires_at IS NULL OR expires_at > CAST(CURRENT_TIMESTAMP AS TEXT))"
 
 
 def _record_tag_history(
