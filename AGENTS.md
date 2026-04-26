@@ -105,7 +105,7 @@ If no issues exist at a given level, state that and move on.
 ---
 
 ## Repo-specific context
-- `sable_platform/db/connection.py` owns the migration list (`_MIGRATIONS`) — currently 30 migrations (001–030). If a new SQL file is added without a corresponding entry here, it will never be applied. Each migration SQL must include its own `UPDATE schema_version` statement (DDL auto-commits in Python sqlite3, breaking context manager transactions).
+- `sable_platform/db/connection.py` owns the migration list (`_MIGRATIONS`) — currently 31 migrations (001–031). If a new SQL file is added without a corresponding entry here, it will never be applied. Each migration SQL must include its own `UPDATE schema_version` statement (DDL auto-commits in Python sqlite3, breaking context manager transactions).
 - `sable_platform/workflows/registry.py` auto-registers builtins via import side effects. A new builtin workflow that is not imported in `_auto_register()` will never appear in `sable-platform workflow list`.
 - `entity_tag_history` writes in `sable_platform/db/tags.py` are wrapped in try/except to handle pre-migration-008 databases. This is intentional — do not remove the guard.
 - `diagnostic_runs.run_id` is INTEGER (auto-increment), not TEXT. `diagnostic_deltas` uses plain `INTEGER NOT NULL` for `run_id_before/run_id_after` (no FK constraint) to avoid type mismatch.

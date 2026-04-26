@@ -17,9 +17,11 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5 is production-ready.** 1093 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
+**v0.5 is production-ready.** 1101 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
 
-- **DB:** 30 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
+**TIG trial build (in flight, target 5/1):** new `sable_platform/checkin/` module + `client_checkin_loop` workflow generates a weekly client-facing check-in (auto-sent to internal client TG chat for operator forwarding). Migration 031 added `metric_snapshots` for week-over-week deltas. Architecture: thin `Sable_Client_Comms` repo as a stub for the Adapter-pattern boundary; V1 LLM logic (Anthropic SDK direct, Opus 4.7 + prompt caching) lives in `sable_platform/checkin/` and migrates out post-trial. **First direct LLM dep on the platform** — contained to checkin module, acknowledged deviation from "no business logic" rule.
+
+- **DB:** 31 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export
 - **Workflow engine:** synchronous, deterministic, retry/resume/skip_if, per-step timeout, config versioning, execution locking
 - **5 builtin workflows:** prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery (with auto Cult Grader trigger for Tier 1), onboard_client
@@ -78,6 +80,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/cli/watchlist_cmds.py` | Watchlist CLI — add/remove/list/changes/snapshot |
 | `sable_platform/cli/webhook_cmds.py` | Webhook CLI — add/list/remove/test |
 | `sable_platform/db/playbook.py` | Playbook tagging CRUD — upsert_playbook_targets(), record_playbook_outcomes() |
+| `sable_platform/db/snapshots.py` | Metric snapshot CRUD (mig 031) — upsert_metric_snapshot(), get_latest_snapshot(), list_snapshots(). Used by client_checkin_loop for WoW deltas. JSON metrics blob is opaque to platform — callers own shape. |
 | `sable_platform/db/gc.py` | Data retention GC — run_gc(), FK-safe deletion, audit log immune |
 | `sable_platform/db/health.py` | Programmatic health check — check_db_health() |
 | `sable_platform/logging_config.py` | Structured JSON logging — StructuredFormatter, configure_logging() |
