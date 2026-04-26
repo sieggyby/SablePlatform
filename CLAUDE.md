@@ -17,7 +17,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Current State
 
-**v0.5 is production-ready.** 1163 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
+**v0.5 is production-ready.** 1165 tests pass locally, 0 known cross-repo blockers. SQLAlchemy Core migration (Phases 0–13) complete: all runtime SQL is dialect-agnostic, insert-ID paths use backend-neutral `RETURNING`, Alembic assets packaged, Docker/compose with direct `alerts evaluate` loop, `pg_dump` backup. **Postgres is LIVE on the Hetzner VPS** (migrated 2026-04-09). Codex audit clean (2026-04-11). SS-COMPAT resolved in Slopper (2026-04-11). Live-Postgres CI suite exercised when `SABLE_TEST_POSTGRES_URL` is available.
 
 **TIG trial build (in flight, target 5/1):** new `sable_platform/checkin/` module + `client_checkin_loop` workflow generates a weekly client-facing check-in (auto-sent to internal client TG chat for operator forwarding). Migration 031 added `metric_snapshots` for week-over-week deltas. Architecture: thin `Sable_Client_Comms` repo as a stub for the Adapter-pattern boundary; V1 LLM logic (Anthropic SDK direct, Opus 4.7 + prompt caching) lives in `sable_platform/checkin/` and migrates out post-trial. **First direct LLM dep on the platform** — contained to checkin module, acknowledged deviation from "no business logic" rule.
 
@@ -140,6 +140,8 @@ Step-name SHA1 fingerprint stored on `run()`, checked on `resume()`. Mismatch bl
 **Stage** (validated enum): `pre_launch`, `launch`, `growth`, `mature`, `declining`
 
 SableWeb reads `sector` and `stage` from this field. Alert checks read threshold override keys at evaluation time (no restart needed). See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full threshold key list.
+
+**Check-in keys** (read by `client_checkin_loop` notify step): `checkin_enabled` (truthy: True / "true"/"yes"/"1"/"on") and `client_telegram_chat_id` (string, e.g. internal Sable↔TIG chat). Set via `sable-platform org config set ORG checkin_enabled true` and `sable-platform org config set ORG client_telegram_chat_id -- -5050566880` (the `--` is required when the chat ID starts with a minus sign so click doesn't read it as a flag).
 
 ## Key Journeys
 

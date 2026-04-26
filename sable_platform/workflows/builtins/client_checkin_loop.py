@@ -307,6 +307,18 @@ def _send_telegram_message(token: str, chat_id: str, body: str) -> str | None:
         return str(e)
 
 
+_TRUTHY_STRINGS = frozenset({"true", "yes", "1", "on"})
+
+
+def _coerce_bool(value) -> bool:
+    """`org config set` stores all values as strings. Accept bool or "true"/"false"."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY_STRINGS
+    return bool(value)
+
+
 def _read_org_checkin_config(ctx) -> tuple[bool, str | None]:
     row = ctx.db.execute(
         "SELECT config_json FROM orgs WHERE org_id=?", (ctx.org_id,),
@@ -317,7 +329,7 @@ def _read_org_checkin_config(ctx) -> tuple[bool, str | None]:
         cfg = json.loads(row["config_json"])
     except (json.JSONDecodeError, TypeError):
         return False, None
-    enabled = bool(cfg.get("checkin_enabled"))
+    enabled = _coerce_bool(cfg.get("checkin_enabled"))
     chat_id = cfg.get("client_telegram_chat_id")
     return enabled, chat_id
 

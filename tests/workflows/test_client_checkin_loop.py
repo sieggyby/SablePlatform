@@ -280,6 +280,54 @@ def test_notify_calls_telegram_when_fully_configured(wf_db, base_config, monkeyp
     assert mock_send.call_args_list[0].args[1] == "-5050566880"
 
 
+def test_notify_accepts_string_true_from_cli_set(wf_db, base_config, monkeypatch):
+    """`org config set` stores all values as strings — "true" must enable, "false" must not."""
+    wf_db.execute(
+        "UPDATE orgs SET config_json=? WHERE org_id=?",
+        (json.dumps({"checkin_enabled": "true", "client_telegram_chat_id": "-5050566880"}), ORG_ID),
+    )
+    wf_db.commit()
+    monkeypatch.setenv("SABLE_TELEGRAM_BOT_TOKEN", "fake_token")
+
+    with patch(
+        "sable_platform.workflows.builtins.client_checkin_loop.synthesize_call",
+        return_value=_stub_synth(),
+    ), patch(
+        "sable_platform.workflows.builtins.client_checkin_loop._send_telegram_message",
+        return_value=None,
+    ) as mock_send:
+        runner = WorkflowRunner(CLIENT_CHECKIN_LOOP)
+        run_id = runner.run(ORG_ID, base_config, conn=wf_db)
+
+    notify_step = next(
+        s for s in get_workflow_steps(wf_db, run_id) if s["step_name"] == "notify_and_send"
+    )
+    assert json.loads(notify_step["output_json"])["sent"] is True
+    assert mock_send.call_count == 2
+
+
+def test_notify_treats_string_false_as_disabled(wf_db, base_config):
+    wf_db.execute(
+        "UPDATE orgs SET config_json=? WHERE org_id=?",
+        (json.dumps({"checkin_enabled": "false", "client_telegram_chat_id": "-5050566880"}), ORG_ID),
+    )
+    wf_db.commit()
+
+    with patch(
+        "sable_platform.workflows.builtins.client_checkin_loop.synthesize_call",
+        return_value=_stub_synth(),
+    ):
+        runner = WorkflowRunner(CLIENT_CHECKIN_LOOP)
+        run_id = runner.run(ORG_ID, base_config, conn=wf_db)
+
+    notify_step = next(
+        s for s in get_workflow_steps(wf_db, run_id) if s["step_name"] == "notify_and_send"
+    )
+    output = json.loads(notify_step["output_json"])
+    assert output["sent"] is False
+    assert output["reason"] == "checkin_disabled"
+
+
 def test_notify_does_not_send_deep_dive_if_summary_fails(wf_db, base_config, monkeypatch):
     wf_db.execute(
         "UPDATE orgs SET config_json=? WHERE org_id=?",
