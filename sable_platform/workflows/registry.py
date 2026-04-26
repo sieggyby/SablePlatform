@@ -34,6 +34,7 @@ def _auto_register() -> None:
     from sable_platform.workflows.builtins import alert_check  # noqa: F401
     from sable_platform.workflows.builtins import lead_discovery  # noqa: F401
     from sable_platform.workflows.builtins import onboard_client  # noqa: F401
+    from sable_platform.workflows.builtins import client_checkin_loop  # noqa: F401
 
 
 _auto_register()
