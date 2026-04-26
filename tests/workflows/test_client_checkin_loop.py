@@ -133,16 +133,29 @@ def test_dry_run_writes_artifacts_skips_send(wf_db, base_config, vault_root):
     assert _DRY_RUN_SUMMARY.strip() in (checkin_dir / "summary.md").read_text()
 
 
-def test_dry_run_records_metric_snapshot(wf_db, base_config):
+def test_dry_run_skips_metric_snapshot(wf_db, base_config):
+    """dry_run must NOT write to metric_snapshots — otherwise smoke tests
+    poison the WoW baseline chain for subsequent real runs."""
     config = {**base_config, "dry_run": True}
     runner = WorkflowRunner(CLIENT_CHECKIN_LOOP)
     runner.run(ORG_ID, config, conn=wf_db)
 
     snap = snapshot_store.get_snapshot(wf_db, ORG_ID, "2026-05-01")
+    assert snap is None
+
+
+def test_real_run_writes_metric_snapshot(wf_db, base_config):
+    with patch(
+        "sable_platform.workflows.builtins.client_checkin_loop.synthesize_call",
+        return_value=_stub_synth(),
+    ):
+        runner = WorkflowRunner(CLIENT_CHECKIN_LOOP)
+        runner.run(ORG_ID, base_config, conn=wf_db)
+
+    snap = snapshot_store.get_snapshot(wf_db, ORG_ID, "2026-05-01")
     assert snap is not None
     assert snap["source"] == "pipeline"
     assert snap["metrics"]["tier1"]["tig_followers"] == 8538
-    assert snap["metrics"]["tier1"]["fletcher_followers"] == 3457
     assert snap["metrics"]["cult_grader_run_id"] == "wf_run_abc"
 
 

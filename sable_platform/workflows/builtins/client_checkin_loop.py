@@ -261,6 +261,18 @@ def _assemble_artifact(ctx) -> StepResult:
 # ---------------------------------------------------------------------------
 
 def _snapshot_metrics(ctx) -> StepResult:
+    """Persist this Friday's metrics so next Friday has a WoW baseline.
+
+    Skipped in dry_run so smoke tests don't poison the real WoW chain —
+    otherwise a `--dry-run` for next Friday would land a snapshot that the
+    next real run would treat as its prior baseline.
+    """
+    if ctx.config.get("dry_run"):
+        return StepResult(
+            "completed",
+            {"snapshot_id": None, "skipped_reason": "dry_run"},
+        )
+
     raw_inputs = _read_json(Path(ctx.input_data["collected_path"]))
     inputs = CheckinInputs(**raw_inputs)
     snapshot_id = snapshot_store.upsert_metric_snapshot(
