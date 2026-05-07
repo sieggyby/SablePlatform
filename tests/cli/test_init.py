@@ -18,7 +18,7 @@ def test_init_creates_schema(tmp_path):
     conn = sqlite3.connect(db_path)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     conn.close()
-    assert row[0] == 31
+    assert row[0] == 39
 
 
 def test_init_idempotent(tmp_path):
@@ -27,8 +27,8 @@ def test_init_idempotent(tmp_path):
     r2 = CliRunner().invoke(cli, ["init", "--db-path", db_path])
     assert r1.exit_code == 0
     assert r2.exit_code == 0
-    assert "31" in r1.output
-    assert "31" in r2.output
+    assert "39" in r1.output
+    assert "39" in r2.output
 
 
 def test_init_prints_path(tmp_path):

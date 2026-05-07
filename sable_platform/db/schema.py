@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     Table,
     Text,
     UniqueConstraint,
@@ -751,4 +752,185 @@ metric_snapshots = Table(
     Column("created_at", Text, nullable=False, server_default=func.now()),
     UniqueConstraint("org_id", "snapshot_date"),
     Index("idx_metric_snapshots_org_date", "org_id", "snapshot_date"),
+)
+
+# ------------------------------------------------------------------
+# SableKOL bank (Migration 032) — three tables for the Phase 0
+# bank-backed KOL matcher. See ~/Projects/SableKOL/PLAN.md.
+# ------------------------------------------------------------------
+
+kol_candidates = Table(
+    "kol_candidates",
+    metadata,
+    Column("candidate_id", Integer, primary_key=True, autoincrement=True),
+    Column("twitter_id", Text),
+    Column("handle_normalized", Text, nullable=False),
+    Column("is_unresolved", Integer, nullable=False, server_default=text("0")),
+    Column("handle_history_json", Text, nullable=False, server_default=text("'[]'")),
+    Column("display_name", Text),
+    Column("bio_snapshot", Text),
+    Column("followers_snapshot", Integer),
+    Column("discovery_sources_json", Text, nullable=False, server_default=text("'[]'")),
+    Column("first_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("last_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("archetype_tags_json", Text, nullable=False, server_default=text("'[]'")),
+    Column("sector_tags_json", Text, nullable=False, server_default=text("'[]'")),
+    Column(
+        "sable_relationship_json",
+        Text,
+        nullable=False,
+        server_default=text("'{\"communities\":[],\"operators\":[]}'"),
+    ),
+    Column("enrichment_tier", Text, nullable=False, server_default=text("'none'")),
+    Column("last_enriched_at", Text),
+    Column("status", Text, nullable=False, server_default=text("'active'")),
+    Column("manual_notes", Text),
+    # Migration 033: KOL strength score + paid-enrichment fields.
+    Column("kol_strength_score", Float),
+    Column("verified", Integer, nullable=False, server_default=text("0")),
+    Column("account_created_at", Text),
+    # Migration 034: Grok-enrichment fields.
+    Column("listed_count", Integer),
+    Column("tweets_count", Integer),
+    Column("following_count", Integer),
+    Column("credibility_signal", Text),
+    Column("real_name_known", Integer, nullable=False, server_default=text("0")),
+    Column("notes", Text),
+    # Migration 035: location.
+    Column("location", Text),
+    # Migration 036: cross-platform presence (Instagram/TikTok/Threads/etc as JSON).
+    Column("platform_presence_json", Text, nullable=False, server_default="{}"),
+    # At most one LIVE (is_unresolved=0) row per normalized handle. Unresolved
+    # duplicates are permitted; tracked via kol_handle_resolution_conflicts.
+    Index(
+        "idx_kol_candidates_handle_live",
+        "handle_normalized",
+        unique=True,
+        sqlite_where=text("is_unresolved = 0"),
+        postgresql_where=text("is_unresolved = 0"),
+    ),
+    Index(
+        "idx_kol_candidates_twitter_id",
+        "twitter_id",
+        sqlite_where=text("twitter_id IS NOT NULL"),
+        postgresql_where=text("twitter_id IS NOT NULL"),
+    ),
+    Index("idx_kol_candidates_status", "status"),
+    Index(
+        "idx_kol_candidates_strength",
+        "kol_strength_score",
+        sqlite_where=text("kol_strength_score IS NOT NULL"),
+        postgresql_where=text("kol_strength_score IS NOT NULL"),
+    ),
+    Index(
+        "idx_kol_candidates_credibility",
+        "credibility_signal",
+        sqlite_where=text("credibility_signal IS NOT NULL"),
+        postgresql_where=text("credibility_signal IS NOT NULL"),
+    ),
+)
+
+project_profiles_external = Table(
+    "project_profiles_external",
+    metadata,
+    Column("handle_normalized", Text, primary_key=True),
+    Column("twitter_id", Text),
+    Column("sector_tags_json", Text, nullable=False, server_default=text("'[]'")),
+    Column("themes_json", Text, nullable=False, server_default=text("'[]'")),
+    Column("profile_blob", Text),
+    Column("enrichment_source", Text, nullable=False, server_default=text("'manual_only'")),
+    Column("last_enriched_at", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("last_used_at", Text, nullable=False, server_default=func.now()),
+)
+
+kol_handle_resolution_conflicts = Table(
+    "kol_handle_resolution_conflicts",
+    metadata,
+    Column("conflict_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "incoming_candidate_id",
+        Integer,
+        ForeignKey("kol_candidates.candidate_id"),
+        nullable=False,
+    ),
+    Column(
+        "existing_candidate_id",
+        Integer,
+        ForeignKey("kol_candidates.candidate_id"),
+        nullable=False,
+    ),
+    Column("resolved_twitter_id", Text),
+    Column("detected_at", Text, nullable=False, server_default=func.now()),
+    Column("resolution_state", Text, nullable=False, server_default=text("'open'")),
+    Column("resolved_at", Text),
+    Column("notes", Text),
+    Index("idx_kol_conflicts_state", "resolution_state"),
+)
+
+# Migration 037: follow-graph extraction tables. Parent run record + edge
+# table so partial extractions are distinguishable from complete ones (the
+# cursor_completed flag gates downstream kingmaker / cluster queries).
+kol_extract_runs = Table(
+    "kol_extract_runs",
+    metadata,
+    Column("run_id", Text, primary_key=True),
+    Column("target_handle_normalized", Text, nullable=False),
+    Column("target_user_id", Text),
+    Column("provider", Text, nullable=False),
+    Column("extract_type", Text, nullable=False),
+    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("completed_at", Text),
+    Column("cursor_completed", Integer, nullable=False, server_default=text("0")),
+    Column("last_cursor", Text),
+    Column("pages_fetched", Integer, nullable=False, server_default=text("0")),
+    Column("rows_inserted", Integer, nullable=False, server_default=text("0")),
+    Column("expected_count", Integer),
+    Column("partial_failure_reason", Text),
+    Column("cost_usd_logged", Float, nullable=False, server_default=text("0")),
+    # Migration 039: per-client scoping. Default '_external' for sentinel/legacy;
+    # SolStitch runs backfilled to 'solstitch'.
+    Column("client_id", Text, nullable=False, server_default=text("'_external'")),
+    Index("idx_kol_extract_runs_target", "target_handle_normalized", "extract_type"),
+    Index("idx_kol_extract_runs_completed", "cursor_completed"),
+    Index("idx_kol_extract_runs_client", "client_id", "extract_type", "cursor_completed"),
+)
+
+kol_follow_edges = Table(
+    "kol_follow_edges",
+    metadata,
+    Column(
+        "run_id",
+        Text,
+        ForeignKey("kol_extract_runs.run_id"),
+        nullable=False,
+    ),
+    Column("follower_id", Text, nullable=False),
+    Column("follower_handle", Text),
+    Column("followed_id", Text, nullable=False),
+    Column("followed_handle", Text, nullable=False),
+    Column("fetched_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("run_id", "follower_id", "followed_id"),
+    Index("idx_kol_follow_edges_followed", "followed_id"),
+    Index("idx_kol_follow_edges_followed_handle", "followed_handle"),
+    Index("idx_kol_follow_edges_follower", "follower_id"),
+)
+
+# Migration 038: append-only operator relationship-tagging table. One row
+# per status change. Current state for a (handle, client) is the row with
+# MAX(created_at). See ~/Projects/SableKOL/docs/sableweb_kol_build_plan.md.
+kol_operator_relationships = Table(
+    "kol_operator_relationships",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("handle_normalized", Text, nullable=False),
+    Column("client_id", Text, nullable=False),
+    Column("operator_id", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("note", Text),
+    Column("is_private", Integer, nullable=False, server_default=text("0")),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("idx_kor_handle_client", "handle_normalized", "client_id"),
+    Index("idx_kor_operator", "operator_id", "client_id"),
+    Index("idx_kor_created", "created_at"),
 )

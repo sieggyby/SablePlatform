@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 BATCH_SIZE = 1000
 
-# All 37 tables in FK-safe insertion order (parents before children).
+# All 40 tables in FK-safe insertion order (parents before children).
 # Derived from sable_platform/db/schema.py ForeignKey declarations.
 TABLE_LOAD_ORDER: list[str] = [
     # Tier 0 — no FKs
@@ -57,6 +57,13 @@ TABLE_LOAD_ORDER: list[str] = [
     "playbook_outcomes",
     "metric_snapshots",
     "discord_pulse_runs",
+    # SableKOL bank (mig 032) — kol_candidates has no FKs; project_profiles_external
+    # has no FKs; kol_handle_resolution_conflicts FK -> kol_candidates.
+    "kol_candidates",
+    "project_profiles_external",
+    # SableKOL follow-graph (mig 037) — kol_extract_runs has no FKs;
+    # kol_follow_edges FK -> kol_extract_runs.
+    "kol_extract_runs",
     # Tier 2 — FK -> entities
     "entity_handles",
     "entity_tags",
@@ -65,10 +72,13 @@ TABLE_LOAD_ORDER: list[str] = [
     "entity_tag_history",
     # Tier 3 — FK -> merge_candidates
     "merge_events",
-    # Tier 4 — FK -> jobs, workflow_runs
+    # Tier 4 — FK -> jobs, workflow_runs, kol_candidates
     "job_steps",
     "workflow_steps",
     "workflow_events",
+    "kol_handle_resolution_conflicts",  # FK -> kol_candidates
+    "kol_follow_edges",  # FK -> kol_extract_runs
+    "kol_operator_relationships",  # no FKs (client_id + handle_normalized are loose)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -96,6 +106,9 @@ SEQUENCE_TABLES: dict[str, str] = {
     "playbook_targets": "id",
     "playbook_outcomes": "id",
     "metric_snapshots": "id",
+    "kol_candidates": "candidate_id",
+    "kol_handle_resolution_conflicts": "conflict_id",
+    "kol_operator_relationships": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.
@@ -115,6 +128,7 @@ _TEXT_PK_COLUMNS: dict[str, str] = {
     "alert_configs": "config_id",
     "alerts": "alert_id",
     "platform_meta": "key",
+    "project_profiles_external": "handle_normalized",
 }
 
 

@@ -50,6 +50,14 @@ _MIGRATIONS = [
     ("029_prospect_score_fields.sql", 29),
     ("030_performance_indexes.sql", 30),
     ("031_metric_snapshots.sql", 31),
+    ("032_kol_bank.sql", 32),
+    ("033_kol_strength_score.sql", 33),
+    ("034_kol_grok_enrich.sql", 34),
+    ("035_kol_location.sql", 35),
+    ("036_kol_platform_presence.sql", 36),
+    ("037_kol_follow_edges.sql", 37),
+    ("038_kol_operator_relationships.sql", 38),
+    ("039_kol_extract_runs_client_id.sql", 39),
 ]
 
 

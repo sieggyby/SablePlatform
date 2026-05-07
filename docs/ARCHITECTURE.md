@@ -85,14 +85,14 @@ sable_platform/
 
 ## DB schema ownership
 
-`sable_platform` owns `get_db()` and all 31 migrations. Runtime DB resolution is `SABLE_DATABASE_URL` first, then SQLite at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses packaged Alembic assets via `importlib.resources`, so the Postgres migration path works from wheels and containers as well as source checkouts. SQLite connections still set `PRAGMA busy_timeout=5000` for concurrent access reliability.
+`sable_platform` owns `get_db()` and all 39 migrations. Runtime DB resolution is `SABLE_DATABASE_URL` first, then SQLite at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses packaged Alembic assets via `importlib.resources`, so the Postgres migration path works from wheels and containers as well as source checkouts. SQLite connections still set `PRAGMA busy_timeout=5000` for concurrent access reliability.
 
 **Three separate suite databases exist — only sable.db is owned here:**
 - `~/.sable/sable.db` (SQLite fallback) or `SABLE_DATABASE_URL` (runtime target) — platform cross-tool store (owned by SablePlatform)
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
-**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 30**.
+**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 39**.
 
 ## Workflow engine design
 
