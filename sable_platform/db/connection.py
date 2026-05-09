@@ -58,6 +58,7 @@ _MIGRATIONS = [
     ("037_kol_follow_edges.sql", 37),
     ("038_kol_operator_relationships.sql", 38),
     ("039_kol_extract_runs_client_id.sql", 39),
+    ("040_kol_wizard_infra.sql", 40),
 ]
 
 

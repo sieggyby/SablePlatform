@@ -47,6 +47,8 @@ EXPECTED_TABLES = {
     "kol_extract_runs", "kol_follow_edges",
     # Migration 038: SableKOL operator relationship-tagging
     "kol_operator_relationships",
+    # Migration 040: KOL wizard auth audit log
+    "kol_create_audit",
 }
 
 
@@ -61,7 +63,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 39
+    assert row["version"] == 40
 
 
 def test_all_tables_exist():
@@ -80,7 +82,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 39
+    assert row["version"] == 40
 
 
 def test_workflow_tables_columns():

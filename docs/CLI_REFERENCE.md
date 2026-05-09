@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. Commands operate on `sable
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 39 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init                      # Create sable.db + apply all 40 migrations, or run Alembic on SABLE_DATABASE_URL
 sable-platform init --db-path /alt/path  # Force a specific SQLite file
 sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
 sable-platform db-health --json          # JSON output for Docker/automation

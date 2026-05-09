@@ -235,8 +235,11 @@ jobs = Table(
     Column("completed_at", Text),
     Column("result_json", Text),
     Column("error_message", Text),
+    # Migration 040
+    Column("worker_id", Text),
     Index("idx_jobs_org", "org_id"),
     Index("idx_jobs_status", "status"),
+    Index("idx_jobs_worker", "worker_id"),
 )
 
 job_steps = Table(
@@ -253,7 +256,10 @@ job_steps = Table(
     Column("error", Text),
     Column("started_at", Text),
     Column("completed_at", Text),
+    # Migration 040
+    Column("next_retry_at", Text),
     Index("idx_steps_job", "job_id"),
+    Index("idx_job_steps_next_retry", "next_retry_at"),
 )
 
 artifacts = Table(
@@ -933,4 +939,30 @@ kol_operator_relationships = Table(
     Index("idx_kor_handle_client", "handle_normalized", "client_id"),
     Index("idx_kor_operator", "operator_id", "client_id"),
     Index("idx_kor_created", "created_at"),
+)
+
+
+# ------------------------------------------------------------------
+# KOL wizard auth audit (migration 040)
+# ------------------------------------------------------------------
+
+# Migration 040: append-only audit log for /api/ops/kol-network/* requests.
+# `email` is NULLABLE so anonymous (no session) failures with
+# outcome='auth_failed' can still log. Retention: 90 days via cron-purge.
+# See ~/Projects/SableKOL/docs/any_project_wizard_plan.md.
+kol_create_audit = Table(
+    "kol_create_audit",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("at_utc", Text, nullable=False, server_default=func.now()),
+    Column("email", Text),
+    Column("endpoint", Text, nullable=False),
+    Column("method", Text, nullable=False),
+    Column("outcome", Text, nullable=False),
+    Column("job_id", Text, ForeignKey("jobs.job_id")),
+    Column("ip", Text),
+    Column("user_agent", Text),
+    Index("idx_kol_create_audit_email", "email"),
+    Index("idx_kol_create_audit_at", "at_utc"),
+    Index("idx_kol_create_audit_outcome", "outcome"),
 )
