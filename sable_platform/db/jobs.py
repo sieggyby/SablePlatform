@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -98,6 +99,153 @@ def get_resumable_steps(conn: Connection, job_id: str) -> list:
         text("SELECT * FROM job_steps WHERE job_id=:job_id ORDER BY step_order"),
         {"job_id": job_id},
     ).fetchall()
+
+
+def claim_next_job(
+    conn: Connection,
+    job_type: str,
+    worker_id: str,
+    stale_after_minutes: int = 10,
+) -> dict | None:
+    """Atomically claim the oldest pending job of *job_type*, OR reclaim a stale running one.
+
+    A job is "stale" when status='running' but updated_at is older than
+    *stale_after_minutes* — implies the worker that claimed it crashed.
+
+    Returns None if no claimable job. Otherwise returns a dict:
+        {"job_id": str, "config_json": dict, "org_id": str}
+
+    Atomicity:
+      - Postgres: SELECT ... FOR UPDATE SKIP LOCKED inside an UPDATE subquery.
+      - SQLite: UPDATE ... WHERE job_id = (SELECT ... LIMIT 1) RETURNING is one
+        statement, serialized by SQLite's database-level write lock — two
+        concurrent claimers hit the busy_timeout retry, only one wins.
+
+    Both paths bump jobs.updated_at and stamp jobs.worker_id.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=stale_after_minutes)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+
+    if conn.dialect.name == "postgresql":
+        sql = text(
+            "UPDATE jobs"
+            " SET status='running',"
+            "     worker_id=:worker_id,"
+            "     updated_at=now()"
+            " WHERE job_id = ("
+            "     SELECT job_id FROM jobs"
+            "     WHERE job_type = :job_type"
+            "       AND ("
+            "           status = 'pending'"
+            "           OR (status = 'running' AND updated_at < :cutoff)"
+            "       )"
+            "     ORDER BY created_at"
+            "     FOR UPDATE SKIP LOCKED"
+            "     LIMIT 1"
+            " )"
+            " RETURNING job_id, config_json, org_id"
+        )
+    else:
+        sql = text(
+            "UPDATE jobs"
+            " SET status='running',"
+            "     worker_id=:worker_id,"
+            "     updated_at=datetime('now')"
+            " WHERE job_id = ("
+            "     SELECT job_id FROM jobs"
+            "     WHERE job_type = :job_type"
+            "       AND ("
+            "           status = 'pending'"
+            "           OR (status = 'running' AND updated_at < :cutoff)"
+            "       )"
+            "     ORDER BY created_at"
+            "     LIMIT 1"
+            " )"
+            " RETURNING job_id, config_json, org_id"
+        )
+
+    row = conn.execute(
+        sql,
+        {"worker_id": worker_id, "job_type": job_type, "cutoff": cutoff},
+    ).fetchone()
+    conn.commit()
+    if row is None:
+        return None
+    return {
+        "job_id": row[0],
+        "config_json": json.loads(row[1] or "{}"),
+        "org_id": row[2],
+    }
+
+
+def complete_job(conn: Connection, job_id: str, result: dict | None = None) -> None:
+    """Mark *job_id* done.  Sets completed_at + result_json, bumps updated_at."""
+    conn.execute(
+        text(
+            "UPDATE jobs"
+            " SET status='done',"
+            "     completed_at=CURRENT_TIMESTAMP,"
+            "     updated_at=CURRENT_TIMESTAMP,"
+            "     result_json=:result_json"
+            " WHERE job_id=:job_id"
+        ),
+        {"result_json": json.dumps(result or {}), "job_id": job_id},
+    )
+    conn.commit()
+
+
+def fail_job(conn: Connection, job_id: str, error: str) -> None:
+    """Mark *job_id* failed with *error* recorded in error_message."""
+    conn.execute(
+        text(
+            "UPDATE jobs"
+            " SET status='failed',"
+            "     completed_at=CURRENT_TIMESTAMP,"
+            "     updated_at=CURRENT_TIMESTAMP,"
+            "     error_message=:error"
+            " WHERE job_id=:job_id"
+        ),
+        {"error": error, "job_id": job_id},
+    )
+    conn.commit()
+
+
+def release_job(conn: Connection, job_id: str) -> None:
+    """Release a running job back to pending, clearing worker_id.
+
+    Used when the worker decides to defer (e.g. a step's next_retry_at is in
+    the future) rather than crash.  Bumps updated_at so the released job
+    sorts after still-pending jobs that have been waiting longer.
+    """
+    conn.execute(
+        text(
+            "UPDATE jobs"
+            " SET status='pending',"
+            "     worker_id=NULL,"
+            "     updated_at=CURRENT_TIMESTAMP"
+            " WHERE job_id=:job_id"
+        ),
+        {"job_id": job_id},
+    )
+    conn.commit()
+
+
+def defer_step(conn: Connection, step_id: int, retry_at: str) -> None:
+    """Set job_steps.next_retry_at on a step (used for 429 deferred retry).
+
+    *retry_at* is an ISO-8601 UTC timestamp string.  The worker only attempts
+    a step when next_retry_at IS NULL or <= now.
+    """
+    conn.execute(
+        text(
+            "UPDATE job_steps"
+            " SET next_retry_at=:retry_at"
+            " WHERE step_id=:step_id"
+        ),
+        {"retry_at": retry_at, "step_id": step_id},
+    )
+    conn.commit()
 
 
 def resume_job(conn: Connection, job_id: str, max_retries: int = 2) -> list[dict]:
