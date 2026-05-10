@@ -103,7 +103,7 @@ class TestEnsureSchema:
         raw.row_factory = sqlite3.Row
         ensure_schema(raw)
         row = raw.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 40
+        assert row[0] == 41
         raw.close()
 
     def test_tables_exist(self, in_memory_db):

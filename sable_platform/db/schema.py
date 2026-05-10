@@ -966,3 +966,38 @@ kol_create_audit = Table(
     Index("idx_kol_create_audit_at", "at_utc"),
     Index("idx_kol_create_audit_outcome", "outcome"),
 )
+
+
+# Per-(candidate, operator) Grok enrichment cache. KO-3 redesign post-2026-05-10.
+# Each row is one fetch; lookups read latest by (candidate_id, operator_email)
+# ordered by fetched_at DESC. payload_json carries the structured + prose
+# blocks (Enrichment schema in sable_kol/preflight_schemas.py).
+kol_enrichment = Table(
+    "kol_enrichment",
+    metadata,
+    Column("enrichment_id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "candidate_id",
+        Integer,
+        ForeignKey("kol_candidates.candidate_id"),
+        nullable=False,
+    ),
+    Column("operator_email", Text, nullable=False),
+    Column("operator_persona", Text, nullable=False),
+    Column("fetched_at", Text, nullable=False, server_default=func.now()),
+    Column("payload_json", Text, nullable=False),
+    Column("grok_model", Text),
+    Column("cost_usd", Float, server_default="0"),
+    # SQLite indexes don't support DESC inside CREATE INDEX (well, they
+    # accept the syntax, but the SA Index helper doesn't pass through
+    # the DESC modifier across both dialects without a literal_column).
+    # Postgres handles the DESC explicitly via the Alembic migration; for
+    # the SA-test parity check we just need the column set to match.
+    Index(
+        "idx_kol_enrichment_lookup",
+        "candidate_id",
+        "operator_email",
+        "fetched_at",
+    ),
+    Index("idx_kol_enrichment_operator", "operator_email"),
+)

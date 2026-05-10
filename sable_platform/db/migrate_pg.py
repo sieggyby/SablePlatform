@@ -80,6 +80,7 @@ TABLE_LOAD_ORDER: list[str] = [
     "kol_follow_edges",  # FK -> kol_extract_runs
     "kol_operator_relationships",  # no FKs (client_id + handle_normalized are loose)
     "kol_create_audit",  # FK -> jobs (mig 040)
+    "kol_enrichment",  # FK -> kol_candidates (mig 041)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -111,6 +112,7 @@ SEQUENCE_TABLES: dict[str, str] = {
     "kol_handle_resolution_conflicts": "conflict_id",
     "kol_operator_relationships": "id",
     "kol_create_audit": "id",
+    "kol_enrichment": "enrichment_id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.
