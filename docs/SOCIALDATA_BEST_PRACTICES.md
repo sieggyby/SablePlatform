@@ -6,6 +6,7 @@ Cross-tool reference for all Sable projects that call the SocialData API. Priori
 - **Cult Grader** — deep community diagnostics (timeline, mentions, ticker, replies, team handles, mutuals)
 - **Lead Identifier** — enrichment pass on top-500 shortlisted projects (profile, engagement, mentions)
 - **Slopper** — pulse tracking, watchlist scanning, trend detection, reply suggestions
+- **SableKOL** — bulk follow-graph extraction + per-candidate enrichment (profile + 20-tweet timeline read fed to Grok for interpretation; see `SableKOL/docs/ENRICHMENT.md`)
 
 ---
 
@@ -23,13 +24,23 @@ SocialData charges **$0.0002 per item returned** ($0.20 per 1,000 items). In pra
 
 | Endpoint | Path | Cost Model | Used By |
 |----------|------|-----------|---------|
-| User profile | `GET /twitter/user/{handle}` | 1 call | All three |
-| User timeline | `GET /twitter/user/{user_id}/tweets` | ~5 calls per 100 tweets | Cult Grader, Slopper |
-| Search | `GET /twitter/search` | ~5 calls per 100 results | All three |
+| User profile | `GET /twitter/user/{handle}` | 1 call | All |
+| User timeline | `GET /twitter/user/{user_id}/tweets` | ~5 calls per 100 tweets | Cult Grader, Slopper, SableKOL |
+| Search | `GET /twitter/search` | ~5 calls per 100 results | Cult Grader, Lead Identifier, Slopper |
 | Single tweet | `GET /twitter/tweets/{tweet_id}` | 1 call | Slopper |
 | Following list | `GET /twitter/user/{user_id}/following` | 1 call (capped) | Cult Grader |
+| Followers list | `GET /twitter/followers/list` | $0.0002 per follower returned | SableKOL bulk-fetch |
+| Friends list | `GET /twitter/friends/list` | $0.0002 per followed user returned | SableKOL bulk-fetch |
 
 All endpoints use `Authorization: Bearer {api_key}` and return JSON.
+
+**Gotcha: timeline endpoint takes numeric id, not screen name.**
+`/twitter/user/<screen_name>/tweets` returns HTTP 404 even for active
+accounts. Only `/twitter/user/<numeric_id>/tweets` works. Always chain
+a profile fetch first to resolve `id_str`. Discovered live in SableKOL
+2026-05-10 mid-deploy; cost ~$0.50 to diagnose. See
+`SableKOL/sable_kol/socialdata_live.py::fetch_live_signal` for the
+canonical chained-fetch pattern.
 
 ---
 
