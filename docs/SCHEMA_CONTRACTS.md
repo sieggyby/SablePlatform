@@ -149,3 +149,27 @@ Slopper outcomes use `recorded_by='pulse_outcomes'`.
 
 See `sable_platform/contracts/tracking.py` for the canonical `TrackingMetadata` Pydantic model.
 17 fields, versioned via `schema_version`. Adding a field requires bumping the version.
+
+---
+
+## SableKOL Tables (migrations 032-041)
+
+Defined in SablePlatform migrations, written exclusively by SableKOL code via `sable_kol.db.upsert_candidate` and the path-specific writers. Migration files in `sable_platform/db/migrations/`, mirrored in `sable_platform/db/schema.py` (parity-tested in `tests/db/test_schema.py`).
+
+| Table | Mig | Purpose | Key constraints |
+|-------|-----|---------|-----------------|
+| `kol_candidates` | 032 | One row per X handle in the bank | Partial unique index `idx_kol_candidates_handle_live` on `handle_normalized WHERE is_unresolved=0` |
+| `kol_handle_resolution_conflicts` | 032 | Unresolved-duplicate triage queue | FK → `kol_candidates(candidate_id)` |
+| `project_profiles_external` | 032 | Path-(ii) project profiles (non-Sable orgs) | Indexed on `handle_normalized` |
+| `kol_extract_runs` | 037+039 | One row per `bulk-fetch followers / following` run | Carries `client_id` for client-scoping |
+| `kol_follow_edges` | 037 | Per-run follower/followee handle pairs | PK `(run_id, follower_id, followed_id)`; indexed on `followed_id` and `followed_handle` |
+| `kol_operator_relationships` | 038 | Per-(client, candidate, operator) tagging surface | Append-only; tag changes write new rows |
+| `kol_create_audit` | 040 | Audit log for `/api/ops/kol-network/*` SableWeb routes | `email` is NULLABLE (anonymous failures still log); migration 042 added `review_status` |
+| `kol_enrichment` | 041 | Per-(candidate, operator) Grok intel cache (KO-3 v2.5) | Composite index on `(candidate_id, operator_email, fetched_at DESC)` for latest-wins lookups |
+
+**Hard rules** (lifted from `SableKOL/CLAUDE.md` — see there for context):
+
+- Never bypass `sable_kol.db.upsert_candidate()` for `kol_candidates` writes. JSON encoding + partial-unique-index handling + conflict routing live there.
+- Schema changes go in SP migrations (SQL + Alembic dual pattern), never in SableKOL.
+- The wizard-era `kol_create_audit` table lives in SP but is written by SableWeb via `recordAudit()`, not by SableKOL Python — different writer than the rest of the KOL surface.
+- `kol_enrichment.payload_json` is opaque to SP (carries the `Enrichment` Pydantic shape from `sable_kol/preflight_schemas.py`). Schema-version field lives inside the JSON, not as a column.

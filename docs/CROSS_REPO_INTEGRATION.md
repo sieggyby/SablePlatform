@@ -1,6 +1,6 @@
 # Cross-Repo Integration Guide
 
-How SablePlatform orchestrates the four downstream repos and how data flows between them.
+How SablePlatform orchestrates the four workflow-engine-driven downstream repos, plus how SableKOL (a 5th specialized repo with a different integration pattern) coexists.
 
 ---
 
@@ -23,9 +23,16 @@ How SablePlatform orchestrates the four downstream repos and how data flows betw
      │Cult Grader │ │  Slopper   │ │  Tracking  │ │   Lead ID  │
      │ diagnose.py│ │ sable ...  │ │ sync_runner│ │  main.py   │
      └────────────┘ └────────────┘ └────────────┘ └────────────┘
+
+                    SableKOL (separate integration pattern)
+                    ┌──────────────────────────────────┐
+                    │  SableWeb /ops/kol-network/* ──→ │
+                    │  FastAPI sidecar (compose-net)   │
+                    │  reads/writes sable.db migs 032+ │
+                    └──────────────────────────────────┘
 ```
 
-SablePlatform never imports from downstream repos. All integration happens via subprocess adapters that shell out to each repo's CLI or entry point.
+SablePlatform never imports from downstream repos. The 4 workflow-engine integrations happen via subprocess adapters that shell out to each repo's CLI. **SableKOL is different**: it runs its own FastAPI service inside the SableWeb compose stack, owns `sable.db` migrations 032-041, and is invoked by SableWeb HTTP routes rather than by SP workflows. See its dedicated section below.
 
 ---
 
@@ -100,20 +107,20 @@ The prospect YAML file is the entry point for all diagnostic workflows. It lives
 
 **Minimum required fields:**
 ```yaml
-project_name: "PSY Protocol"
-twitter_handle: "PsyProtocol"
+project_name: "SolStitch"
+twitter_handle: "SolStitchXYZ"
 ```
 
 **Full schema:**
 ```yaml
-project_name: "PSY Protocol"
-twitter_handle: "PsyProtocol"
+project_name: "SolStitch"
+twitter_handle: "SolStitchXYZ"
 tags: ["client"]                            # Filter with --tag in batch mode
 token_ticker: "PSY"                         # Optional
 sector: "L1 blockchain / ZK infrastructure" # Optional; affects B2B scoring thresholds
-website: "https://psy.xyz/"                 # Optional
+website: "https://solstitch.xyz/"                 # Optional
 discord_invite: "https://discord.gg/..."    # Optional; used by Discord data collection
-sable_org: "psy_protocol"                   # REQUIRED for platform sync — must match org_id in sable.db
+sable_org: "solstitch"                   # REQUIRED for platform sync — must match org_id in sable.db
 operator_notes: |                           # Optional; injected into diagnostic context
   Privacy-first ZK L1. Stage: testnet.
   Funding: ~$9-10M. Investors: Blockchain Capital.
@@ -158,24 +165,24 @@ Onboarding requires multiple workflow runs. `onboard_client` is a readiness chec
 
 ```
 1. Create org in sable.db
-   └─ sable-platform org create psy_protocol --name "PSY Protocol"
+   └─ sable-platform org create solstitch --name "SolStitch"
 
 2. Create/update prospect YAML (in Cult Grader repo)
-   └─ prospects/psy_protocol.yaml (must include sable_org: "psy_protocol")
+   └─ prospects/solstitch.yaml (must include sable_org: "solstitch")
 
 3. Run onboard workflow (readiness check only)
-   └─ sable-platform workflow run onboard_client --org psy_protocol \
-        -c prospect_yaml_path=/path/to/psy_protocol.yaml
+   └─ sable-platform workflow run onboard_client --org solstitch \
+        -c prospect_yaml_path=/path/to/solstitch.yaml
    └─ Steps: verify org exists, verify adapter env vars, create initial sync record, report readiness
 
 4. Run diagnostic + sync (this is where data flows into sable.db)
-   └─ sable-platform workflow run prospect_diagnostic_sync --org psy_protocol \
-        -c prospect_yaml_path=/path/to/psy_protocol.yaml
+   └─ sable-platform workflow run prospect_diagnostic_sync --org solstitch \
+        -c prospect_yaml_path=/path/to/solstitch.yaml
    └─ Or run Cult Grader directly for more control:
-      cd $SABLE_CULT_GRADER_PATH && python diagnose.py --config prospects/psy_protocol.yaml
+      cd $SABLE_CULT_GRADER_PATH && python diagnose.py --config prospects/solstitch.yaml
 
 5. (Optional) Run tracking sync and strategy generation
-   └─ sable-platform workflow run weekly_client_loop --org psy_protocol
+   └─ sable-platform workflow run weekly_client_loop --org solstitch
 ```
 
 ---
@@ -188,16 +195,16 @@ When you need more control than the workflow provides, call Cult Grader directly
 cd $SABLE_CULT_GRADER_PATH
 
 # Standard diagnostic (~$1-2)
-python diagnose.py --config prospects/psy_protocol.yaml
+python diagnose.py --config prospects/solstitch.yaml
 
 # Onboard mode: deep historical collection
-python diagnose.py --config prospects/psy_protocol.yaml --mode onboard --onboard-since 2025-01-01 --cost-ceiling 20
+python diagnose.py --config prospects/solstitch.yaml --mode onboard --onboard-since 2025-01-01 --cost-ceiling 20
 
 # Re-run diagnostic + report only (~$0.07)
-python diagnose.py --config prospects/psy_protocol.yaml --from-stage diag
+python diagnose.py --config prospects/solstitch.yaml --from-stage diag
 
 # Re-render reports only (free)
-python diagnose.py --config prospects/psy_protocol.yaml --from-stage report
+python diagnose.py --config prospects/solstitch.yaml --from-stage report
 
 # Batch all prospects
 python diagnose.py --batch prospects/ --concurrency 3
@@ -206,7 +213,7 @@ python diagnose.py --batch prospects/ --concurrency 3
 python diagnose.py --batch prospects/ --tag client
 
 # Compare two runs
-python diagnose.py --compare diagnostics/psy-protocol_PsyProtocol/ --runs 2026-03-01 2026-04-01
+python diagnose.py --compare diagnostics/psy-protocol_SolStitchXYZ/ --runs 2026-03-01 2026-04-01
 
 # Corpus overview
 python diagnose.py --summary diagnostics/ --sort-by sable_fit_score
@@ -214,7 +221,7 @@ python diagnose.py --corpus-dashboard diagnostics/
 python diagnose.py --cross-reference diagnostics/ --min-projects 3
 
 # Trend analysis
-python diagnose.py --trend diagnostics/psy-protocol_PsyProtocol/
+python diagnose.py --trend diagnostics/psy-protocol_SolStitchXYZ/
 ```
 
 **Key flags:**
@@ -280,6 +287,36 @@ cd $SABLE_TRACKING_PATH
 # Run platform sync for an org
 SABLE_CLIENT_ORG_MAP='{"TIG":"tig"}' python -m app.platform_sync_runner tig
 ```
+
+---
+
+## SableKOL Integration
+
+SableKOL has a different integration shape from the 4 workflow-engine repos above. It's invoked by:
+
+1. **The operator (CLI)** — `sable-kol ingest / classify / crossref / find / regenerate` runs as a normal Python CLI on the operator's laptop or a Hetzner systemd timer. Bank ETL + outreach-plan + network-graph generation paths.
+2. **SableWeb HTTP routes** — `/api/ops/kol-network/*` routes proxy operator actions (preflight, comparable suggest, reuse check, project create, per-candidate enrichment) to SableKOL's FastAPI sidecar (`sable_kol/preflight_service.py`) running at `http://sable-kol-preflight:8001` inside the compose network. xAI Grok + SocialData API keys live only on the sidecar.
+
+**Tables SableKOL owns** (defined in SablePlatform migrations 032-041, written by SableKOL code):
+
+| Table | Migration | Purpose |
+|---|---|---|
+| `kol_candidates` | 032 | Per-handle bank entry (one LIVE row per handle, partial unique index) |
+| `kol_handle_resolution_conflicts` | 032 | Tracks unresolved-duplicate handles for operator-triage |
+| `project_profiles_external` | 032 | Path-(ii) external project profiles (non-Sable orgs) |
+| `kol_strength_score` extensions | 033 | Strength score + paid-enrichment fields |
+| `kol_grok_enrich` extensions | 034 | Grok-derived columns (credibility, listed_count, etc.) |
+| `kol_location` | 035 | location column on kol_candidates |
+| `kol_platform_presence` | 036 | platform_presence_json column (cross-platform reach) |
+| `kol_follow_edges` | 037 | Per-extract-run follower/following edges |
+| `kol_operator_relationships` | 038 | Per-client operator tagging of candidates |
+| `kol_extract_runs.client_id` | 039 | Client-scoping on bulk-fetch runs |
+| `kol_create_audit` | 040 | Append-only audit log for /api/ops/kol-network/* hits |
+| `kol_enrichment` | 041 | Per-(candidate, operator) Grok enrichment cache |
+
+**SablePlatform's role.** SP owns the migration files + schema parity tests + the `cost_events` ledger SableKOL writes to. SableKOL imports `sable_platform.db.connection.get_db()` via `sable_kol.db.open_db()` and never opens its own connection. No SP workflow currently invokes SableKOL; the integration is one-way (SableKOL is a consumer of SP's DB connection factory + a writer to SP-owned tables).
+
+**For details** see `SableKOL/CLAUDE.md` (architectural rules), `SableKOL/docs/ENRICHMENT.md` (the v2.5 per-candidate intel feature), and `SableKOL/docs/PERSONAS.md` (operator priming system).
 
 ---
 

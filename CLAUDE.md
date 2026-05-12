@@ -14,6 +14,13 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 - `Sable_Cult_Grader` — diagnostic and playbook
 - `SableTracking` — intake and contributor tracking
 - `Sable_Slopper` — strategy, content, account ops
+- `SableKOL` — KOL discovery, follow-graph extraction, and per-candidate
+  Grok enrichment for cold outreach. Owns migrations 032-041 of `sable.db`
+  (kol_candidates / kol_extract_runs / kol_follow_edges /
+  kol_operator_relationships / kol_create_audit / kol_enrichment).
+  Different integration pattern from the other 4 — invoked via its own
+  FastAPI sidecar in the SableWeb compose stack, not via SP's workflow
+  engine. See `SableKOL/CLAUDE.md`.
 
 ## Current State
 
@@ -21,14 +28,14 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 **TIG trial build (in flight, target 5/1):** new `sable_platform/checkin/` module + `client_checkin_loop` workflow generates a weekly client-facing check-in (auto-sent to internal client TG chat for operator forwarding). Migration 031 added `metric_snapshots` for week-over-week deltas. Architecture: thin `Sable_Client_Comms` repo as a stub for the Adapter-pattern boundary; V1 LLM logic (Anthropic SDK direct, Opus 4.7 + prompt caching) lives in `sable_platform/checkin/` and migrates out post-trial. **First direct LLM dep on the platform** — contained to checkin module, acknowledged deviation from "no business logic" rule.
 
-- **DB:** 31 migrations, WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
+- **DB:** 42 migrations (032-041 owned by SableKOL, 042 audit-review extension), WAL mode, busy_timeout=5s, all CRUD helpers, online backup, GC, health check
 - **Contracts:** 8 cross-suite Pydantic models + JSON Schema export
 - **Workflow engine:** synchronous, deterministic, retry/resume/skip_if, per-step timeout, config versioning, execution locking
 - **6 builtin workflows:** prospect_diagnostic_sync, weekly_client_loop, alert_check, lead_discovery (with auto Cult Grader trigger for Tier 1), onboard_client, client_checkin_loop (TIG trial)
 - **12 alert checks:** tracking stale, cultist tag expiring, sentiment shift, MVL score change, unclaimed actions, workflow failures, discord pulse regression, discord pulse stale, stuck runs, member decay, bridge decay, watchlist changes. Alert creation decoupled from delivery (`deliver_alerts_by_ids()` called after commit).
 - **Delivery:** Telegram, Discord, HMAC-SHA256 webhooks. Cooldown (4h default), per-org config, mute/unmute.
 - **CLI:** full operator surface — workflows, alerts, inspect (13 subcommands including prospect_pipeline), actions, outcomes, journey, dashboard, watchlist, webhooks, cron, org config (sector/stage enums, numeric range validation), backup, init, gc, health-server, metrics, migrate
-- **Adapters:** subprocess-based for CultGrader, SableTracking, Slopper, LeadIdentifier, ClientComms (V1 stub)
+- **Adapters:** subprocess-based for CultGrader, SableTracking, Slopper, LeadIdentifier, ClientComms (V1 stub). SableKOL is NOT a subprocess adapter — it's a sidecar (FastAPI service in SableWeb's compose network) and the SableWeb ops surface is its primary caller.
 - **Infra:** Dockerfile, CI (ruff + pytest), structured JSON logging, cron scheduler
 
 ## Architecture Decisions
