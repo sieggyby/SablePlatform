@@ -11,19 +11,19 @@ Step-by-step recipes for common operations using SablePlatform as the orchestrat
 ### Step 1: Create the org
 
 ```bash
-sable-platform org create psy_protocol --name "PSY Protocol"
+sable-platform org create solstitch --name "SolStitch"
 ```
 
 ### Step 2: Create prospect YAML
 
-Create `$SABLE_CULT_GRADER_PATH/prospects/psy_protocol.yaml`:
+Create `$SABLE_CULT_GRADER_PATH/prospects/solstitch.yaml`:
 
 ```yaml
-project_name: "PSY Protocol"
-twitter_handle: "PsyProtocol"
+project_name: "SolStitch"
+twitter_handle: "SolStitchXYZ"
 tags: ["client"]
-sable_org: "psy_protocol"    # Must match org_id from step 1
-website: "https://psy.xyz/"
+sable_org: "solstitch"    # Must match org_id from step 1
+website: "https://solstitch.xyz/"
 operator_notes: |
   Privacy-first ZK L1. Testnet stage.
 ```
@@ -33,8 +33,8 @@ operator_notes: |
 `onboard_client` verifies the org, adapter env vars, and creates an initial sync record. It does **not** run diagnostics or sync data.
 
 ```bash
-sable-platform workflow run onboard_client --org psy_protocol \
-  -c prospect_yaml_path=$SABLE_CULT_GRADER_PATH/prospects/psy_protocol.yaml
+sable-platform workflow run onboard_client --org solstitch \
+  -c prospect_yaml_path=$SABLE_CULT_GRADER_PATH/prospects/solstitch.yaml
 ```
 
 ### Step 4: Run diagnostic + sync
@@ -43,12 +43,12 @@ This is where data actually flows into sable.db. Choose one:
 
 ```bash
 # Option A: Via workflow (standard diagnostic)
-sable-platform workflow run prospect_diagnostic_sync --org psy_protocol \
-  -c prospect_yaml_path=$SABLE_CULT_GRADER_PATH/prospects/psy_protocol.yaml
+sable-platform workflow run prospect_diagnostic_sync --org solstitch \
+  -c prospect_yaml_path=$SABLE_CULT_GRADER_PATH/prospects/solstitch.yaml
 
 # Option B: Direct Cult Grader (more control — deep historical collection)
 cd $SABLE_CULT_GRADER_PATH
-python diagnose.py --config prospects/psy_protocol.yaml \
+python diagnose.py --config prospects/solstitch.yaml \
   --mode onboard --onboard-since 2025-01-01 --cost-ceiling 20
 ```
 
@@ -57,23 +57,23 @@ python diagnose.py --config prospects/psy_protocol.yaml \
 ```bash
 cd $SABLE_SLOPPER_PATH
 source .venv/bin/activate
-sable vault init psy_protocol
-sable vault sync psy_protocol
+sable vault init solstitch
+sable vault sync solstitch
 ```
 
 ### Step 6: Set up alerts
 
 ```bash
-sable-platform alerts config set --org psy_protocol --min-severity warning --cooldown-hours 4
-sable-platform alerts evaluate --org psy_protocol
+sable-platform alerts config set --org solstitch --min-severity warning --cooldown-hours 4
+sable-platform alerts evaluate --org solstitch
 ```
 
 ### Step 7: Verify
 
 ```bash
-sable-platform inspect health psy_protocol
-sable-platform inspect entities psy_protocol --limit 10
-sable-platform dashboard --org psy_protocol
+sable-platform inspect health solstitch
+sable-platform inspect entities solstitch --limit 10
+sable-platform dashboard --org solstitch
 ```
 
 ---
@@ -134,7 +134,7 @@ sable-platform alerts list --severity critical --status new
 # Any stuck workflows?
 sable-platform workflow gc
 sable-platform workflow list --org tig --limit 3
-sable-platform workflow list --org psy_protocol --limit 3
+sable-platform workflow list --org solstitch --limit 3
 
 # Preflight before running new workflows
 sable-platform workflow preflight
@@ -148,13 +148,13 @@ sable-platform workflow preflight
 
 ```bash
 # Find the entity
-sable-platform inspect entities psy_protocol --limit 100 | grep -i "psychonaut"
+sable-platform inspect entities solstitch --limit 100 | grep -i "psychonaut"
 
 # Full timeline
 sable-platform journey show <ENTITY_ID>
 
 # Their interaction graph
-sable-platform inspect interactions psy_protocol --json | python3 -c "
+sable-platform inspect interactions solstitch --json | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for edge in data:
@@ -163,7 +163,7 @@ for edge in data:
 "
 
 # Decay risk
-sable-platform inspect decay psy_protocol --json | python3 -c "
+sable-platform inspect decay solstitch --json | python3 -c "
 import json, sys
 for e in json.load(sys.stdin):
     if e.get('entity_id') == '<ENTITY_ID>':
@@ -171,10 +171,10 @@ for e in json.load(sys.stdin):
 "
 
 # Centrality (are they a bridge node?)
-sable-platform inspect centrality psy_protocol --json
+sable-platform inspect centrality solstitch --json
 
 # Add to watchlist for ongoing monitoring
-sable-platform watchlist add psy_protocol <ENTITY_ID> --note "Key contributor, potential churn risk"
+sable-platform watchlist add solstitch <ENTITY_ID> --note "Key contributor, potential churn risk"
 ```
 
 ---
@@ -188,16 +188,16 @@ sable-platform watchlist add psy_protocol <ENTITY_ID> --note "Key contributor, p
 cd $SABLE_CULT_GRADER_PATH
 
 # Compare specific runs
-python diagnose.py --compare diagnostics/psy-protocol_PsyProtocol/ --runs 2026-03-01 2026-04-01
+python diagnose.py --compare diagnostics/psy-protocol_SolStitchXYZ/ --runs 2026-03-01 2026-04-01
 
 # Or auto-compare latest two
-python diagnose.py --compare diagnostics/psy-protocol_PsyProtocol/
+python diagnose.py --compare diagnostics/psy-protocol_SolStitchXYZ/
 
 # Trend report across all runs
-python diagnose.py --trend diagnostics/psy-protocol_PsyProtocol/
+python diagnose.py --trend diagnostics/psy-protocol_SolStitchXYZ/
 
 # From SablePlatform — diagnostic deltas
-sable-platform outcomes diagnostic-delta --org psy_protocol
+sable-platform outcomes diagnostic-delta --org solstitch
 ```
 
 ---
@@ -233,20 +233,20 @@ cd $SABLE_SLOPPER_PATH
 source .venv/bin/activate
 
 # Generate tweets
-sable write @PsyProtocol "testnet milestone announcement"
+sable write @SolStitchXYZ "testnet milestone announcement"
 
 # Score a draft
-sable score @PsyProtocol "The agents are ready. ZK-first from day one."
+sable score @SolStitchXYZ "The agents are ready. ZK-first from day one."
 
 # Generate a posting calendar
-sable calendar generate @PsyProtocol
+sable calendar generate @SolStitchXYZ
 
 # Performance snapshot
-sable pulse snapshot @PsyProtocol
-sable pulse report @PsyProtocol
+sable pulse snapshot @SolStitchXYZ
+sable pulse report @SolStitchXYZ
 
 # Format intelligence
-sable pulse meta @PsyProtocol
+sable pulse meta @SolStitchXYZ
 ```
 
 ---

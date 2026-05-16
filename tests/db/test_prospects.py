@@ -48,7 +48,7 @@ class TestSyncProspectScores:
     def test_sync_multiple(self, in_memory_db):
         scores = [
             _sample_score("zoth", 0.72, "Tier 1"),
-            _sample_score("psy_protocol", 0.58, "Tier 2"),
+            _sample_score("solstitch", 0.58, "Tier 2"),
         ]
         count = sync_prospect_scores(in_memory_db, scores, "2026-04-01")
         assert count == 2

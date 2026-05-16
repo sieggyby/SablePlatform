@@ -16,6 +16,8 @@ HELPERS = [
     (compat.days_until, ("col",)),
     (compat.now_offset, ("'-90 days'",)),
     (compat.now_offset_param, ("cutoff",)),
+    (compat.json_extract_text, ("detail_json", "guild_id")),
+    (compat.date_of_iso_text, ("timestamp",)),
 ]
 
 
@@ -72,3 +74,56 @@ def test_unsupported_dialect_raises():
     """Passing an unrecognized dialect should fail fast."""
     with pytest.raises(ValueError, match="Unsupported dialect"):
         compat.hours_since("col", "mysql")
+
+
+# ---------------------------------------------------------------------------
+# json_extract_text + date_of_iso_text (R0 of the /roast plan)
+# ---------------------------------------------------------------------------
+
+
+def test_json_extract_text_sqlite_uses_json_extract():
+    result = compat.json_extract_text("detail_json", "guild_id", "sqlite")
+    assert result == "json_extract(detail_json, '$.guild_id')"
+
+
+def test_json_extract_text_postgres_uses_jsonb_arrow():
+    result = compat.json_extract_text("detail_json", "guild_id", "postgresql")
+    assert result == "(detail_json::jsonb)->>'guild_id'"
+
+
+def test_json_extract_text_rejects_path_injection():
+    with pytest.raises(ValueError, match="plain SQL identifier"):
+        compat.json_extract_text("detail_json", "x'); DROP TABLE", "sqlite")
+    with pytest.raises(ValueError, match="plain SQL identifier"):
+        compat.json_extract_text("detail_json", 'foo"bar', "postgresql")
+    # Nested-path attempts (legal-looking but break Postgres semantics) rejected.
+    with pytest.raises(ValueError, match="plain SQL identifier"):
+        compat.json_extract_text("detail_json", "foo.bar", "sqlite")
+
+
+def test_json_extract_text_rejects_column_injection():
+    """The column slot must also reject non-identifier strings — the guard
+    must not be one-sided. R0 QA finding #2."""
+    with pytest.raises(ValueError, match="plain SQL identifier"):
+        compat.json_extract_text(
+            "detail_json) UNION ALL SELECT password FROM users WHERE ('1'='1",
+            "guild_id",
+            "sqlite",
+        )
+    with pytest.raises(ValueError, match="plain SQL identifier"):
+        compat.json_extract_text("a; DROP TABLE x", "k", "postgresql")
+
+
+def test_date_of_iso_text_rejects_column_injection():
+    with pytest.raises(ValueError, match="plain SQL identifier"):
+        compat.date_of_iso_text("timestamp) OR 1=1 --", "sqlite")
+
+
+def test_date_of_iso_text_sqlite_uses_substr():
+    result = compat.date_of_iso_text("timestamp", "sqlite")
+    assert result == "date(substr(timestamp, 1, 19))"
+
+
+def test_date_of_iso_text_postgres_uses_cast():
+    result = compat.date_of_iso_text("timestamp", "postgresql")
+    assert result == "(timestamp::timestamp)::date"

@@ -110,34 +110,103 @@ def create_alert(
     return alert_id
 
 
-def acknowledge_alert(conn: Connection, alert_id: str, operator: str) -> None:
-    row = conn.execute(text("SELECT org_id FROM alerts WHERE alert_id=:alert_id"), {"alert_id": alert_id}).fetchone()
+def get_alert(conn: Connection, alert_id: str):
+    """Return the alert row (or None). Used by API authorization to resolve
+    the alert's org_id BEFORE mutation."""
+    return conn.execute(
+        text("SELECT * FROM alerts WHERE alert_id=:alert_id"),
+        {"alert_id": alert_id},
+    ).fetchone()
+
+
+def acknowledge_alert(
+    conn: Connection,
+    alert_id: str,
+    operator: str,
+    *,
+    source: str = "cli",
+    detail_extra: dict | None = None,
+) -> str:
+    """Acknowledge an alert. Idempotent — returns the new status.
+
+    Returns one of:
+        "acknowledged"       — was 'new', now 'acknowledged' (audit row written)
+        "already_acknowledged" — already 'acknowledged', no state change, no audit
+        "already_resolved"   — already 'resolved'; ack is a no-op, no audit
+        "not_found"          — alert_id does not exist
+
+    *source* is passed through to ``audit_log.source`` (e.g. 'cli', 'api').
+    *detail_extra* keys are merged into the audit detail (e.g. {token_id: ...}).
+    """
+    row = conn.execute(
+        text("SELECT org_id, status FROM alerts WHERE alert_id=:alert_id"),
+        {"alert_id": alert_id},
+    ).fetchone()
+    if not row:
+        return "not_found"
+    current = row["status"]
+    if current == "acknowledged":
+        return "already_acknowledged"
+    if current == "resolved":
+        return "already_resolved"
+
     conn.execute(
         text("""
         UPDATE alerts
         SET status='acknowledged', acknowledged_at=CURRENT_TIMESTAMP, acknowledged_by=:operator
-        WHERE alert_id=:alert_id
+        WHERE alert_id=:alert_id AND status='new'
         """),
         {"operator": operator, "alert_id": alert_id},
     )
     conn.commit()
     from sable_platform.db.audit import log_audit
+    detail: dict = {"alert_id": alert_id}
+    if detail_extra:
+        detail.update(detail_extra)
     log_audit(conn, operator, "alert_acknowledge",
-              org_id=row["org_id"] if row else None,
-              detail={"alert_id": alert_id})
+              org_id=row["org_id"], detail=detail, source=source)
+    return "acknowledged"
 
 
-def resolve_alert(conn: Connection, alert_id: str) -> None:
-    row = conn.execute(text("SELECT org_id FROM alerts WHERE alert_id=:alert_id"), {"alert_id": alert_id}).fetchone()
+def resolve_alert(
+    conn: Connection,
+    alert_id: str,
+    *,
+    actor: str = "system",
+    source: str = "system",
+    detail_extra: dict | None = None,
+) -> str:
+    """Resolve an alert. Idempotent — returns the new status.
+
+    Returns:
+        "resolved"          — state changed, audit row written
+        "already_resolved"  — no state change, no audit row
+        "not_found"         — alert_id does not exist
+    """
+    row = conn.execute(
+        text("SELECT org_id, status FROM alerts WHERE alert_id=:alert_id"),
+        {"alert_id": alert_id},
+    ).fetchone()
+    if not row:
+        return "not_found"
+    if row["status"] == "resolved":
+        return "already_resolved"
+
     conn.execute(
-        text("UPDATE alerts SET status='resolved', resolved_at=CURRENT_TIMESTAMP WHERE alert_id=:alert_id"),
+        text(
+            "UPDATE alerts SET status='resolved', resolved_at=CURRENT_TIMESTAMP"
+            " WHERE alert_id=:alert_id AND status != 'resolved'"
+        ),
         {"alert_id": alert_id},
     )
     conn.commit()
     from sable_platform.db.audit import log_audit
-    log_audit(conn, "system", "alert_resolve",
-              org_id=row["org_id"] if row else None,
-              detail={"alert_id": alert_id}, source="system")
+    detail: dict = {"alert_id": alert_id}
+    if detail_extra:
+        detail.update(detail_extra)
+    log_audit(conn, actor, "alert_resolve",
+              org_id=row["org_id"], detail=detail, source=source)
+    return "resolved"
 
 
 def get_last_delivered_at(conn: Connection, dedup_key: str) -> str | None:

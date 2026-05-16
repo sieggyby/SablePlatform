@@ -11,6 +11,7 @@ Usage::
 from __future__ import annotations
 
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     Float,
     ForeignKey,
@@ -557,6 +558,291 @@ discord_pulse_runs = Table(
     Index("idx_discord_pulse_runs_org_date", "org_id", "run_date"),
 )
 
+# Migration 043: discord_streak_events for fit-check streak bot (PLAN.md SS10).
+# One row per image post in a configured #fitcheck channel; reaction_score
+# is recomputed on add/remove via optimistic lock on updated_at.
+discord_streak_events = Table(
+    "discord_streak_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("post_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("posted_at", Text, nullable=False),
+    Column("counted_for_day", Text, nullable=False),
+    Column("attachment_count", Integer, nullable=False, server_default=text("0")),
+    Column("image_attachment_count", Integer, nullable=False, server_default=text("0")),
+    Column("reaction_score", Integer, nullable=False, server_default=text("0")),
+    Column("counts_for_streak", Integer, nullable=False, server_default=text("1")),
+    Column("invalidated_at", Text),
+    Column("invalidated_reason", Text),
+    Column("ingest_source", Text, nullable=False, server_default=text("'gateway'")),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("guild_id", "post_id", name="uq_discord_streak_events_guild_post"),
+    Index("idx_discord_streak_events_org_day", "org_id", "counted_for_day"),
+    Index("idx_discord_streak_events_user_day", "org_id", "user_id", "counted_for_day"),
+    Index("idx_discord_streak_events_channel_posted", "org_id", "channel_id", "posted_at"),
+    Index(
+        "idx_discord_streak_events_user_reactions",
+        "org_id",
+        "user_id",
+        text("reaction_score DESC"),
+    ),
+)
+
+# Migration 045: discord_guild_config for sable-roles V2 (relax-mode + global burn-me mode).
+# One row per configured guild. Created lazily by the first mod command that mutates it.
+discord_guild_config = Table(
+    "discord_guild_config",
+    metadata,
+    Column("guild_id", Text, primary_key=True),
+    Column("relax_mode_on", Integer, nullable=False, server_default=text("0")),
+    Column("current_burn_mode", Text, nullable=False, server_default=text("'once'")),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_by", Text, nullable=False),
+    # Migration 047 — personalize-mode toggle for /roast personalization layer.
+    Column("personalize_mode_on", Integer, nullable=False, server_default=text("0")),
+)
+
+# Migration 046: burn-me opt-in state + random-roast dedup log for sable-roles V2 burn-me.
+discord_burn_optins = Table(
+    "discord_burn_optins",
+    metadata,
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("mode", Text, nullable=False),
+    Column("opted_in_by", Text, nullable=False),
+    Column("opted_in_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("guild_id", "user_id"),
+)
+
+discord_burn_random_log = Table(
+    "discord_burn_random_log",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("roasted_at", Text, nullable=False, server_default=func.now()),
+    Index(
+        "idx_discord_burn_random_log_recent",
+        "guild_id",
+        "user_id",
+        text("roasted_at DESC"),
+    ),
+)
+
+# Migration 047: sticky /stop-pls blocklist for sable-roles V2 burn-me + /roast.
+# UNIQUE(guild_id, user_id) prevents duplicate opt-outs; the id is an audit
+# autoincrement so we can list opt-outs in insertion order if needed.
+discord_burn_blocklist = Table(
+    "discord_burn_blocklist",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("blocked_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("guild_id", "user_id", name="uq_discord_burn_blocklist_guild_user"),
+    Index("idx_discord_burn_blocklist_user", "user_id", "guild_id"),
+)
+
+# Migration 047: peer-roast token ledger (monthly + streak-restoration).
+# UNIQUE(guild_id, actor_user_id, year_month, source) blocks the concurrent
+# double-grant race; grants MUST use ON CONFLICT DO NOTHING. The partial
+# target index accelerates the per-target monthly volume cap on the peer-
+# roast hot path.
+discord_peer_roast_tokens = Table(
+    "discord_peer_roast_tokens",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("actor_user_id", Text, nullable=False),
+    Column("granted_at", Text, nullable=False, server_default=func.now()),
+    Column("source", Text, nullable=False),
+    Column("year_month", Text, nullable=False),
+    Column("consumed_at", Text),
+    Column("consumed_on_post_id", Text),
+    Column("consumed_target_user_id", Text),
+    CheckConstraint(
+        "source IN ('monthly', 'streak_restoration')",
+        name="ck_discord_peer_roast_tokens_source",
+    ),
+    UniqueConstraint(
+        "guild_id", "actor_user_id", "year_month", "source",
+        name="uq_discord_peer_roast_tokens_grant",
+    ),
+    Index(
+        "idx_discord_peer_roast_tokens_actor_month",
+        "actor_user_id", "guild_id", "year_month",
+    ),
+)
+
+Index(
+    "idx_discord_peer_roast_tokens_target_month",
+    discord_peer_roast_tokens.c.consumed_target_user_id,
+    discord_peer_roast_tokens.c.guild_id,
+    discord_peer_roast_tokens.c.year_month,
+    sqlite_where=discord_peer_roast_tokens.c.consumed_at.isnot(None),
+    postgresql_where=discord_peer_roast_tokens.c.consumed_at.isnot(None),
+)
+
+# Migration 047: peer-roast flag log. reactor_user_id distinguishes target-
+# self-flags from third-party flags; bot_reply_id resolves attribution when
+# mod + peer roasts share the same target fit post_id.
+discord_peer_roast_flags = Table(
+    "discord_peer_roast_flags",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("target_user_id", Text, nullable=False),
+    Column("actor_user_id", Text, nullable=False),
+    Column("post_id", Text, nullable=False),
+    Column("bot_reply_id", Text, nullable=False),
+    Column("reactor_user_id", Text, nullable=False),
+    Column("flagged_at", Text, nullable=False, server_default=func.now()),
+    Index(
+        "idx_discord_peer_roast_flags_target",
+        "target_user_id", "guild_id", "flagged_at",
+    ),
+    Index("idx_discord_peer_roast_flags_bot_reply", "bot_reply_id"),
+)
+
+# Migration 047: raw per-message observation log (source for daily rollup).
+# Created BEFORE discord_user_observations + discord_user_vibes so the
+# TABLE_LOAD_ORDER chain on the Postgres restore side stays FK-safe.
+discord_message_observations = Table(
+    "discord_message_observations",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("message_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("content_truncated", Text),
+    Column("reactions_given_json", Text),
+    Column("posted_at", Text, nullable=False),
+    Column("captured_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint(
+        "guild_id", "message_id",
+        name="uq_discord_message_observations_guild_message",
+    ),
+    Index(
+        "idx_discord_message_observations_user_time",
+        "user_id", "guild_id", "posted_at",
+    ),
+    Index("idx_discord_message_observations_gc", "captured_at"),
+)
+
+# Migration 047: user observation rollups (populated by daily cron from
+# discord_message_observations).
+discord_user_observations = Table(
+    "discord_user_observations",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("window_start", Text, nullable=False),
+    Column("window_end", Text, nullable=False),
+    Column("message_count", Integer, nullable=False, server_default=text("0")),
+    Column("sample_messages_json", Text),
+    Column("reaction_emojis_given_json", Text),
+    Column("channels_active_in_json", Text),
+    Column("computed_at", Text, nullable=False, server_default=func.now()),
+    Index(
+        "idx_discord_user_observations_user",
+        "user_id", "guild_id", "computed_at",
+    ),
+)
+
+# Migration 047: LLM-summarized per-user vibe block. FK ->
+# discord_user_observations.id pins the FK-safe TABLE_LOAD_ORDER
+# (observations BEFORE vibes) on Postgres restore.
+discord_user_vibes = Table(
+    "discord_user_vibes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("vibe_block_text", Text, nullable=False),
+    Column("identity", Text),
+    Column("activity_rhythm", Text),
+    Column("reaction_signature", Text),
+    Column("palette_signals", Text),
+    Column("tone", Text),
+    Column("inferred_at", Text, nullable=False, server_default=func.now()),
+    Column(
+        "source_observation_id",
+        Integer,
+        ForeignKey("discord_user_observations.id"),
+    ),
+    Index(
+        "idx_discord_user_vibes_user_recent",
+        "user_id", "guild_id", "inferred_at",
+    ),
+)
+
+# Migration 048: airlock — bot-local snapshot of guild.invites(). Diffed on
+# each on_member_join to attribute the join to whichever invite's uses
+# incremented. UNIQUE(guild_id, code) so re-snapshot UPSERTs cleanly.
+discord_invite_snapshot = Table(
+    "discord_invite_snapshot",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("code", Text, nullable=False),
+    Column("inviter_user_id", Text),
+    Column("uses", Integer, nullable=False, server_default=text("0")),
+    Column("max_uses", Integer, nullable=False, server_default=text("0")),
+    Column("expires_at", Text),
+    Column("captured_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("guild_id", "code", name="uq_discord_invite_snapshot_guild_code"),
+    Index("idx_discord_invite_snapshot_guild", "guild_id"),
+)
+
+# Migration 048: Sable-team allowlist whose invites bypass airlock.
+# Bootstrapped from SABLE_ROLES_TEAM_INVITERS_JSON env on bot boot
+# (UPSERT, idempotent). Runtime mgmt via /add-team-inviter slash command.
+discord_team_inviters = Table(
+    "discord_team_inviters",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("added_at", Text, nullable=False, server_default=func.now()),
+    Column("added_by", Text, nullable=False),
+    UniqueConstraint("guild_id", "user_id", name="uq_discord_team_inviters_guild_user"),
+    Index("idx_discord_team_inviters_guild", "guild_id"),
+)
+
+# Migration 048: per-join admit ledger w/ airlock state machine. UNIQUE
+# (guild_id, user_id) so rejoin overwrites via ON CONFLICT DO UPDATE
+# (callers refresh the prior row's status to reflect the fresh join).
+discord_member_admit = Table(
+    "discord_member_admit",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("joined_at", Text, nullable=False, server_default=func.now()),
+    Column("attributed_invite_code", Text),
+    Column("attributed_inviter_user_id", Text),
+    Column("is_team_invite", Integer, nullable=False, server_default=text("0")),
+    Column("airlock_status", Text, nullable=False),
+    Column("decision_by", Text),
+    Column("decision_at", Text),
+    Column("decision_reason", Text),
+    CheckConstraint(
+        "airlock_status IN ('held', 'auto_admitted', 'admitted', 'banned',"
+        " 'kicked', 'left_during_airlock')",
+        name="ck_discord_member_admit_status",
+    ),
+    UniqueConstraint("guild_id", "user_id", name="uq_discord_member_admit_guild_user"),
+    Index("idx_discord_member_admit_status", "guild_id", "airlock_status"),
+)
+
+
 # NOTE: schema.py must stay in sync with _MIGRATIONS in connection.py.
 # The parity tests in tests/db/test_schema.py verify this mechanically.
 
@@ -962,9 +1248,45 @@ kol_create_audit = Table(
     Column("job_id", Text, ForeignKey("jobs.job_id")),
     Column("ip", Text),
     Column("user_agent", Text),
+    # Migration 042: per-row review state. The /ops/kol-network picker
+    # blocks "+ New project" while a user has any pending row; the admin
+    # approval page mutates these fields when an admin acts on a row.
+    # Default 'approved' (not 'pending') so the migration backfills
+    # historical rows as already-cleared. The wizard write path stamps
+    # 'pending' explicitly on new submissions; only those count toward
+    # the per-user gate.
+    Column("review_status", Text, nullable=False, server_default=text("'approved'")),
+    Column("reviewed_by", Text),
+    Column("reviewed_at", Text),
     Index("idx_kol_create_audit_email", "email"),
     Index("idx_kol_create_audit_at", "at_utc"),
     Index("idx_kol_create_audit_outcome", "outcome"),
+    Index("idx_kol_create_audit_review", "email", "review_status", "endpoint"),
+)
+
+
+# ------------------------------------------------------------------
+# API tokens (migration 044) — owner-issued bearer credentials for the
+# alert-triage HTTP API MVP. See TODO_API.md.
+# ------------------------------------------------------------------
+
+api_tokens = Table(
+    "api_tokens",
+    metadata,
+    Column("token_id", Text, primary_key=True),
+    Column("token_hash", Text, nullable=False),
+    Column("label", Text, nullable=False),
+    Column("operator_id", Text, nullable=False),
+    Column("created_by", Text, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("expires_at", Text),
+    Column("last_used_at", Text),
+    Column("revoked_at", Text),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("scopes_json", Text, nullable=False, server_default=text("'[\"read_only\"]'")),
+    Column("org_scopes_json", Text, nullable=False, server_default=text("'[]'")),
+    Index("idx_api_tokens_enabled", "enabled", "expires_at"),
+    Index("idx_api_tokens_operator", "operator_id"),
 )
 
 

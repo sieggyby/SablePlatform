@@ -42,7 +42,7 @@ class TestValidateIdentifier:
         _validate_identifier("tig", "org")  # no raise
 
     def test_accepts_hyphens_underscores(self):
-        _validate_identifier("psy_protocol", "org")
+        _validate_identifier("solstitch", "org")
         _validate_identifier("weekly-loop", "workflow")
 
     def test_rejects_shell_injection_semicolon(self):

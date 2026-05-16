@@ -81,6 +81,26 @@ TABLE_LOAD_ORDER: list[str] = [
     "kol_operator_relationships",  # no FKs (client_id + handle_normalized are loose)
     "kol_create_audit",  # FK -> jobs (mig 040)
     "kol_enrichment",  # FK -> kol_candidates (mig 041)
+    "discord_streak_events",  # no FKs (mig 043)
+    "api_tokens",  # no FKs (mig 044)
+    "discord_guild_config",  # no FKs (mig 045) - PK is TEXT guild_id, no sequence
+    "discord_burn_optins",  # no FKs (mig 046) - composite TEXT PK (guild_id, user_id)
+    "discord_burn_random_log",  # no FKs (mig 046) - Integer autoincrement PK, see SEQUENCE_TABLES
+    # Migration 047: /roast V2 + personalization. discord_user_vibes FKs ->
+    # discord_user_observations(id), so observations MUST precede vibes.
+    # discord_message_observations is the raw source for the rollup; no SQL FK
+    # but ordered first so a future audit knows the dependency direction.
+    "discord_burn_blocklist",  # no FKs (mig 047) - Integer autoincrement PK
+    "discord_peer_roast_tokens",  # no FKs (mig 047) - Integer autoincrement PK
+    "discord_peer_roast_flags",  # no FKs (mig 047) - Integer autoincrement PK
+    "discord_message_observations",  # no FKs (mig 047) - Integer autoincrement PK
+    "discord_user_observations",  # no FKs (mig 047) - Integer autoincrement PK
+    "discord_user_vibes",  # FK -> discord_user_observations.id (mig 047)
+    # Migration 048: airlock — invite snapshot + team-inviter allowlist + per-join admit ledger.
+    # No FKs across the 3 tables; ordering arbitrary but kept stable for restore-reproducibility.
+    "discord_invite_snapshot",  # no FKs (mig 048) - Integer autoincrement PK
+    "discord_team_inviters",  # no FKs (mig 048) - Integer autoincrement PK
+    "discord_member_admit",  # no FKs (mig 048) - Integer autoincrement PK
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -113,6 +133,19 @@ SEQUENCE_TABLES: dict[str, str] = {
     "kol_operator_relationships": "id",
     "kol_create_audit": "id",
     "kol_enrichment": "enrichment_id",
+    "discord_streak_events": "id",
+    "discord_burn_random_log": "id",
+    # Migration 047: all 6 new tables have Integer autoincrement id PKs.
+    "discord_burn_blocklist": "id",
+    "discord_peer_roast_tokens": "id",
+    "discord_peer_roast_flags": "id",
+    "discord_message_observations": "id",
+    "discord_user_observations": "id",
+    "discord_user_vibes": "id",
+    # Migration 048: airlock tables (Integer autoincrement id PKs)
+    "discord_invite_snapshot": "id",
+    "discord_team_inviters": "id",
+    "discord_member_admit": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.
@@ -133,6 +166,7 @@ _TEXT_PK_COLUMNS: dict[str, str] = {
     "alerts": "alert_id",
     "platform_meta": "key",
     "project_profiles_external": "handle_normalized",
+    "api_tokens": "token_id",
 }
 
 

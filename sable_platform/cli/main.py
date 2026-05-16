@@ -91,7 +91,9 @@ def cli(ctx: click.Context, verbose: bool, json_log: bool) -> None:
     configure_logging(json_mode=json_log, level=level)
 
     # Bootstrap and health commands must work before operator identity exists.
-    if ctx.invoked_subcommand not in (None, "init", "db-health"):
+    # api-serve is also exempt: authenticated callers carry their own identity
+    # in the bearer token, so the server process does not need SABLE_OPERATOR_ID.
+    if ctx.invoked_subcommand not in (None, "init", "db-health", "api-serve"):
         _op = os.environ.get("SABLE_OPERATOR_ID", "")
         if not _op or _op == "unknown":
             click.echo(
@@ -234,6 +236,13 @@ cli.add_command(checkin)
 
 from sable_platform.cli.migrate_cmds import migrate
 cli.add_command(migrate)
+
+from sable_platform.cli.sync_cmds import sync_from_local
+cli.add_command(sync_from_local)
+
+from sable_platform.cli.api_cmds import api_serve, api_token
+cli.add_command(api_token)
+cli.add_command(api_serve)
 
 
 @cli.command("schema")

@@ -60,6 +60,13 @@ _MIGRATIONS = [
     ("039_kol_extract_runs_client_id.sql", 39),
     ("040_kol_wizard_infra.sql", 40),
     ("041_kol_enrichment.sql", 41),
+    ("042_kol_create_audit_review.sql", 42),
+    ("043_discord_streak_events.sql", 43),
+    ("044_api_tokens.sql", 44),
+    ("045_discord_guild_config.sql", 45),
+    ("046_discord_burn.sql", 46),
+    ("047_roast_personalization.sql", 47),
+    ("048_airlock.sql", 48),
 ]
 
 

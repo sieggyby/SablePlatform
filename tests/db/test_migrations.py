@@ -49,6 +49,27 @@ EXPECTED_TABLES = {
     "kol_operator_relationships",
     # Migration 040: KOL wizard auth audit log
     "kol_create_audit",
+    # Migration 041: KOL enrichment cache
+    "kol_enrichment",
+    # Migration 043: discord streak events (fitcheck bot)
+    "discord_streak_events",
+    # Migration 044: API tokens
+    "api_tokens",
+    # Migration 045: discord guild config (sable-roles V2)
+    "discord_guild_config",
+    # Migration 046: discord burn-me opt-in state + random-roast dedup log (sable-roles V2)
+    "discord_burn_optins", "discord_burn_random_log",
+    # Migration 047: /roast V2 peer-economy + personalization layer (sable-roles)
+    "discord_burn_blocklist",
+    "discord_peer_roast_tokens",
+    "discord_peer_roast_flags",
+    "discord_message_observations",
+    "discord_user_observations",
+    "discord_user_vibes",
+    # Migration 048: airlock — invite-source-aware member verification (sable-roles)
+    "discord_invite_snapshot",
+    "discord_team_inviters",
+    "discord_member_admit",
 }
 
 
@@ -63,7 +84,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 41
+    assert row["version"] == 48
 
 
 def test_all_tables_exist():
@@ -82,7 +103,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 41
+    assert row["version"] == 48
 
 
 def test_workflow_tables_columns():

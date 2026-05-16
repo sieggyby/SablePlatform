@@ -22,7 +22,7 @@ def _seed_scores(conn):
             "enrichment": {"sector": "DePIN", "follower_count": 12000},
         },
         {
-            "org_id": "psy_protocol", "composite_score": 0.58, "tier": "Tier 2",
+            "org_id": "solstitch", "composite_score": 0.58, "tier": "Tier 2",
             "enrichment": {"sector": "AI"},
         },
     ], "2026-04-01")
@@ -63,7 +63,7 @@ class TestInspectProspects:
             result = CliRunner().invoke(cli, ["inspect", "prospects", "--tier", "Tier 1"])
             assert result.exit_code == 0
             assert "zoth" in result.output
-            assert "psy_protocol" not in result.output
+            assert "solstitch" not in result.output
 
     def test_filter_by_min_score(self):
         conn = _make_conn()
@@ -72,4 +72,4 @@ class TestInspectProspects:
             result = CliRunner().invoke(cli, ["inspect", "prospects", "--min-score", "0.7"])
             assert result.exit_code == 0
             assert "zoth" in result.output
-            assert "psy_protocol" not in result.output
+            assert "solstitch" not in result.output

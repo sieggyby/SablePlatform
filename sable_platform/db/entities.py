@@ -112,6 +112,14 @@ def add_handle(
         {"platform": platform, "handle": handle, "org_id": org_id, "entity_id": entity_id},
     ).fetchone()
 
+    # Wrap the INSERT in a SAVEPOINT so a duplicate-handle IntegrityError
+    # doesn't poison the outer transaction under Postgres. SQLite tolerated
+    # the catch-and-continue pattern; Postgres aborts the whole tx on any
+    # constraint violation and rejects subsequent queries until rollback.
+    # Falls back to plain try/except for raw sqlite3.Connection callers
+    # (which don't have begin_nested() and don't need it).
+    sa_conn = getattr(conn, "_conn", None)
+    nested = sa_conn.begin_nested() if sa_conn is not None and hasattr(sa_conn, "begin_nested") else None
     try:
         conn.execute(
             text("""
@@ -121,8 +129,14 @@ def add_handle(
             {"entity_id": entity_id, "platform": platform, "handle": handle,
              "is_primary": 1 if is_primary else 0},
         )
+        if nested is not None:
+            nested.commit()
     except (sqlite3.IntegrityError, SAIntegrityError):
-        pass
+        if nested is not None:
+            try:
+                nested.rollback()
+            except Exception:
+                pass
 
     conn.execute(
         text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),

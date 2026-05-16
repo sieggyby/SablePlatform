@@ -4,14 +4,28 @@ These helpers emit raw SQL fragments that work on both SQLite and PostgreSQL,
 replacing SQLite-specific functions like ``julianday()`` and
 ``datetime('now', ...)``.
 
-Each function takes a *dialect* string (``"sqlite"`` or ``"postgresql"``) so
+Most functions take a *dialect* string (``"sqlite"`` or ``"postgresql"``) so
 callers can branch once at connection time and pass it through.
+``get_dialect`` is the one helper that takes a connection and returns the
+dialect string for it.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 _SUPPORTED_DIALECTS = ("sqlite", "postgresql")
+
+# Plain SQL identifier — first char letter/underscore, rest alnum/underscore.
+# Used to guard column + key params in helpers that string-interpolate into
+# SQL. Anything else gets rejected to keep injection from leaking through a
+# future caller that forgets the helper is unsafe by default.
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _check_identifier(value: str, kind: str) -> None:
+    if not isinstance(value, str) or not _IDENT_RE.match(value):
+        raise ValueError(f"{kind} must be a plain SQL identifier, got {value!r}")
 
 
 def get_dialect(conn: Any) -> str:
@@ -138,3 +152,46 @@ def now_offset_param(param_name: str, dialect: str) -> str:
     if dialect == "sqlite":
         return f"datetime('now', :{param_name})"
     return f"(NOW() + (:{param_name})::interval)"
+
+
+# ---------------------------------------------------------------------------
+# JSON + ISO-timestamp helpers (replace SQLite json_extract / date(substr(...)))
+# ---------------------------------------------------------------------------
+
+def json_extract_text(column: str, key: str, dialect: str) -> str:
+    """SQL expression: extract a top-level JSON field as text.
+
+    Replaces ``json_extract(column, '$.key')`` which is SQLite-only.
+
+    The column is expected to hold JSON-encoded text (Sable's ``detail_json``
+    convention — TEXT columns carrying serialized JSON). ``key`` is the
+    top-level field name (no nested paths; we don't need them yet, and keeping
+    the helper simple avoids the JSON-path escaping rabbit-hole).
+
+    Both ``column`` and ``key`` are validated as plain SQL identifiers so a
+    future caller can't accidentally smuggle SQL through either slot.
+    """
+    _check_dialect(dialect)
+    _check_identifier(column, "json column")
+    _check_identifier(key, "json key")
+    if dialect == "sqlite":
+        return f"json_extract({column}, '$.{key}')"
+    return f"({column}::jsonb)->>'{key}'"
+
+
+def date_of_iso_text(column: str, dialect: str) -> str:
+    """SQL expression: extract the calendar date portion from an ISO-8601 text column.
+
+    Replaces ``date(substr(column, 1, 19))`` — used to compare audit-log
+    timestamps to a ``YYYY-MM-DD`` day bucket. The substr trims a possible
+    timezone suffix on SQLite; on Postgres we cast to ``timestamp`` and then
+    to ``date`` directly.
+
+    ``column`` is validated as a plain SQL identifier so callers can't
+    accidentally inject through it.
+    """
+    _check_dialect(dialect)
+    _check_identifier(column, "timestamp column")
+    if dialect == "sqlite":
+        return f"date(substr({column}, 1, 19))"
+    return f"({column}::timestamp)::date"

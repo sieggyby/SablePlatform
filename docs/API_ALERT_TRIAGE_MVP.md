@@ -95,4 +95,33 @@ If this slice works well, the same foundation can later support notes, actions, 
 
 ## Current Status
 
-This is the planned MVP slice, not a shipped API. For the implementation roadmap, see [TODO_API.md](/Users/sieggy/Projects/SablePlatform/TODO_API.md).
+**Shipped 2026-05-12** as a private-network alert-triage API. The token/auth/
+rate-limit/ownership-check spine is in place and reusable for later phases
+(Phase 1b broader reads, Phase 2 safe writes). See `AUDIT_HISTORY.md`
+§ SP-API-MVP. For follow-up work, see [TODO_API.md](/Users/sieggy/Projects/SablePlatform/TODO_API.md).
+
+### How to use it (operator quickstart)
+
+```bash
+# Issue a token (owner runs this; SABLE_OPERATOR_ID identifies the owner)
+export SABLE_OPERATOR_ID=you
+sable-platform api-token issue \
+    --label tig-triage-bot \
+    --operator triage_bot \
+    --orgs tig \
+    --scopes read_only,write_safe \
+    --expires-in-days 90
+# -> prints token_id and one-time secret. Save the secret immediately.
+
+# Start the server (loopback by default)
+sable-platform api-serve --port 8766
+
+# Use it
+curl -H "Authorization: Bearer $SECRET" http://127.0.0.1:8766/v1/orgs/tig/alerts
+curl -X POST -H "Authorization: Bearer $SECRET" \
+    http://127.0.0.1:8766/v1/alerts/$ALERT_ID/acknowledge
+```
+
+To expose publicly, front the server with an authenticated reverse proxy or
+Tailscale. The server refuses to bind a non-loopback interface without
+`--public` to make this an explicit decision.

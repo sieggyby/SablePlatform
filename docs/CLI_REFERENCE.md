@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. Commands operate on `sable
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 40 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init                      # Create sable.db + apply all 48 migrations, or run Alembic on SABLE_DATABASE_URL
 sable-platform init --db-path /alt/path  # Force a specific SQLite file
 sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
 sable-platform db-health --json          # JSON output for Docker/automation
@@ -151,8 +151,8 @@ sable-platform gc --retention-days 90          # Delete records older than 90 da
 sable-platform workflow run <WORKFLOW_NAME> --org <ORG_ID> [-c key=value ...]
 
 # Examples
-sable-platform workflow run onboard_client --org psy_protocol \
-  -c prospect_yaml_path=/path/to/psy_protocol.yaml
+sable-platform workflow run onboard_client --org solstitch \
+  -c prospect_yaml_path=/path/to/solstitch.yaml
 sable-platform workflow run prospect_diagnostic_sync --org tig \
   -c prospect_yaml_path=/path/to/tigfoundation.yaml
 sable-platform workflow run weekly_client_loop --org tig
@@ -421,3 +421,79 @@ Metrics exported:
 | `sable_workflow_runs_total{status}` | counter | Total workflow runs by status |
 | `sable_alerts_total{severity,status}` | gauge | Current alerts by severity and status |
 | `sable_last_alert_eval_age_seconds` | gauge | Seconds since last alert evaluation (-1 if never run) |
+
+---
+
+## sync-from-local — Replay Local SQLite Into Remote Target
+
+Mirrors org-scoped writes from a local SQLite source (the laptop `~/.sable/sable.db`)
+into a remote target (typically prod Postgres via SSH tunnel). Idempotent:
+per-table cursors persist in `platform_meta` on the target.
+
+```bash
+sable-platform sync-from-local \
+    --org tig \
+    --target-url postgresql+psycopg://user:pw@localhost:15432/sable \
+    [--source-db ~/.sable/sable.db] \
+    [--since 2026-05-01T00:00:00] \
+    [--dry-run] [--json]
+```
+
+- `--source-db` defaults to `$SABLE_DB_PATH` or `~/.sable/sable.db`. The source
+  path is **never** derived from `SABLE_DATABASE_URL` — preventing accidental
+  self-sync when the operator's shell already targets prod.
+- Schema-version parity is verified before any writes. Mismatch aborts.
+- Tables synced: entities, entity_handles, diagnostic_runs (by `cult_run_id`),
+  sync_runs, artifacts, entity_tags (full state replace), entity_tag_history,
+  entity_interactions, entity_decay_scores, entity_centrality_scores,
+  discord_pulse_runs, metric_snapshots, playbook_targets, playbook_outcomes,
+  cost_events, merge_candidates. Excludes alerts, workflow_*, jobs, KOL tables,
+  diagnostic_deltas, and audit_log (one summary row is stamped instead).
+- Exit code 0 on success, 1 on fatal precondition failure, 2 on per-table error.
+
+---
+
+## api-token — Bearer Credentials for the HTTP API
+
+Owner-only commands. Tokens are stored as SHA-256 hashes; the raw secret is
+returned exactly once at issuance time.
+
+```bash
+sable-platform api-token issue \
+    --label tig-triage-bot \
+    --operator op_a \
+    --orgs tig,solstitch \
+    --scopes read_only,write_safe \
+    [--expires-in-days 90]
+
+sable-platform api-token list
+sable-platform api-token revoke sp_live_abcdefgh   # soft-revoke, row retained
+```
+
+Allowed scopes: `read_only`, `write_safe`, `spend_request`, `spend_execute`.
+`spend_request` / `spend_execute` are reserved for future phases.
+
+---
+
+## api-serve — Alert-Triage HTTP API
+
+Starts the stdlib HTTP server for the three v1 routes documented in
+`docs/API_ALERT_TRIAGE_MVP.md`. Defaults to loopback bind.
+
+```bash
+sable-platform api-serve                          # 127.0.0.1:8766
+sable-platform api-serve --port 9000
+sable-platform api-serve --bind 0.0.0.0 --public  # requires explicit --public
+```
+
+Routes:
+
+- `GET  /v1/orgs/{org_id}/alerts?status=&severity=&limit=`
+- `POST /v1/alerts/{alert_id}/acknowledge`
+- `POST /v1/alerts/{alert_id}/resolve`
+- `GET  /openapi.json`
+- `GET  /healthz` (no auth)
+
+Auth: `Authorization: Bearer sp_live_<id>.<secret>`. Wrong-org alert IDs
+return `404` (not `403`) to avoid leaking existence. Audit rows record both
+the operator identity and the token_id.

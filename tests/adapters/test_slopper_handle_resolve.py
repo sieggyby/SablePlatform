@@ -16,18 +16,18 @@ from sable_platform.errors import SableError, INVALID_CONFIG
 def adapter_db(in_memory_db):
     """DB with org + entity + twitter handle."""
     conn = in_memory_db
-    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('psy_protocol', 'PSY Protocol')")
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('solstitch', 'SolStitch')")
     conn.commit()
-    entity_id = create_entity(conn, "psy_protocol", display_name="PSY Protocol Account")
-    add_handle(conn, entity_id, "twitter", "psyprotocol", is_primary=True)
+    entity_id = create_entity(conn, "solstitch", display_name="SolStitch Account")
+    add_handle(conn, entity_id, "twitter", "solstitchxyz", is_primary=True)
     return conn
 
 
 def test_resolve_primary_handle(adapter_db):
     adapter = SlopperAdvisoryAdapter()
     with patch("sable_platform.adapters.slopper.get_db", return_value=adapter_db):
-        handle = adapter._resolve_primary_handle("psy_protocol")
-    assert handle == "@psyprotocol"
+        handle = adapter._resolve_primary_handle("solstitch")
+    assert handle == "@solstitchxyz"
 
 
 def test_resolve_falls_back_to_non_primary(in_memory_db):
@@ -98,10 +98,10 @@ def test_run_passes_handle_not_org_id(adapter_db):
     with patch("sable_platform.adapters.slopper.get_db", return_value=adapter_db), \
          patch.object(adapter, "_repo_path", return_value=Path("/fake/slopper")), \
          patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
-        result = adapter.run({"org_id": "psy_protocol"})
+        result = adapter.run({"org_id": "solstitch"})
 
     # Verify the subprocess was called with handle, not org_id
     call_args = mock_popen.call_args[0][0]
-    assert "@psyprotocol" in call_args
-    assert "psy_protocol" not in call_args
+    assert "@solstitchxyz" in call_args
+    assert "solstitch" not in call_args
     assert result["status"] == "completed"
