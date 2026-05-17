@@ -899,6 +899,33 @@ discord_fitcheck_scores = Table(
 )
 
 
+# Migration 052: discord_fitcheck_emoji_milestones for Scored Mode V2 Pass C.
+# Durable per-(post_id, emoji_key, milestone) crossing state. The reveal
+# pipeline records 5/8/10-reactor milestones here so post-restart recomputes
+# don't re-audit the same milestone. UNIQUE constraint blocks double-audit
+# from near-simultaneous reaction events.
+discord_fitcheck_emoji_milestones = Table(
+    "discord_fitcheck_emoji_milestones",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("post_id", Text, nullable=False),
+    Column("emoji_key", Text, nullable=False),
+    Column("milestone", Integer, nullable=False),
+    Column("crossed_at", Text, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint(
+        "guild_id", "post_id", "emoji_key", "milestone",
+        name="uq_discord_fitcheck_emoji_milestones_crossing",
+    ),
+    Index(
+        "idx_discord_fitcheck_emoji_milestones_post",
+        "guild_id", "post_id",
+    ),
+)
+
+
 # Migration 051: discord_scoring_config for Scored Mode V2 Pass B. One row per
 # guild. Default state='off' — safety floor. First mod /scoring set is what
 # flips a guild into scoring. UNIQUE(guild_id) lets upsert use ON CONFLICT.

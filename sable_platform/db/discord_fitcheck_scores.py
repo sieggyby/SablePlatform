@@ -1,9 +1,10 @@
 """DB helpers for discord_fitcheck_scores + image_phash on discord_streak_events.
 
-Scored Mode V2 Pass A + B (migrations 049-050). Per `discord_streaks.py` /
-`discord_guild_config.py` precedent: positional args after `conn`, named SQL
-params (`:foo`) with dict bindings (NOT qmark `?`), explicit `conn.commit()`
-after writes, type-annotated `Connection` param.
+Scored Mode V2 Pass A + B (migrations 049-050) and Pass C (migration 052).
+Per `discord_streaks.py` / `discord_guild_config.py` precedent: positional
+args after `conn`, named SQL params (`:foo`) with dict bindings (NOT qmark
+`?`), explicit `conn.commit()` after writes, type-annotated `Connection`
+param.
 
 Surface:
 
@@ -19,6 +20,44 @@ Surface:
 * `fetch_curve_pool_raw_totals` — raw_total values across the curve window,
   for percentile computation
 * `invalidate_score` — mod-set invalidated_at + invalidated_reason
+
+Pass C additions:
+
+* `mark_reveal_fired` — one-and-done CAS that sets reveal_fired_at + post_id
+  + trigger ONLY when reveal_fired_at IS NULL. Returns True if this caller
+  won the lock, False if the row was already revealed (lost race or repeat).
+  Callers pass `reveal_post_id='pending'` as a placeholder; the publish
+  branch then either finalises via `update_reveal_post_id` or flips to a
+  terminal failure trigger via `mark_reveal_publish_failed` /
+  `convert_pending_to_cancelled_deleted`.
+* `update_reveal_post_id` — guarded patch from 'pending' placeholder to
+  the real Discord reply message id. Won't clobber a finalised reveal.
+* `mark_reveal_publish_failed` — guarded conversion from 'pending' to
+  the terminal 'publish_failed' trigger when Discord rejects the reply
+  for non-404 reasons.
+* `convert_pending_to_cancelled_deleted` — guarded conversion from 'pending'
+  to 'cancelled_deleted' when the publish reply returns 404, i.e. the post
+  was deleted DURING the reveal-publish window (one of the design-§6.4
+  HIGH-severity gaming vectors that the in-process CAS race would otherwise
+  swallow).
+* `mark_reveal_cancelled_deleted` — same CAS shape but with trigger
+  `cancelled_deleted` and no reveal_post_id. Permanently locks the row so
+  a future Silent→Revealed flip can't accidentally re-fire on a tombstone.
+* `record_emoji_milestone_crossing` — INSERT ... ON CONFLICT DO NOTHING on
+  discord_fitcheck_emoji_milestones. Returns True if a new crossing row
+  was inserted (caller should audit), False if the milestone was already
+  recorded (no-op — bot restarts must NOT re-audit).
+* `list_emoji_milestone_crossings_for_post` — diagnostic read of recorded
+  crossings (mod-tool surface; not used by the live pipeline).
+
+Leaderboard query notes (Pass D will own):
+  Eligible reveal: `score_status='success' AND invalidated_at IS NULL
+                    AND reveal_fired_at IS NOT NULL
+                    AND reveal_trigger IN ('reactions','thread_messages')`
+  The trigger filter is REQUIRED — `cancelled_deleted`, `publish_failed`,
+  and `pending` rows ALL have non-NULL `reveal_fired_at` (the design uses
+  that column as the one-and-done lock), so without the trigger filter the
+  leaderboard would render junk entries.
 """
 from __future__ import annotations
 
@@ -360,3 +399,275 @@ def invalidate_score(
     )
     conn.commit()
     return result.rowcount == 1
+
+
+# ---------------------------------------------------------------------------
+# Pass C — reveal pipeline state
+# ---------------------------------------------------------------------------
+
+
+def mark_reveal_fired(
+    conn: Connection,
+    guild_id: str,
+    post_id: str,
+    reveal_post_id: str,
+    reveal_trigger: str,
+) -> bool:
+    """One-and-done CAS: stamp reveal_fired_at + post_id + trigger ONLY if
+    reveal_fired_at IS NULL on the row.
+
+    Returns True if this caller won the lock (rowcount=1) — the only caller
+    that should then write the public reveal post. False means the row was
+    already revealed (concurrent fire, or post-restart double-fire attempt
+    on the same post). Caller should NOT publish a reveal on False.
+
+    `reveal_trigger` is the design-§3 enum: 'reactions' or 'thread_messages'.
+    (See `mark_reveal_cancelled_deleted` for the cancellation variant.)
+    """
+    now = _now_iso_seconds()
+    result = conn.execute(
+        text(
+            "UPDATE discord_fitcheck_scores"
+            " SET reveal_fired_at = :now,"
+            "     reveal_post_id = :reveal_post_id,"
+            "     reveal_trigger = :reveal_trigger,"
+            "     reveal_eligible = 1,"
+            "     updated_at = :now"
+            " WHERE guild_id = :guild_id AND post_id = :post_id"
+            "   AND reveal_fired_at IS NULL"
+        ),
+        {
+            "now": now,
+            "reveal_post_id": reveal_post_id,
+            "reveal_trigger": reveal_trigger,
+            "guild_id": guild_id,
+            "post_id": post_id,
+        },
+    )
+    conn.commit()
+    return result.rowcount == 1
+
+
+def mark_reveal_cancelled_deleted(
+    conn: Connection,
+    guild_id: str,
+    post_id: str,
+) -> bool:
+    """One-and-done CAS used when a fitcheck post is deleted before its
+    reveal fires. Locks the row with reveal_trigger='cancelled_deleted'
+    and no reveal_post_id so any future recompute (e.g. ghost reaction
+    event after delete) sees a tripped one-and-done guard and bails.
+
+    Returns True if this caller won the lock (the row had no reveal yet),
+    False if the reveal already fired or another delete-handler already
+    cancelled it. Caller writes the `fitcheck_reveal_cancelled_deleted`
+    audit row only on True so we don't spam HIGH-severity audit rows.
+    """
+    now = _now_iso_seconds()
+    result = conn.execute(
+        text(
+            "UPDATE discord_fitcheck_scores"
+            " SET reveal_fired_at = :now,"
+            "     reveal_post_id = NULL,"
+            "     reveal_trigger = 'cancelled_deleted',"
+            "     updated_at = :now"
+            " WHERE guild_id = :guild_id AND post_id = :post_id"
+            "   AND reveal_fired_at IS NULL"
+        ),
+        {
+            "now": now,
+            "guild_id": guild_id,
+            "post_id": post_id,
+        },
+    )
+    conn.commit()
+    return result.rowcount == 1
+
+
+def record_emoji_milestone_crossing(
+    conn: Connection,
+    org_id: str,
+    guild_id: str,
+    post_id: str,
+    emoji_key: str,
+    milestone: int,
+) -> bool:
+    """INSERT ... ON CONFLICT DO NOTHING on discord_fitcheck_emoji_milestones.
+
+    `emoji_key` is the discord.py `str(reaction.emoji)` form — unicode
+    glyph for stock emoji, `<:name:id>` / `<a:name:id>` for custom. Caller
+    is responsible for using the same canonical form across calls;
+    inconsistent keys partition the milestone state.
+
+    `milestone` is one of the design-§7.3 levels (5 / 8 / 10) but the
+    helper does not enforce the enum — caller decides. The UNIQUE
+    constraint covers double-audit even under near-simultaneous reaction
+    events from two recompute tasks (which shouldn't happen given the
+    in-memory debounce, but: belt + suspenders for restart races).
+
+    Returns True if a new row was inserted (caller writes the
+    `fitcheck_reaction_milestone` audit), False if this exact crossing
+    was already recorded (no audit — would be a duplicate row).
+    """
+    result = conn.execute(
+        text(
+            "INSERT INTO discord_fitcheck_emoji_milestones"
+            " (org_id, guild_id, post_id, emoji_key, milestone, crossed_at)"
+            " VALUES (:org_id, :guild_id, :post_id, :emoji_key, :milestone, :now)"
+            " ON CONFLICT (guild_id, post_id, emoji_key, milestone) DO NOTHING"
+        ),
+        {
+            "org_id": org_id,
+            "guild_id": guild_id,
+            "post_id": post_id,
+            "emoji_key": emoji_key,
+            "milestone": int(milestone),
+            "now": _now_iso_seconds(),
+        },
+    )
+    conn.commit()
+    return result.rowcount == 1
+
+
+def update_reveal_post_id(
+    conn: Connection,
+    guild_id: str,
+    post_id: str,
+    real_reveal_post_id: str,
+) -> bool:
+    """Patch reveal_post_id from the placeholder 'pending' to the real
+    Discord message id of the published reveal. Guarded by
+    `reveal_post_id = 'pending'` so an out-of-order caller (manual SQL,
+    second replica) can't clobber a finalised reveal.
+
+    Returns True if the row was patched (the placeholder was found and
+    swapped), False if the placeholder wasn't present — either because
+    the reveal already finalized, or because a publish-failure-flip already
+    moved the trigger to 'publish_failed' / 'cancelled_deleted'.
+
+    Defensive: rejects `'pending'` as a value to swap IN; the placeholder
+    is reserved exclusively for the pre-publish lock and must never be
+    accepted from a caller. (Discord snowflakes are 64-bit ints stringified;
+    they can't naturally equal 'pending'.)
+    """
+    if real_reveal_post_id == "pending":
+        raise ValueError(
+            "real_reveal_post_id must NOT be the reserved 'pending' marker"
+        )
+    now = _now_iso_seconds()
+    result = conn.execute(
+        text(
+            "UPDATE discord_fitcheck_scores"
+            " SET reveal_post_id = :rid, updated_at = :now"
+            " WHERE guild_id = :guild_id AND post_id = :post_id"
+            "   AND reveal_post_id = 'pending'"
+        ),
+        {
+            "rid": real_reveal_post_id,
+            "now": now,
+            "guild_id": guild_id,
+            "post_id": post_id,
+        },
+    )
+    conn.commit()
+    return result.rowcount == 1
+
+
+def mark_reveal_publish_failed(
+    conn: Connection,
+    guild_id: str,
+    post_id: str,
+) -> bool:
+    """Convert a 'pending'-state lock to the terminal 'publish_failed' state
+    when Discord reply HTTP fails for non-404 reasons.
+
+    Guarded by `reveal_post_id = 'pending'` so we never overwrite a real
+    reveal that's already been finalised. Returns True if the conversion
+    landed. The caller writes the `fitcheck_reveal_publish_failed` audit
+    row only on True.
+
+    Distinction vs `mark_reveal_cancelled_deleted`: cancelled_deleted is
+    the design's §6.4 HIGH-severity action for "post deleted before reveal
+    fired", whereas publish_failed is "we held the lock, Discord rejected
+    the reply, no retry". A 404 reply (post deleted between fetch and
+    publish) should be classified by the caller as cancelled_deleted, not
+    publish_failed — see the reveal_pipeline.handle_raw_message_delete +
+    publish-error branch logic for the routing.
+    """
+    now = _now_iso_seconds()
+    result = conn.execute(
+        text(
+            "UPDATE discord_fitcheck_scores"
+            " SET reveal_post_id = NULL,"
+            "     reveal_trigger = 'publish_failed',"
+            "     updated_at = :now"
+            " WHERE guild_id = :guild_id AND post_id = :post_id"
+            "   AND reveal_post_id = 'pending'"
+        ),
+        {
+            "now": now,
+            "guild_id": guild_id,
+            "post_id": post_id,
+        },
+    )
+    conn.commit()
+    return result.rowcount == 1
+
+
+def convert_pending_to_cancelled_deleted(
+    conn: Connection,
+    guild_id: str,
+    post_id: str,
+) -> bool:
+    """Convert a 'pending'-state lock to 'cancelled_deleted' when the
+    publish attempt's Discord reply returns 404 — i.e. the post was deleted
+    DURING the reveal-publish window. The CAS lock prevented the
+    on_raw_message_delete handler from writing the design-§6.4 HIGH-
+    severity audit (because reveal_fired_at was already non-NULL), so this
+    helper lets the publish-error branch route to the correct audit class.
+
+    Guarded by `reveal_post_id = 'pending'` so a finalised reveal is never
+    relabelled. Returns True if the conversion landed.
+    """
+    now = _now_iso_seconds()
+    result = conn.execute(
+        text(
+            "UPDATE discord_fitcheck_scores"
+            " SET reveal_post_id = NULL,"
+            "     reveal_trigger = 'cancelled_deleted',"
+            "     updated_at = :now"
+            " WHERE guild_id = :guild_id AND post_id = :post_id"
+            "   AND reveal_post_id = 'pending'"
+        ),
+        {
+            "now": now,
+            "guild_id": guild_id,
+            "post_id": post_id,
+        },
+    )
+    conn.commit()
+    return result.rowcount == 1
+
+
+def list_emoji_milestone_crossings_for_post(
+    conn: Connection,
+    guild_id: str,
+    post_id: str,
+) -> list[dict]:
+    """Diagnostic read — return every milestone crossing for a post.
+
+    Not used by the live reveal pipeline (the bot just calls
+    `record_emoji_milestone_crossing` and relies on the boolean return);
+    surfaces here so mods + Pass D leaderboard tools can query historical
+    crossing state without raw SQL.
+    """
+    rows = conn.execute(
+        text(
+            "SELECT emoji_key, milestone, crossed_at"
+            " FROM discord_fitcheck_emoji_milestones"
+            " WHERE guild_id = :guild_id AND post_id = :post_id"
+            " ORDER BY milestone ASC, emoji_key ASC"
+        ),
+        {"guild_id": guild_id, "post_id": post_id},
+    ).fetchall()
+    return [_row_to_dict(r) for r in rows]

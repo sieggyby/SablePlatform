@@ -36,15 +36,19 @@ def upgrade() -> None:
         sa.Column('cold_start_min_pool', sa.Integer(), nullable=False, server_default=sa.text('20')),
         sa.Column('model_id', sa.Text(), nullable=False, server_default=sa.text("'claude-sonnet-4-6'")),
         sa.Column('prompt_version', sa.Text(), nullable=False, server_default=sa.text("'rubric_v1'")),
+        # `created_at` / `updated_at` are sa.Text() (ISO-Z strings) to match
+        # schema.py — every discord_* table in the platform uses Text, not
+        # TIMESTAMP, for timestamp columns. Originally TIMESTAMP here; aligned
+        # in Pass C QA round 2 (M-NEW-1) to remove Postgres schema drift.
         sa.Column(
             'created_at',
-            sa.TIMESTAMP(timezone=True),
+            sa.Text(),
             nullable=False,
             server_default=sa.func.now(),
         ),
         sa.Column(
             'updated_at',
-            sa.TIMESTAMP(timezone=True),
+            sa.Text(),
             nullable=False,
             server_default=sa.func.now(),
         ),

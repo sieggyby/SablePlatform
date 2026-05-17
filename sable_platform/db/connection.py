@@ -70,6 +70,7 @@ _MIGRATIONS = [
     ("049_discord_streak_events_phash.sql", 49),
     ("050_discord_fitcheck_scores.sql", 50),
     ("051_discord_scoring_config.sql", 51),
+    ("052_discord_fitcheck_emoji_milestones.sql", 52),
 ]
 
 
