@@ -649,6 +649,121 @@ def convert_pending_to_cancelled_deleted(
     return result.rowcount == 1
 
 
+# ---------------------------------------------------------------------------
+# Pass D — leaderboard queries
+# ---------------------------------------------------------------------------
+
+
+_LEADERBOARD_COLUMNS = (
+    "s.org_id, s.guild_id, s.post_id, s.user_id, s.percentile,"
+    " s.catch_detected, s.catch_naming_class,"
+    " s.reveal_fired_at, s.reveal_trigger, s.posted_at,"
+    " e.channel_id"
+)
+
+_LEADERBOARD_FROM = (
+    " FROM discord_fitcheck_scores s"
+    " LEFT JOIN discord_streak_events e"
+    "   ON e.guild_id = s.guild_id AND e.post_id = s.post_id"
+)
+
+_LEADERBOARD_ELIGIBILITY = (
+    " WHERE s.org_id = :org_id"
+    "   AND s.score_status = 'success'"
+    "   AND s.invalidated_at IS NULL"
+    "   AND s.reveal_fired_at IS NOT NULL"
+    "   AND s.reveal_trigger IN ('reactions', 'thread_messages')"
+)
+
+
+def list_top_revealed_fits(
+    conn: Connection,
+    org_id: str,
+    *,
+    since_iso: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Pass D `/leaderboard board:top_revealed` source.
+
+    Returns the highest-percentile REVEALED fits for an org, one row per
+    revealed post (the same user can appear multiple times — this is the
+    "moments hall of fame" board, not the per-user ranking).
+
+    Eligibility filter is the design-§6.4 contract: `reveal_fired_at IS
+    NOT NULL` is necessary but not sufficient — the trigger filter is
+    required to exclude `cancelled_deleted` / `publish_failed` rows that
+    ALSO have a non-NULL `reveal_fired_at` (the column doubles as the
+    one-and-done lock for terminal failure states). Without the trigger
+    filter the leaderboard would render junk entries.
+
+    `since_iso` (optional) filters by `reveal_fired_at >= :since` for the
+    `window:30d` toggle. None → all-time.
+
+    Tie-break: percentile DESC, reveal_fired_at DESC, post_id ASC. Stable
+    ordering so the same query returns the same ranking even when scores
+    tie.
+
+    Returns dicts with channel_id from the streak event row so callers
+    can build jump-links without a second query.
+    """
+    base = (
+        "SELECT " + _LEADERBOARD_COLUMNS
+        + _LEADERBOARD_FROM
+        + _LEADERBOARD_ELIGIBILITY
+    )
+    params: dict[str, Any] = {"org_id": org_id, "limit": limit}
+    if since_iso is not None:
+        base += " AND s.reveal_fired_at >= :since"
+        params["since"] = since_iso
+    base += (
+        " ORDER BY s.percentile DESC, s.reveal_fired_at DESC, s.post_id ASC"
+        " LIMIT :limit"
+    )
+    rows = conn.execute(text(base), params).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def list_best_per_user_revealed(
+    conn: Connection,
+    org_id: str,
+    *,
+    since_iso: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Pass D `/leaderboard board:best_per_user` source.
+
+    Same eligibility filter as `list_top_revealed_fits` but deduplicated
+    to one row per `user_id` (each user's single best revealed fit). The
+    "ranked players" board.
+
+    Uses `ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY percentile DESC,
+    reveal_fired_at DESC, post_id ASC)` and filters `rn = 1`. Window
+    functions are SQLite-3.25+ (release 2018) so the same query runs on
+    SQLite test fixtures and the Hetzner Postgres.
+    """
+    sql = (
+        "WITH ranked AS ("
+        " SELECT " + _LEADERBOARD_COLUMNS + ","
+        "   ROW_NUMBER() OVER ("
+        "     PARTITION BY s.user_id"
+        "     ORDER BY s.percentile DESC, s.reveal_fired_at DESC, s.post_id ASC"
+        "   ) AS rn"
+        + _LEADERBOARD_FROM
+        + _LEADERBOARD_ELIGIBILITY
+    )
+    params: dict[str, Any] = {"org_id": org_id, "limit": limit}
+    if since_iso is not None:
+        sql += " AND s.reveal_fired_at >= :since"
+        params["since"] = since_iso
+    sql += (
+        ") SELECT * FROM ranked WHERE rn = 1"
+        " ORDER BY percentile DESC, reveal_fired_at DESC, post_id ASC"
+        " LIMIT :limit"
+    )
+    rows = conn.execute(text(sql), params).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
 def list_emoji_milestone_crossings_for_post(
     conn: Connection,
     guild_id: str,
