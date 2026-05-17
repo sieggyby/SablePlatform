@@ -952,6 +952,31 @@ discord_scoring_config = Table(
 )
 
 
+# Migration 054: discord_state_pins for the state-pin surface. One row
+# per (guild_id, characteristic) tracking the currently-pinned "stitzy
+# state" message id in the per-guild ops channel. UNIQUE constraint
+# enforces one-pin-per-dimension. The optimistic-lock UPDATE in
+# upsert_state_pin uses WHERE updated_at = :expected to detect lost
+# races between concurrent state rotations.
+discord_state_pins = Table(
+    "discord_state_pins",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, nullable=False),
+    Column("characteristic", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("message_id", Text, nullable=False),
+    Column("posted_at", Text, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint(
+        "guild_id", "characteristic",
+        name="uq_discord_state_pins_guild_characteristic",
+    ),
+    Index("idx_discord_state_pins_guild", "guild_id"),
+)
+
+
 # NOTE: schema.py must stay in sync with _MIGRATIONS in connection.py.
 # The parity tests in tests/db/test_schema.py verify this mechanically.
 

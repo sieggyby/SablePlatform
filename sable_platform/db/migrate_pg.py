@@ -109,6 +109,10 @@ TABLE_LOAD_ORDER: list[str] = [
     # No FKs (intentional — score row may be invalidated/deleted; milestone
     # rows are independent audit-adjacent state).
     "discord_fitcheck_emoji_milestones",  # no FKs (mig 052) - Integer autoincrement PK
+    # Migration 054: state-pin surface. One row per (guild, characteristic)
+    # tracking the currently-pinned "stitzy state" message id in the
+    # per-guild ops channel. No FKs.
+    "discord_state_pins",  # no FKs (mig 054) - Integer autoincrement PK
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -159,6 +163,8 @@ SEQUENCE_TABLES: dict[str, str] = {
     "discord_scoring_config": "id",
     # Migration 052: Scored Mode V2 Pass C
     "discord_fitcheck_emoji_milestones": "id",
+    # Migration 054: state-pin surface
+    "discord_state_pins": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.
