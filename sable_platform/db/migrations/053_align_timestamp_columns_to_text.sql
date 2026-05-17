@@ -1,0 +1,36 @@
+-- Migration 053: align nine _at columns to TEXT type for schema.py parity.
+--
+-- Background: discord_streak_events (mig 043), discord_guild_config (mig 045),
+-- discord_fitcheck_scores (mig 050), discord_scoring_config (mig 051) were
+-- created with TIMESTAMPTZ "_at" columns in their original Alembic revisions
+-- but TEXT in their schema.py declarations. Pass A+B QA round 2 (M-NEW-1)
+-- corrected the alembic files for migs 050+051 to use sa.Text(), but the
+-- Hetzner VPS Postgres had already applied the pre-fix revisions, so the
+-- TIMESTAMPTZ columns persisted on prod.
+--
+-- The drift bit twice during 2026-05-17 live-SolStitch smoke:
+--   1. Pass A pHash collision audit raised TypeError on json.dumps because
+--      discord_streak_events.posted_at came back as datetime.
+--   2. delete_monitor unwound on the same json.dumps path + a datetime.strptime
+--      ValueError on the same column.
+--
+-- Surgical fixes landed in image_hashing.py + delete_monitor.py via the
+-- coerce_audit_value helper, but the right move is to align the Postgres
+-- types to what schema.py declares so future code paths don't repeat the
+-- bite.
+--
+-- SQLite: this migration is a no-op. SQLite has TEXT affinity for any
+-- timestamp-typed column, so reads return strings regardless and no ALTER
+-- is needed (and ALTER COLUMN TYPE does not exist in SQLite anyway). The
+-- schema_version bump below is the only side effect.
+--
+-- Postgres: the Alembic revision (versions/e1f2a3b4c053_*.py) ALTERs each
+-- of nine columns from TIMESTAMPTZ to TEXT with explicit ::text USING
+-- coercion. Existing values are preserved as their Postgres default text
+-- representation. Defaults are re-set to now() cast to text so server-side
+-- default insertions still produce ISO-compatible strings.
+--
+-- Comment-hygiene reminder: no semicolons inside double-dash comment lines.
+-- The runner in connection.py splits on the literal semicolon character.
+
+UPDATE schema_version SET version = 53 WHERE version < 53;

@@ -70,6 +70,12 @@ EXPECTED_TABLES = {
     "discord_invite_snapshot",
     "discord_team_inviters",
     "discord_member_admit",
+    # Migrations 050-051: Scored Mode V2 Pass B (sable-roles)
+    # (Mig 049 ALTERs discord_streak_events — no new table.)
+    "discord_fitcheck_scores",
+    "discord_scoring_config",
+    # Migration 052: Scored Mode V2 Pass C — per-emoji milestone crossings.
+    "discord_fitcheck_emoji_milestones",
 }
 
 
@@ -84,7 +90,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 48
+    assert row["version"] == 53
 
 
 def test_all_tables_exist():
@@ -103,7 +109,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 48
+    assert row["version"] == 53
 
 
 def test_workflow_tables_columns():
