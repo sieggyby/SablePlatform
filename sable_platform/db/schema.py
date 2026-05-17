@@ -581,6 +581,9 @@ discord_streak_events = Table(
     Column("ingest_source", Text, nullable=False, server_default=text("'gateway'")),
     Column("created_at", Text, nullable=False, server_default=func.now()),
     Column("updated_at", Text, nullable=False, server_default=func.now()),
+    # Migration 049: image_phash for Scored Mode V2 Pass A. Captured at post
+    # time even when scoring state='off' — collision detection works always.
+    Column("image_phash", Text),
     UniqueConstraint("guild_id", "post_id", name="uq_discord_streak_events_guild_post"),
     Index("idx_discord_streak_events_org_day", "org_id", "counted_for_day"),
     Index("idx_discord_streak_events_user_day", "org_id", "user_id", "counted_for_day"),
@@ -591,6 +594,7 @@ discord_streak_events = Table(
         "user_id",
         text("reaction_score DESC"),
     ),
+    Index("idx_discord_streak_events_org_phash", "org_id", "image_phash"),
 )
 
 # Migration 045: discord_guild_config for sable-roles V2 (relax-mode + global burn-me mode).
@@ -840,6 +844,84 @@ discord_member_admit = Table(
     ),
     UniqueConstraint("guild_id", "user_id", name="uq_discord_member_admit_guild_user"),
     Index("idx_discord_member_admit_status", "guild_id", "airlock_status"),
+)
+
+
+# Migration 050: discord_fitcheck_scores for Scored Mode V2 Pass B. One row
+# per scored fit (success or failed). percentile frozen at score time. reveal_*
+# columns ship now even though Pass C is a separate PR — schema parity tests
+# pin the table shape so migration 050 stays load-bearing across PRs.
+discord_fitcheck_scores = Table(
+    "discord_fitcheck_scores",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("post_id", Text, nullable=False),
+    Column("user_id", Text, nullable=False),
+    Column("posted_at", Text, nullable=False),
+    Column("scored_at", Text, nullable=False),
+    Column("model_id", Text, nullable=False),
+    Column("prompt_version", Text, nullable=False),
+    Column("score_status", Text, nullable=False),
+    Column("score_error", Text),
+    Column("axis_cohesion", Integer),
+    Column("axis_execution", Integer),
+    Column("axis_concept", Integer),
+    Column("axis_catch", Integer),
+    Column("raw_total", Integer),
+    Column("catch_detected", Text),
+    Column("catch_naming_class", Text),
+    Column("description", Text),
+    Column("confidence", Float),
+    Column("axis_rationales_json", Text),
+    Column("curve_basis", Text),
+    Column("pool_size_at_score_time", Integer),
+    Column("percentile", Float),
+    Column("reveal_eligible", Integer, nullable=False, server_default=text("0")),
+    Column("reveal_fired_at", Text),
+    Column("reveal_post_id", Text),
+    Column("reveal_trigger", Text),
+    Column("invalidated_at", Text),
+    Column("invalidated_reason", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("guild_id", "post_id", name="uq_discord_fitcheck_scores_guild_post"),
+    Index(
+        "idx_discord_fitcheck_scores_user_pct",
+        "org_id",
+        "user_id",
+        text("percentile DESC"),
+    ),
+    Index("idx_discord_fitcheck_scores_org_posted", "org_id", "posted_at"),
+    Index("idx_discord_fitcheck_scores_status", "org_id", "score_status"),
+    Index("idx_discord_fitcheck_scores_reveal_fired", "org_id", "reveal_fired_at"),
+)
+
+
+# Migration 051: discord_scoring_config for Scored Mode V2 Pass B. One row per
+# guild. Default state='off' — safety floor. First mod /scoring set is what
+# flips a guild into scoring. UNIQUE(guild_id) lets upsert use ON CONFLICT.
+discord_scoring_config = Table(
+    "discord_scoring_config",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default=text("'off'")),
+    Column("state_changed_by", Text),
+    Column("state_changed_at", Text),
+    Column("reaction_threshold", Integer, nullable=False, server_default=text("10")),
+    Column("thread_message_threshold", Integer, nullable=False, server_default=text("100")),
+    Column("reveal_window_days", Integer, nullable=False, server_default=text("7")),
+    Column("reveal_min_age_minutes", Integer, nullable=False, server_default=text("10")),
+    Column("curve_window_days", Integer, nullable=False, server_default=text("30")),
+    Column("cold_start_min_pool", Integer, nullable=False, server_default=text("20")),
+    Column("model_id", Text, nullable=False, server_default=text("'claude-sonnet-4-6'")),
+    Column("prompt_version", Text, nullable=False, server_default=text("'rubric_v1'")),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("guild_id", name="uq_discord_scoring_config_guild"),
 )
 
 

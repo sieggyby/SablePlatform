@@ -101,6 +101,10 @@ TABLE_LOAD_ORDER: list[str] = [
     "discord_invite_snapshot",  # no FKs (mig 048) - Integer autoincrement PK
     "discord_team_inviters",  # no FKs (mig 048) - Integer autoincrement PK
     "discord_member_admit",  # no FKs (mig 048) - Integer autoincrement PK
+    # Migration 050-051: Scored Mode V2 Pass B. discord_fitcheck_scores +
+    # discord_scoring_config. No FKs across either; ordering arbitrary.
+    "discord_fitcheck_scores",  # no FKs (mig 050) - Integer autoincrement PK
+    "discord_scoring_config",  # no FKs (mig 051) - Integer autoincrement PK
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -146,6 +150,9 @@ SEQUENCE_TABLES: dict[str, str] = {
     "discord_invite_snapshot": "id",
     "discord_team_inviters": "id",
     "discord_member_admit": "id",
+    # Migration 050-051: Scored Mode V2 Pass B
+    "discord_fitcheck_scores": "id",
+    "discord_scoring_config": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.
