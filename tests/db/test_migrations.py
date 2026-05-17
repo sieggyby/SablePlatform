@@ -90,7 +90,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 52
+    assert row["version"] == 53
 
 
 def test_all_tables_exist():
@@ -109,7 +109,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 52
+    assert row["version"] == 53
 
 
 def test_workflow_tables_columns():

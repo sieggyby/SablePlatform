@@ -71,6 +71,7 @@ _MIGRATIONS = [
     ("050_discord_fitcheck_scores.sql", 50),
     ("051_discord_scoring_config.sql", 51),
     ("052_discord_fitcheck_emoji_milestones.sql", 52),
+    ("053_align_timestamp_columns_to_text.sql", 53),
 ]
 
 
