@@ -67,6 +67,11 @@ _MIGRATIONS = [
     ("046_discord_burn.sql", 46),
     ("047_roast_personalization.sql", 47),
     ("048_airlock.sql", 48),
+    ("049_discord_streak_events_phash.sql", 49),
+    ("050_discord_fitcheck_scores.sql", 50),
+    ("051_discord_scoring_config.sql", 51),
+    ("052_discord_fitcheck_emoji_milestones.sql", 52),
+    ("053_align_timestamp_columns_to_text.sql", 53),
 ]
 
 
