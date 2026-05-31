@@ -256,4 +256,4 @@ Placeholder for a future dedicated client-communications surface. Currently a no
 
 ---
 
-*Maintained for BD. When a roadmap item ships, move its row to LIVE and update the relevant section. Engineering detail for each tool lives in that repo's own `README.md` / `CLAUDE.md`; the backbone's technical docs are in this `docs/` directory (see [CROSS_REPO_INTEGRATION.md](CROSS_REPO_INTEGRATION.md), [ARCHITECTURE.md](ARCHITECTURE.md)).*
+*Maintained for BD. When a roadmap item ships, move its row to LIVE and update the relevant section. Outbound sales/marketing collateral built from this map (pitch deck, one-pagers, messaging + language guardrails) lives in [`marketing/`](marketing/). Engineering detail for each tool lives in that repo's own `README.md` / `CLAUDE.md`; the backbone's technical docs are in this `docs/` directory (see [CROSS_REPO_INTEGRATION.md](CROSS_REPO_INTEGRATION.md), [ARCHITECTURE.md](ARCHITECTURE.md)).*
