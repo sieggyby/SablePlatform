@@ -1,0 +1,13 @@
+[Unit]
+Description=Run SablePlatform alert evaluator (TIG) every 6h
+
+[Timer]
+# Every 6h + shortly after boot. Catches a stalled tracking sync (tracking_stale
+# default fires after the org's tracking_stale_days; set tig to 2 for a daily sync)
+# and the other registered checks, so failures surface instead of rotting silently.
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
