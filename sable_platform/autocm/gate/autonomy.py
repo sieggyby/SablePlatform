@@ -319,8 +319,18 @@ def gather_review_stats(
     params: dict = {"client_id": client_id, "category": category}
     since_clause = ""
     if since is not None:
-        since_clause = " AND r.reviewed_at >= :since"
-        params["since"] = since
+        # Defense-in-depth: normalize BOTH sides of the autocm_reviews rolling-window
+        # comparison to space form (strip any T/Z) before comparing, mirroring the
+        # audit_log breach leg below. The C3.5b write path (record_review_decision)
+        # binds reviewed_at explicitly in _iso_z (...T...Z) form so the un-normalized
+        # ``r.reviewed_at >= :since`` would already be correct; this normalization
+        # additionally protects any row written via the Postgres func.now() COLUMN
+        # DEFAULT (space-separated, no T/Z) — which would otherwise sort below a
+        # T-prefixed :since and be silently dropped from the window.
+        since_clause = (
+            " AND REPLACE(REPLACE(r.reviewed_at, 'T', ' '), 'Z', '') >= :since"
+        )
+        params["since"] = _normalize_audit_ts(since)
 
     row = conn.execute(
         text(

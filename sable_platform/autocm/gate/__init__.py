@@ -37,10 +37,17 @@ from .citation_check import (
 )
 from .confidence import AUTO, HITL, ConfidenceVerdict, decide, is_frozen
 from .review_queue import (
+    BotSender,
     HITLReviewSurface,
+    KBSourceLine,
     ReviewItem,
+    ReviewQueueController,
     TelegramReviewSurface,
     WebDashboardReviewSurface,
+    build_review_buttons,
+    parse_callback_data,
+    record_review_decision,
+    render_review_message,
 )
 from .safety import (
     INJECTION_ATTEMPT_FLAG,
@@ -57,6 +64,13 @@ __all__ = [
     "ReviewItem",
     "TelegramReviewSurface",
     "WebDashboardReviewSurface",
+    "ReviewQueueController",
+    "BotSender",
+    "KBSourceLine",
+    "build_review_buttons",
+    "parse_callback_data",
+    "record_review_decision",
+    "render_review_message",
     # safety
     "SafetyVerdict",
     "check_safety",

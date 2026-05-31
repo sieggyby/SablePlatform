@@ -38,6 +38,7 @@ from .manifest import (
 from .gate.review_queue import (
     HITLReviewSurface,
     ReviewItem,
+    ReviewQueueController,
     TelegramReviewSurface,
     WebDashboardReviewSurface,
 )
@@ -61,6 +62,7 @@ __all__ = [
     # HITL review-surface seam
     "HITLReviewSurface",
     "ReviewItem",
+    "ReviewQueueController",
     "TelegramReviewSurface",
     "WebDashboardReviewSurface",
     # LLM provider seam
