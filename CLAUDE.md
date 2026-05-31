@@ -97,6 +97,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 | `sable_platform/cli/main.py` | Top-level CLI: init, backup, schema, gc |
 | `sable_platform/cli/org_cmds.py` | Org CLI: create, list, graduate, reject |
 | `sable_platform/db/entities.py` | Entity CRUD + add_entity_note(), list_entity_notes() |
+| `sable_platform/media/` | Shared media layer (mig 055 `media_assets`): `R2Store` (sync boto3 upload/presign), `sanitize` (key/filename safety), `urls.build_media_url` (`<bucket>/<key>`→proxy URL), `registry.register_asset` (idempotent on `(org_id,r2_ref)`). Canonical for Slopper clips + Tracking media. See `docs/SHARED_MEDIA_LAYER_PLAN_V1.md`. |
 | `docs/CLI_REFERENCE.md` | Complete CLI command reference |
 | `docs/CROSS_REPO_INTEGRATION.md` | Adapter reference, data flows, direct commands |
 | `docs/SCHEMA_CONTRACTS.md` | Cross-suite data contracts — entity status, tiers, dimensions, cost models, artifacts, outcomes |

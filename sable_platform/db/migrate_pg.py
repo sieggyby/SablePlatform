@@ -44,6 +44,10 @@ TABLE_LOAD_ORDER: list[str] = [
     "sync_runs",
     "cost_events",           # FK -> orgs, jobs
     "artifacts",             # FK -> orgs, jobs
+    "media_assets",          # FK -> orgs, entities, content_items (mig 055)
+    "operator_reply_quota",  # no FKs (mig 056) - composite TEXT PK (operator_handle, day_utc)
+    "reply_suggestions",     # FK -> orgs (mig 056)
+    "reply_outcomes",        # FK -> reply_suggestions (mig 056) - must follow it
     "alert_configs",
     "entity_interactions",
     "entity_decay_scores",

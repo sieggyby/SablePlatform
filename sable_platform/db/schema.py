@@ -1457,3 +1457,86 @@ kol_enrichment = Table(
     ),
     Index("idx_kol_enrichment_operator", "operator_email"),
 )
+
+# ------------------------------------------------------------------
+# Migration 055 — shared media-asset registry
+# ------------------------------------------------------------------
+
+media_assets = Table(
+    "media_assets",
+    metadata,
+    Column("asset_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("source_project", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("r2_ref", Text, nullable=False),
+    Column("mime", Text),
+    Column("bytes", Integer),
+    Column("sha256", Text),
+    Column("entity_id", Text, ForeignKey("entities.entity_id")),
+    Column("content_item_id", Text, ForeignKey("content_items.item_id")),
+    Column("source_ref", Text),
+    Column("caption", Text),
+    Column("metadata_json", Text, nullable=False, server_default="{}"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_media_assets_org_kind", "org_id", "kind"),
+    Index("ix_media_assets_sha", "org_id", "sha256"),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index("ux_media_assets_org_ref", media_assets.c.org_id, media_assets.c.r2_ref, unique=True)
+
+
+# ------------------------------------------------------------------
+# Migration 056 — operator reply-suggestion feature
+# ------------------------------------------------------------------
+
+operator_reply_quota = Table(
+    "operator_reply_quota",
+    metadata,
+    Column("operator_handle", Text, primary_key=True),
+    Column("day_utc", Text, primary_key=True),
+    Column("org_id", Text),
+    Column("count", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+
+reply_suggestions = Table(
+    "reply_suggestions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("operator_handle", Text, nullable=False),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("source_tweet_id", Text, nullable=False),
+    Column("source_author", Text),
+    Column("source_text", Text),
+    Column("variants_json", Text, nullable=False, server_default="[]"),
+    Column("model", Text),
+    Column("cost_usd", Float),
+    Column("generated_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_reply_suggestions_match", "operator_handle", "source_tweet_id"),
+    Index("ix_reply_suggestions_org", "org_id", "generated_at"),
+)
+
+reply_outcomes = Table(
+    "reply_outcomes",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("suggestion_id", Text, ForeignKey("reply_suggestions.id"), nullable=False),
+    Column("posted_tweet_id", Text, nullable=False),
+    Column("posted_at", Text),
+    Column("chosen_variant_idx", Integer),
+    Column("was_edited", Integer, nullable=False, server_default="0"),
+    Column("engagement_json", Text, nullable=False, server_default="{}"),
+    Column("recorded_at", Text, nullable=False, server_default=func.now()),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index(
+    "ux_reply_outcomes_match",
+    reply_outcomes.c.suggestion_id,
+    reply_outcomes.c.posted_tweet_id,
+    unique=True,
+)
