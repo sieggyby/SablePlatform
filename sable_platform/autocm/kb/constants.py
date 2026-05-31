@@ -35,6 +35,61 @@ def _load_client_constants(conn: Connection, client_id: int) -> dict[str, str]:
     return {r[0]: r[1] for r in rows}
 
 
+def upsert_constant(
+    conn: Connection,
+    client_id: int,
+    key: str,
+    value: str,
+    *,
+    description: Optional[str] = None,
+    updated_by: Optional[str] = None,
+) -> None:
+    """Insert/update one slot-fill constant for a client (C3.2a write path).
+
+    ``autocm_kb_constants`` has a composite PRIMARY KEY ``(client_id, key)``, so
+    an upsert is an ``ON CONFLICT (client_id, key) DO UPDATE``. These irreducibles
+    (contract address, audit URL, official handles) are operator/seed-supplied
+    LITERAL strings — NEVER LLM-generated (KB_DESIGN §1/§2). The vendored engine
+    owns the ROUTING (which question → which key); AutoCM owns only the VALUES.
+    """
+    conn.execute(
+        text(
+            "INSERT INTO autocm_kb_constants "
+            "(client_id, key, value, description, updated_by) "
+            "VALUES (:client_id, :key, :value, :description, :updated_by) "
+            "ON CONFLICT (client_id, key) DO UPDATE SET "
+            "  value = excluded.value, "
+            "  description = excluded.description, "
+            "  updated_by = excluded.updated_by, "
+            "  updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')"
+        ),
+        {
+            "client_id": client_id,
+            "key": key,
+            "value": value,
+            "description": description,
+            "updated_by": updated_by,
+        },
+    )
+
+
+def upsert_constants(
+    conn: Connection,
+    client_id: int,
+    constants: dict[str, str],
+    *,
+    updated_by: Optional[str] = None,
+) -> None:
+    """Bulk-seed a client's slot-fill registry from a {key: value} mapping.
+
+    Used to POPULATE ``autocm_kb_constants`` from a deployment manifest / seed
+    (C4.1). Each value is a literal irreducible string. Keys are inserted in sorted
+    order for deterministic seeding.
+    """
+    for key in sorted(constants):
+        upsert_constant(conn, client_id, key, constants[key], updated_by=updated_by)
+
+
 def build_slotfill_kb(
     conn: Connection, client_id: int, *, glossary: Optional[dict[str, str]] = None
 ) -> SlotFillKB:
@@ -79,4 +134,10 @@ class ConstantsKB:
         return self.kb.match_glossary(text)
 
 
-__all__ = ["ConstantsKB", "build_slotfill_kb", "SlotFillKB"]
+__all__ = [
+    "ConstantsKB",
+    "build_slotfill_kb",
+    "upsert_constant",
+    "upsert_constants",
+    "SlotFillKB",
+]
