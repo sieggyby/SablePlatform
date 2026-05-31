@@ -1100,6 +1100,382 @@ def get_submission(conn: Connection, submission_id: int) -> dict | None:
 
 
 # ------------------------------------------------------------------
+# C2.3a Flow B/C: submission create + quorum vote upsert + guarded transition
+#
+# These back the amplify (Flow B/C) + quorum (§3.1) handlers. Per the LOCKED
+# C2.1 §5.3 layering boundary, the handlers embed NO raw SQL — every statement
+# is a named, ``text()``-parameterized helper here. All are dialect-agnostic:
+# named ``:param`` binds (not ``?``), a Python ISO-Z timestamp bound as a param
+# (not ``strftime``), and ``result.rowcount`` (not ``changes()``) — so the
+# guarded transition runs unchanged on the live Postgres pool. The caller drives
+# every multi-statement sequence inside ONE ``immediate_txn`` (§3.1).
+# ------------------------------------------------------------------
+def auto_create_member_identity(
+    conn: Connection,
+    platform: str,
+    external_user_id: str,
+    *,
+    handle: str | None = None,
+) -> int:
+    """Resolve OR auto-create the ``relay_members`` row for an external identity.
+
+    §3.1 step 4: when a previously-unknown TG/Discord user reacts/submits, the
+    handler auto-creates a ``relay_members`` + ``relay_member_identities`` row
+    **for audit only** — auto-creation grants NO roles (authorization is always
+    role-gated via ``relay_member_roles``; §8). Idempotent: if the identity
+    already exists, its ``relay_members.id`` is returned (and ``handle`` is
+    refreshed to the latest seen value — handles are display-only, §15.4). The
+    caller MUST be inside an ``immediate_txn`` (this writes).
+
+    Returns the resolved/created ``relay_members.id``.
+    """
+    if platform not in ("telegram", "discord", "x"):
+        raise ValueError(
+            f"unknown relay platform {platform!r}; expected 'telegram', 'discord' or 'x'"
+        )
+    existing = conn.execute(
+        text(
+            "SELECT member_id FROM relay_member_identities "
+            "WHERE platform = :platform AND external_user_id = :euid"
+        ),
+        {"platform": platform, "euid": str(external_user_id)},
+    ).fetchone()
+    if existing is not None:
+        member_id = int(existing[0])
+        # Refresh the display handle on next interaction (never grants perms).
+        if handle is not None:
+            conn.execute(
+                text(
+                    "UPDATE relay_member_identities SET handle = :handle "
+                    "WHERE platform = :platform AND external_user_id = :euid"
+                ),
+                {"handle": handle, "platform": platform, "euid": str(external_user_id)},
+            )
+        return member_id
+    row = conn.execute(
+        text("INSERT INTO relay_members (display_name) VALUES (:name) RETURNING id"),
+        {"name": handle},
+    ).fetchone()
+    member_id = int(row[0])
+    conn.execute(
+        text(
+            "INSERT INTO relay_member_identities "
+            "(member_id, platform, external_user_id, handle, linked_at) "
+            "VALUES (:member_id, :platform, :euid, :handle, :now)"
+        ),
+        {
+            "member_id": member_id,
+            "platform": platform,
+            "euid": str(external_user_id),
+            "handle": handle,
+            "now": _utc_now_iso(),
+        },
+    )
+    return member_id
+
+
+def find_open_submission_for_tweet(
+    conn: Connection, org_id: str, tweet_id: int
+) -> dict | None:
+    """Return the org's open (``pending``/``ready_to_publish``) submission for a tweet.
+
+    Backs the §11 #2 one-pending-per-tweet MERGE: a duplicate ``/amplify`` of the
+    same tweet resolves to the FIRST open submission rather than minting a second
+    (the ``relay_submissions_one_pending_per_tweet`` partial unique index makes a
+    second insert fail anyway; this lets the handler merge gracefully). ``None``
+    if no open submission exists for ``(org_id, tweet_id)``.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, org_id, tweet_id, submitter_id, source_chat_id, "
+            "       source_message_id, control_message_id, source_role, status, note "
+            "FROM relay_submissions "
+            "WHERE org_id = :org_id AND tweet_id = :tweet_id "
+            "  AND status IN ('pending','ready_to_publish') "
+            "ORDER BY id LIMIT 1"
+        ),
+        {"org_id": org_id, "tweet_id": int(tweet_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def create_submission(
+    conn: Connection,
+    *,
+    org_id: str,
+    tweet_id: int,
+    submitter_id: int,
+    source_chat_id: str,
+    source_message_id: str,
+    source_role: str,
+    expires_at: str,
+    note: str | None = None,
+    status: str = "pending",
+    control_message_id: str | None = None,
+) -> int:
+    """Insert a ``relay_submissions`` row (Flow B pending / Flow C immediate).
+
+    ``source_role`` is ``'operator'`` (Flow B quorum) or ``'shared'`` (Flow C
+    immediate) — the CHECK enforces the set. ``status`` is ``'pending'`` for
+    Flow B (awaits quorum) and the caller transitions Flow C straight through.
+    ``expires_at`` is materialized at insert (the quorum window; §5.2) so the
+    sweeper need not crack JSON. Returns the new ``relay_submissions.id``.
+
+    The caller MUST be inside an ``immediate_txn`` and SHOULD first consult
+    :func:`find_open_submission_for_tweet` to honor one-pending-per-tweet.
+    """
+    if source_role not in ("operator", "shared"):
+        raise ValueError(
+            f"unknown source_role {source_role!r}; expected 'operator' or 'shared'"
+        )
+    if status not in ("pending", "ready_to_publish"):
+        raise ValueError(
+            f"create_submission status must be 'pending' or 'ready_to_publish', got {status!r}"
+        )
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_submissions "
+            "(org_id, tweet_id, submitter_id, source_chat_id, source_message_id, "
+            " control_message_id, source_role, note, status, expires_at) "
+            "VALUES (:org_id, :tweet_id, :submitter_id, :source_chat_id, "
+            "        :source_message_id, :control_message_id, :source_role, :note, "
+            "        :status, :expires_at) "
+            "RETURNING id"
+        ),
+        {
+            "org_id": org_id,
+            "tweet_id": int(tweet_id),
+            "submitter_id": int(submitter_id),
+            "source_chat_id": str(source_chat_id),
+            "source_message_id": str(source_message_id),
+            "control_message_id": control_message_id,
+            "source_role": source_role,
+            "note": note,
+            "status": status,
+            "expires_at": expires_at,
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+def set_submission_control_message_id(
+    conn: Connection, submission_id: int, control_message_id: str
+) -> None:
+    """Record the acknowledgment/control message id on a submission.
+
+    Flow B posts a pending-acknowledgment ("📥 needs N more 📢") into the operator
+    chat AFTER the submission row exists (the message id is only known once the
+    external send returns — OUTSIDE the txn). This back-fills
+    ``control_message_id`` so the §3.1 reaction handler can route a
+    ``MessageReactionUpdated`` on that message to its submission via
+    ``relay_submissions_control_lookup``. Called inside a follow-up
+    ``immediate_txn`` after the send.
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_submissions SET control_message_id = :cmid WHERE id = :id"
+        ),
+        {"cmid": str(control_message_id), "id": int(submission_id)},
+    )
+
+
+def find_submission_by_control(
+    conn: Connection, source_chat_id: str, control_message_id: str
+) -> dict | None:
+    """Resolve a submission from a reaction's ``(chat_id, message_id)`` (§3.1 step 2).
+
+    TG ``MessageReactionUpdated`` arrives keyed by ``(chat_id, message_id)``; this
+    resolves it to the pending submission whose acknowledgment/control message it
+    is, via ``relay_submissions_control_lookup``. ``None`` (the §3.1 step-2 "if
+    unknown → COMMIT, return" no-op signal) if there is no matching submission.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, org_id, tweet_id, submitter_id, source_chat_id, "
+            "       source_message_id, control_message_id, source_role, status, note "
+            "FROM relay_submissions "
+            "WHERE source_chat_id = :chat_id AND control_message_id = :cmid "
+            "ORDER BY id LIMIT 1"
+        ),
+        {"chat_id": str(source_chat_id), "cmid": str(control_message_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def upsert_submission_reaction(
+    conn: Connection, submission_id: int, member_id: int, emoji: str
+) -> None:
+    """Record an operator's reaction vote (§3.1 step 6, emoji ADDED).
+
+    Reactions are *current state*, not append-only (§5.2): the row is keyed
+    ``(submission_id, member_id, emoji)`` so a repeat add is idempotent.
+    ``INSERT OR IGNORE`` semantics via a guarded existence check so this is
+    dialect-agnostic (no SQLite-only ``OR IGNORE``). The caller has already
+    role-gated the member (§3.1 step 5 — non-operator reactions are NEVER
+    recorded here, to keep the audit table clean per §8/§15.4).
+    """
+    existing = conn.execute(
+        text(
+            "SELECT 1 FROM relay_submission_reactions "
+            "WHERE submission_id = :sid AND member_id = :mid AND emoji = :emoji"
+        ),
+        {"sid": int(submission_id), "mid": int(member_id), "emoji": emoji},
+    ).fetchone()
+    if existing is not None:
+        return
+    conn.execute(
+        text(
+            "INSERT INTO relay_submission_reactions "
+            "(submission_id, member_id, emoji, reacted_at) "
+            "VALUES (:sid, :mid, :emoji, :now)"
+        ),
+        {
+            "sid": int(submission_id),
+            "mid": int(member_id),
+            "emoji": emoji,
+            "now": _utc_now_iso(),
+        },
+    )
+
+
+def delete_submission_reaction(
+    conn: Connection, submission_id: int, member_id: int, emoji: str
+) -> None:
+    """Remove an operator's reaction vote (§3.1 step 6, emoji REMOVED).
+
+    §5.2: removing the configured emoji removes the vote (reactions are current
+    state). A no-op if the vote was not present.
+    """
+    conn.execute(
+        text(
+            "DELETE FROM relay_submission_reactions "
+            "WHERE submission_id = :sid AND member_id = :mid AND emoji = :emoji"
+        ),
+        {"sid": int(submission_id), "mid": int(member_id), "emoji": emoji},
+    )
+
+
+def count_distinct_quorum_operators(
+    conn: Connection, submission_id: int, org_id: str, emoji: str
+) -> int:
+    """Distinct CURRENT operators who voted the quorum emoji on a submission (§3.1 step 7).
+
+    Counts distinct ``member_id``s that (a) have a ``relay_submission_reactions``
+    row with the configured quorum ``emoji`` for this submission AND (b) currently
+    hold ``role='sable_operator'`` (or ``admin``, which subsumes operator) for the
+    org. Joining to ``relay_member_roles`` at count time means a member who lost
+    operator role no longer counts — authorization is role-gated at the moment of
+    tally (§8). The submitter, if an operator who reacted, is included (the
+    "submitter counts as 1" rationale, §3 / threshold).
+    """
+    row = conn.execute(
+        text(
+            "SELECT COUNT(DISTINCT r.member_id) "
+            "FROM relay_submission_reactions r "
+            "JOIN relay_member_roles mr ON mr.member_id = r.member_id "
+            "WHERE r.submission_id = :sid AND r.emoji = :emoji "
+            "  AND mr.org_id = :org_id "
+            "  AND mr.role IN ('sable_operator','admin')"
+        ),
+        {"sid": int(submission_id), "emoji": emoji, "org_id": org_id},
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def count_distinct_quorum_operators_excluding(
+    conn: Connection,
+    submission_id: int,
+    org_id: str,
+    emoji: str,
+    exclude_member_id: int,
+) -> int:
+    """Distinct quorum operators EXCLUDING one member (the ``min_other_operators`` gate).
+
+    §3 / §135: ``min_other_operators`` (default null) adds a "≥N operators OTHER
+    than the submitter" constraint ON TOP of ``quorum_threshold``. This counts the
+    same role-gated distinct operators as :func:`count_distinct_quorum_operators`
+    but excludes ``exclude_member_id`` (the submitter), so the handler can enforce
+    the extra constraint without double-querying.
+    """
+    row = conn.execute(
+        text(
+            "SELECT COUNT(DISTINCT r.member_id) "
+            "FROM relay_submission_reactions r "
+            "JOIN relay_member_roles mr ON mr.member_id = r.member_id "
+            "WHERE r.submission_id = :sid AND r.emoji = :emoji "
+            "  AND mr.org_id = :org_id "
+            "  AND mr.role IN ('sable_operator','admin') "
+            "  AND r.member_id <> :exclude"
+        ),
+        {
+            "sid": int(submission_id),
+            "emoji": emoji,
+            "org_id": org_id,
+            "exclude": int(exclude_member_id),
+        },
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def transition_submission_ready(conn: Connection, submission_id: int) -> bool:
+    """The §3.1 step-8 GUARDED transition: ``pending`` → ``ready_to_publish``.
+
+    ``UPDATE relay_submissions SET status='ready_to_publish', resolved_at=now
+    WHERE id=:id AND status='pending'`` — the ``AND status='pending'`` guard is
+    the exactly-once primitive: only the FIRST writer transitions; a concurrent
+    writer (SQLite serializes writers under the caller's ``BEGIN IMMEDIATE``;
+    Postgres runs SERIALIZABLE) sees ``status != 'pending'`` and the UPDATE
+    matches zero rows. Returns ``True`` iff THIS call performed the transition
+    (``result.rowcount == 1``) — the caller enqueues the fan-out jobs ONLY when
+    this returns ``True`` (so the outbox is enqueued exactly once, §3.1 step 8).
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_submissions SET "
+            "  status = 'ready_to_publish', resolved_at = :now "
+            "WHERE id = :id AND status = 'pending'"
+        ),
+        {"now": _utc_now_iso(), "id": int(submission_id)},
+    )
+    return int(result.rowcount or 0) == 1
+
+
+def mark_submission_published(conn: Connection, submission_id: int) -> bool:
+    """Flip a ``ready_to_publish`` submission to ``published`` (post-fan-out marker).
+
+    Flow C publishes immediately (single approval, no quorum) and marks the
+    submission ``published`` once the fan-out jobs are enqueued. Guarded
+    (``AND status='ready_to_publish'``) so it only advances a submission the
+    caller just transitioned. Returns ``True`` iff a row advanced.
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_submissions SET status = 'published', resolved_at = :now "
+            "WHERE id = :id AND status = 'ready_to_publish'"
+        ),
+        {"now": _utc_now_iso(), "id": int(submission_id)},
+    )
+    return int(result.rowcount or 0) > 0
+
+
+def list_active_publish_bindings(conn: Connection, org_id: str) -> list[dict]:
+    """Active broadcast/community destinations for the §3.1 step-8 fan-out.
+
+    The quorum/amplify fan-out enqueues one ``relay_publication_jobs`` row per
+    active broadcast/community binding (PLAN §3.1 line 190: "each active
+    broadcast/community binding in (discord, telegram)"). This is the same set
+    Flow A's poller fans out to — :func:`list_active_destination_bindings` is the
+    canonical query; this is a clearly-named alias for the quorum call site so the
+    handler reads intent-first. Returns ``{platform, chat_id, role}`` dicts.
+    """
+    return list_active_destination_bindings(conn, org_id)
+
+
+# ------------------------------------------------------------------
 # C2.4 retention GC (SableRelay §15.5 — all five windows owned here)
 # ------------------------------------------------------------------
 def gc_processed_updates(conn: Connection, *, older_than_days: int = 7) -> int:
@@ -1314,3 +1690,666 @@ def mark_reply_followed_through(
         },
     )
     return int(result.rowcount or 0) > 0
+
+
+# ==================================================================
+# C2.3b — Flow D v1 reply opportunities (flag_reply handler)
+#
+# §2 Flow D: an operator runs /flag-reply <url> [note] [target=@handle...] in the
+# operator chat → records a relay_reply_opportunity, resolves the target set
+# (explicit handle targets, else all opted-in members for the org per §11 #1),
+# and inserts one relay_reply_notification per target so the listener can DM each
+# one the compose deeplink. No external send happens here — these are pure DB
+# writes inside the handler's immediate_txn; the listener does the DM fan-out
+# OUTSIDE the txn from the returned target list.
+# ==================================================================
+def create_reply_opportunity(
+    conn: Connection,
+    *,
+    org_id: str,
+    tweet_id: int,
+    flagger_id: int,
+    origin: str = "explicit_command",
+    note: str | None = None,
+) -> int:
+    """Insert a ``relay_reply_opportunities`` row; return its id.
+
+    ``origin`` is one of the 057 CHECK set ``('explicit_command','reaction',
+    'auto_mention')`` — Flow D v1 (``/flag-reply``) is always
+    ``'explicit_command'`` (the v1.5 reaction path is DEFERRED, §10 Phase 5).
+    The caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    if origin not in ("explicit_command", "reaction", "auto_mention"):
+        raise ValueError(
+            f"unknown reply-opportunity origin {origin!r}; expected one of "
+            "('explicit_command','reaction','auto_mention')"
+        )
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_reply_opportunities "
+            "(org_id, tweet_id, flagger_id, origin, note) "
+            "VALUES (:org_id, :tweet_id, :flagger_id, :origin, :note) "
+            "RETURNING id"
+        ),
+        {
+            "org_id": org_id,
+            "tweet_id": int(tweet_id),
+            "flagger_id": int(flagger_id),
+            "origin": origin,
+            "note": note,
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+def list_optedin_members(conn: Connection, org_id: str) -> list[dict]:
+    """Return members opted-in to reply pings for an org and NOT currently muted.
+
+    §2 Flow D / §11 #1: the default fan-out is "all opted-in members for the org"
+    — ``relay_member_preferences.replies_optin = 1`` AND not muted (``mute_until``
+    NULL or in the past). A member's TG identity (the DM target) is joined in so
+    the listener can DM them; a member with no TG identity is still returned
+    (``tg_user_id`` NULL) so the opportunity is recorded against them even though
+    the bot cannot DM them (the listener skips a NULL DM target). Returns
+    ``{member_id, tg_user_id, handle}`` dicts ordered by ``member_id``.
+    """
+    now = _utc_now_iso()
+    rows = conn.execute(
+        text(
+            "SELECT p.member_id AS member_id, "
+            "       i.external_user_id AS tg_user_id, i.handle AS handle "
+            "FROM relay_member_preferences p "
+            "LEFT JOIN relay_member_identities i "
+            "  ON i.member_id = p.member_id AND i.platform = 'telegram' "
+            "WHERE p.org_id = :org_id AND p.replies_optin = 1 "
+            "  AND (p.mute_until IS NULL OR p.mute_until <= :now) "
+            "ORDER BY p.member_id"
+        ),
+        {"org_id": org_id, "now": now},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def resolve_members_by_telegram_handle(
+    conn: Connection, handles: list[str]
+) -> dict[str, int | None]:
+    """Resolve TG ``@handle`` strings to ``relay_members.id`` (handle → member_id).
+
+    Backs ``/flag-reply``'s optional ``target=@handle…`` (§11 #1: "resolves handles
+    to relay_members.id via relay_member_identities"). Handles are presentation
+    only and resolution is best-effort: a handle that matches no TG identity maps
+    to ``None`` so the caller can report it as unresolved (it never silently grants
+    a target). Matching is case-insensitive and tolerant of a leading ``@``. If a
+    handle ambiguously matches multiple members it maps to ``None`` (the caller
+    should report the ambiguity rather than guess — identity is ``member_id``, not
+    a mutable handle, §15.4).
+    """
+    resolved: dict[str, int | None] = {}
+    for raw in handles:
+        key = raw.strip()
+        if not key:
+            continue
+        bare = key.lstrip("@").lower()
+        rows = conn.execute(
+            text(
+                "SELECT DISTINCT member_id FROM relay_member_identities "
+                "WHERE platform = 'telegram' AND lower(handle) = :h"
+            ),
+            {"h": bare},
+        ).fetchall()
+        resolved[key] = int(rows[0][0]) if len(rows) == 1 else None
+    return resolved
+
+
+def insert_reply_notification(
+    conn: Connection, opportunity_id: int, member_id: int
+) -> int | None:
+    """Insert a ``relay_reply_notifications`` row for (opportunity, member).
+
+    Idempotent on the ``relay_reply_notifications_unique`` (opportunity_id,
+    member_id) index — a member targeted twice for the same opportunity (e.g.
+    listed explicitly AND opted-in) gets a single notification row. Returns the
+    new notification id, or ``None`` if a row already existed (so the listener
+    DMs each target exactly once). Also records the opportunity↔target junction
+    (``relay_reply_opportunity_targets``) for audit/analytics. The caller MUST be
+    inside an ``immediate_txn``.
+    """
+    # Junction row (idempotent on its composite PK) — the durable target record.
+    exists_target = conn.execute(
+        text(
+            "SELECT 1 FROM relay_reply_opportunity_targets "
+            "WHERE opportunity_id = :oid AND member_id = :mid"
+        ),
+        {"oid": int(opportunity_id), "mid": int(member_id)},
+    ).fetchone()
+    if exists_target is None:
+        conn.execute(
+            text(
+                "INSERT INTO relay_reply_opportunity_targets (opportunity_id, member_id) "
+                "VALUES (:oid, :mid)"
+            ),
+            {"oid": int(opportunity_id), "mid": int(member_id)},
+        )
+    existing = conn.execute(
+        text(
+            "SELECT id FROM relay_reply_notifications "
+            "WHERE opportunity_id = :oid AND member_id = :mid"
+        ),
+        {"oid": int(opportunity_id), "mid": int(member_id)},
+    ).fetchone()
+    if existing is not None:
+        return None
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_reply_notifications (opportunity_id, member_id, notified_at) "
+            "VALUES (:oid, :mid, :now) RETURNING id"
+        ),
+        {"oid": int(opportunity_id), "mid": int(member_id), "now": _utc_now_iso()},
+    ).fetchone()
+    return int(row[0])
+
+
+# ==================================================================
+# C2.3b — reply-ping preferences (optin / optout / mute / whoami)
+#
+# §4 commands: /optin-replies, /optout-replies, /mute-replies <duration> live in
+# a DM with the bot; /whoami in any chat. All keyed on (member_id, org_id) in
+# relay_member_preferences (the 057 PK). A member is auto-created on first
+# interaction (auto_create_member_identity); auto-creation grants NO role (§8) —
+# preferences are independent of roles.
+# ==================================================================
+def upsert_member_preference(
+    conn: Connection,
+    member_id: int,
+    org_id: str,
+    *,
+    replies_optin: bool | None = None,
+    mute_until: str | None = ...,  # type: ignore[assignment]  # ... = "leave unchanged"
+) -> None:
+    """Upsert a ``relay_member_preferences`` row for (member, org).
+
+    Only the fields explicitly passed are changed: ``replies_optin=None`` leaves
+    the opt-in flag as-is; ``mute_until=...`` (the default sentinel) leaves the
+    mute as-is, while ``mute_until=None`` CLEARS the mute and ``mute_until="<iso>"``
+    sets it. The row is created on first write (default ``replies_optin=0``). The
+    caller MUST be inside an ``immediate_txn``.
+    """
+    existing = conn.execute(
+        text(
+            "SELECT replies_optin, mute_until FROM relay_member_preferences "
+            "WHERE member_id = :mid AND org_id = :org_id"
+        ),
+        {"mid": int(member_id), "org_id": org_id},
+    ).fetchone()
+    if existing is None:
+        new_optin = 1 if replies_optin else 0
+        new_mute = None if mute_until is ... else mute_until
+        conn.execute(
+            text(
+                "INSERT INTO relay_member_preferences "
+                "(member_id, org_id, replies_optin, mute_until, updated_at) "
+                "VALUES (:mid, :org_id, :optin, :mute, :now)"
+            ),
+            {
+                "mid": int(member_id),
+                "org_id": org_id,
+                "optin": new_optin,
+                "mute": new_mute,
+                "now": _utc_now_iso(),
+            },
+        )
+        return
+    cur_optin, cur_mute = int(existing[0]), existing[1]
+    next_optin = cur_optin if replies_optin is None else (1 if replies_optin else 0)
+    next_mute = cur_mute if mute_until is ... else mute_until
+    conn.execute(
+        text(
+            "UPDATE relay_member_preferences SET "
+            "  replies_optin = :optin, mute_until = :mute, updated_at = :now "
+            "WHERE member_id = :mid AND org_id = :org_id"
+        ),
+        {
+            "optin": next_optin,
+            "mute": next_mute,
+            "now": _utc_now_iso(),
+            "mid": int(member_id),
+            "org_id": org_id,
+        },
+    )
+
+
+def get_member_preference(
+    conn: Connection, member_id: int, org_id: str
+) -> dict | None:
+    """Return a member's reply-ping preference row for an org as a dict, or None."""
+    row = conn.execute(
+        text(
+            "SELECT member_id, org_id, replies_optin, mute_until, updated_at "
+            "FROM relay_member_preferences "
+            "WHERE member_id = :mid AND org_id = :org_id"
+        ),
+        {"mid": int(member_id), "org_id": org_id},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def get_identity_handle(
+    conn: Connection, member_id: int, platform: str = "telegram"
+) -> str | None:
+    """Return a member's stored ``handle`` for a platform identity (display-only)."""
+    row = conn.execute(
+        text(
+            "SELECT handle FROM relay_member_identities "
+            "WHERE member_id = :mid AND platform = :platform"
+        ),
+        {"mid": int(member_id), "platform": platform},
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+def get_member_identity(
+    conn: Connection, member_id: int, platform: str = "telegram"
+) -> dict | None:
+    """Return a member's ``(external_user_id, handle)`` for a platform, or None.
+
+    The DM-target resolver for ``/flag-reply``'s explicit ``target=@handle…`` path:
+    given a resolved ``member_id``, return the TG identity the listener DMs.
+    Returns ``{external_user_id, handle}`` or ``None`` if the member has no
+    identity on that platform.
+    """
+    row = conn.execute(
+        text(
+            "SELECT external_user_id, handle FROM relay_member_identities "
+            "WHERE member_id = :mid AND platform = :platform"
+        ),
+        {"mid": int(member_id), "platform": platform},
+    ).fetchone()
+    if row is None:
+        return None
+    return {"external_user_id": row[0], "handle": row[1]}
+
+
+# ==================================================================
+# C2.3b — admin: register-operator + bind-chat
+#
+# §8: every member is provisioned by an existing admin/operator (no
+# self-registration). /register-operator supports THREE resolution modes
+# (numeric tg_user_id / self-claim-via-recent-DM / forwarded-message from.id) and
+# NO bare-handle resolution (the Bot API exposes no getUserByUsername; handles are
+# mutable, §8). /bind-chat binds the current chat as operator/shared/community/
+# broadcast for a client (admin-gated). Both write an audit row IN the same
+# immediate_txn via write_relay_audit (no commit — log_audit() in db/audit.py
+# commits, which would break the handler's single-txn contract).
+# ==================================================================
+def write_relay_audit(
+    conn: Connection,
+    *,
+    actor: str,
+    action: str,
+    org_id: str | None = None,
+    entity_id: str | None = None,
+    detail: dict | None = None,
+) -> int:
+    """Append a relay audit row to ``audit_log`` WITHOUT committing.
+
+    ``db/audit.py``'s :func:`log_audit` calls ``conn.commit()`` internally, which
+    would break a relay handler's single-``immediate_txn`` contract (committing
+    mid-handler). This is the txn-safe sibling: it inserts the same
+    ``audit_log`` row but leaves the transaction open for the caller's
+    ``immediate_txn`` to commit atomically with the rest of the handler's writes.
+    ``source`` is fixed to ``'relay'``. Returns the new row id.
+    """
+    import json as _json
+
+    detail_json = _json.dumps(detail) if detail else None
+    row = conn.execute(
+        text(
+            "INSERT INTO audit_log (actor, action, org_id, entity_id, detail_json, source) "
+            "VALUES (:actor, :action, :org_id, :entity_id, :detail_json, 'relay') "
+            "RETURNING id"
+        ),
+        {
+            "actor": actor,
+            "action": action,
+            "org_id": org_id,
+            "entity_id": entity_id,
+            "detail_json": detail_json,
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+def resolve_recent_telegram_identity(
+    conn: Connection, handle: str, *, within_days: int = 7
+) -> tuple[int | None, list[str]]:
+    """Resolve a TG ``@handle`` to a member via RECENTLY-SEEN identities (mode 2).
+
+    The §8 self-claim path: the target DMs the bot ``/whoami`` first (populating
+    ``relay_member_identities``), then the admin runs ``/register-operator @handle``
+    and the bot resolves the handle against TG identities LINKED within the last
+    ``within_days`` days. Returns ``(member_id, candidate_external_ids)``:
+
+      * exactly one recent match → ``(member_id, [external_user_id])``;
+      * zero matches → ``(None, [])`` (the admin must use mode 1 or 2 first);
+      * 2+ matches → ``(None, [external_user_id, …])`` so the caller can list the
+        candidates and ask the admin to disambiguate with a numeric id (mode 1).
+
+    This is NOT bare-handle resolution: it resolves ONLY against a recently-seen,
+    self-claimed identity already in ``relay_member_identities`` (a handle that
+    has never DMed the bot resolves to nothing). Matching is case-insensitive and
+    tolerant of a leading ``@``.
+    """
+    bare = handle.strip().lstrip("@").lower()
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=within_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        text(
+            "SELECT member_id, external_user_id FROM relay_member_identities "
+            "WHERE platform = 'telegram' AND lower(handle) = :h "
+            "  AND linked_at >= :cutoff "
+            "ORDER BY linked_at DESC"
+        ),
+        {"h": bare, "cutoff": cutoff},
+    ).fetchall()
+    if not rows:
+        return None, []
+    if len(rows) == 1:
+        return int(rows[0][0]), [str(rows[0][1])]
+    return None, [str(r[1]) for r in rows]
+
+
+def grant_member_role(
+    conn: Connection,
+    member_id: int,
+    org_id: str,
+    role: str,
+    *,
+    granted_by: int | None = None,
+) -> bool:
+    """Grant ``role`` to a member for an org (idempotent). Returns True iff NEW.
+
+    ``role`` is one of :data:`RELAY_MEMBER_ROLES`. Idempotent on the
+    ``relay_member_roles`` (member_id, org_id, role) PK — re-granting an existing
+    role is a no-op that returns ``False``. ``granted_by`` records the admin's
+    ``relay_members.id`` for the chain-of-trust audit (§8). The caller MUST be
+    inside an ``immediate_txn`` and MUST have already admin-gated the caller.
+    """
+    if role not in RELAY_MEMBER_ROLES:
+        raise ValueError(
+            f"unknown relay role {role!r}; expected one of {RELAY_MEMBER_ROLES}"
+        )
+    existing = conn.execute(
+        text(
+            "SELECT 1 FROM relay_member_roles "
+            "WHERE member_id = :mid AND org_id = :org_id AND role = :role"
+        ),
+        {"mid": int(member_id), "org_id": org_id, "role": role},
+    ).fetchone()
+    if existing is not None:
+        return False
+    conn.execute(
+        text(
+            "INSERT INTO relay_member_roles (member_id, org_id, role, granted_by, granted_at) "
+            "VALUES (:mid, :org_id, :role, :granted_by, :now)"
+        ),
+        {
+            "mid": int(member_id),
+            "org_id": org_id,
+            "role": role,
+            "granted_by": int(granted_by) if granted_by is not None else None,
+            "now": _utc_now_iso(),
+        },
+    )
+    return True
+
+
+def relay_client_exists(conn: Connection, org_id: str) -> bool:
+    """True iff a ``relay_clients`` row exists for ``org_id`` (bind-chat precondition)."""
+    row = conn.execute(
+        text("SELECT 1 FROM relay_clients WHERE org_id = :org_id"),
+        {"org_id": org_id},
+    ).fetchone()
+    return row is not None
+
+
+def bind_chat(
+    conn: Connection,
+    *,
+    org_id: str,
+    platform: str,
+    chat_id: str,
+    role: str,
+    title: str | None = None,
+) -> int:
+    """Bind the current chat as ``role`` for a client (admin ``/bind-chat``).
+
+    ``role`` is one of the 057 ``relay_chat_bindings`` CHECK set
+    ``('operator','shared','community','broadcast')``. Honors the two partial
+    unique indexes (active per org+platform+role; active per platform+chat):
+
+      * an existing active binding for the SAME (org, platform, role) pointing at a
+        DIFFERENT chat is flipped to ``disabled`` (re-pointing the role), and
+      * an existing active binding for the SAME (platform, chat) under a DIFFERENT
+        role is flipped to ``disabled`` (a chat takes at most one active role)
+
+    before the new active binding is inserted. Re-binding the exact same
+    (org, platform, chat, role) is a no-op that returns the existing binding id.
+    Also ensures the ``relay_chats`` chat-id surface row exists. The caller MUST
+    be inside an ``immediate_txn`` and MUST have already admin-gated the caller.
+    Returns the active binding id.
+    """
+    if platform not in ("telegram", "discord"):
+        raise ValueError(
+            f"unknown relay platform {platform!r}; expected 'telegram' or 'discord'"
+        )
+    if role not in ("operator", "shared", "community", "broadcast"):
+        raise ValueError(
+            f"unknown binding role {role!r}; expected one of "
+            "('operator','shared','community','broadcast')"
+        )
+    # Chat-id surface row (idempotent).
+    upsert_chat(conn, org_id, chat_id, platform=platform, title=title)
+
+    # Already bound to this exact role+chat? (idempotent return)
+    same = conn.execute(
+        text(
+            "SELECT id FROM relay_chat_bindings "
+            "WHERE org_id = :org_id AND platform = :platform AND chat_id = :chat_id "
+            "  AND role = :role AND status = 'active'"
+        ),
+        {"org_id": org_id, "platform": platform, "chat_id": chat_id, "role": role},
+    ).fetchone()
+    if same is not None:
+        return int(same[0])
+
+    now = _utc_now_iso()
+    # Flip any active binding for the SAME (org, platform, role) on another chat.
+    conn.execute(
+        text(
+            "UPDATE relay_chat_bindings SET status = 'disabled', last_seen_at = :now "
+            "WHERE org_id = :org_id AND platform = :platform AND role = :role "
+            "  AND status = 'active'"
+        ),
+        {"now": now, "org_id": org_id, "platform": platform, "role": role},
+    )
+    # Flip any active binding for the SAME (platform, chat) under another role.
+    conn.execute(
+        text(
+            "UPDATE relay_chat_bindings SET status = 'disabled', last_seen_at = :now "
+            "WHERE platform = :platform AND chat_id = :chat_id AND status = 'active'"
+        ),
+        {"now": now, "platform": platform, "chat_id": chat_id},
+    )
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_chat_bindings (org_id, platform, chat_id, role, status) "
+            "VALUES (:org_id, :platform, :chat_id, :role, 'active') "
+            "RETURNING id"
+        ),
+        {"org_id": org_id, "platform": platform, "chat_id": chat_id, "role": role},
+    ).fetchone()
+    return int(row[0])
+
+
+# ==================================================================
+# C2.3c — /forget-me PII deletion + /link-x identity link
+#
+# §15.5: /forget-me "removes preferences and identity rows but keeps audit
+# references via member_id (anonymized)". §8: /link-x adds platform='x' to an
+# existing member; the (platform, external_user_id) PK enforces uniqueness
+# mechanically, so a collision (the X identity already links a DIFFERENT member)
+# is rejected with the §8 message and resolved only by an admin-only DB merge
+# (no v1 self-serve merge UI). Both run inside the caller's immediate_txn; the
+# audit row is written via write_relay_audit (txn-safe, no mid-handler commit).
+# ==================================================================
+def anonymize_member(conn: Connection, member_id: int) -> None:
+    """Anonymize the ``relay_members`` row's PII fields, keeping the id (§15.5).
+
+    The ``relay_members.id`` is the durable audit anchor (submissions, reactions,
+    reply opportunities/notifications, audit rows all FK to it), so the row is
+    NEVER deleted — only its PII-carrying ``display_name`` (which may hold the
+    member's handle / real name) is cleared to ``NULL``. This is the
+    "audit references via member_id (anonymized)" half of ``/forget-me``: the
+    member_id keeps pointing at a now-nameless row. The caller MUST be inside an
+    ``immediate_txn``.
+    """
+    conn.execute(
+        text("UPDATE relay_members SET display_name = NULL WHERE id = :id"),
+        {"id": int(member_id)},
+    )
+
+
+def delete_member_preferences(conn: Connection, member_id: int) -> int:
+    """Delete ALL ``relay_member_preferences`` rows for a member (§15.5). Count deleted.
+
+    Reply-ping preferences (opt-in state, mute windows) across every org the
+    member had a preference for are PII-adjacent and removed wholesale on
+    ``/forget-me``. Returns the number of preference rows deleted. The caller MUST
+    be inside an ``immediate_txn``.
+    """
+    result = conn.execute(
+        text("DELETE FROM relay_member_preferences WHERE member_id = :mid"),
+        {"mid": int(member_id)},
+    )
+    return int(result.rowcount or 0)
+
+
+def delete_member_identities(conn: Connection, member_id: int) -> int:
+    """Delete ALL ``relay_member_identities`` rows for a member (§15.5). Count deleted.
+
+    The identity rows carry the externally-identifying PII — the stable
+    ``external_user_id`` per platform and the display ``handle`` — so they are
+    removed on ``/forget-me`` (the member is no longer resolvable from any
+    external id, and a future interaction would auto-create a FRESH member). Roles
+    on ``relay_member_roles`` are intentionally NOT touched here (deleting an
+    identity already strips the member's ability to be resolved/authorized — and
+    a forgotten member keeping a dangling role row carries no PII). Returns the
+    number of identity rows deleted. The caller MUST be inside an ``immediate_txn``.
+    """
+    result = conn.execute(
+        text("DELETE FROM relay_member_identities WHERE member_id = :mid"),
+        {"mid": int(member_id)},
+    )
+    return int(result.rowcount or 0)
+
+
+def get_x_identity(conn: Connection, external_user_id: str) -> dict | None:
+    """Return the ``relay_member_identities`` row for an X ``external_user_id``, or None.
+
+    The ``(platform, external_user_id)`` PK means at most one row exists for a
+    given X user id. ``/link-x`` consults this to detect the §8 collision (the X
+    id already linked to a DIFFERENT member) before attempting the insert.
+    Returns ``{member_id, external_user_id, handle}`` or ``None`` if unlinked.
+    """
+    row = conn.execute(
+        text(
+            "SELECT member_id, external_user_id, handle "
+            "FROM relay_member_identities "
+            "WHERE platform = 'x' AND external_user_id = :euid"
+        ),
+        {"euid": str(external_user_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def link_x_identity(
+    conn: Connection,
+    member_id: int,
+    x_user_id: str,
+    *,
+    handle: str | None = None,
+) -> None:
+    """Insert a ``platform='x'`` identity row for an existing member (§8 ``/link-x``).
+
+    The caller MUST have already (a) verified the member exists and (b) checked
+    via :func:`get_x_identity` that the X id is unlinked (or links to THIS member —
+    an idempotent re-link refreshes the handle instead of inserting). This writes
+    the new ``(platform='x', external_user_id)`` PK row. The caller MUST be inside
+    an ``immediate_txn``.
+    """
+    conn.execute(
+        text(
+            "INSERT INTO relay_member_identities "
+            "(member_id, platform, external_user_id, handle, linked_at) "
+            "VALUES (:member_id, 'x', :euid, :handle, :now)"
+        ),
+        {
+            "member_id": int(member_id),
+            "euid": str(x_user_id),
+            "handle": handle,
+            "now": _utc_now_iso(),
+        },
+    )
+
+
+def reassign_x_identity(
+    conn: Connection,
+    x_user_id: str,
+    *,
+    new_member_id: int,
+    handle: str | None = None,
+) -> bool:
+    """Re-point an existing X identity to a different member (§8 admin-only merge).
+
+    The §8 merge path: an admin resolves a ``/link-x`` collision by re-assigning
+    the X id's ``member_id`` to the intended member (no v1 self-serve UI). Updates
+    the ``(platform='x', external_user_id)`` row's ``member_id`` (and refreshes
+    ``handle`` if supplied). Returns ``True`` iff a row was re-pointed (``False``
+    if the X id was not linked at all — there is nothing to merge). The caller
+    MUST be inside an ``immediate_txn`` and MUST have already admin-gated the
+    caller.
+    """
+    if handle is not None:
+        result = conn.execute(
+            text(
+                "UPDATE relay_member_identities "
+                "SET member_id = :mid, handle = :handle "
+                "WHERE platform = 'x' AND external_user_id = :euid"
+            ),
+            {"mid": int(new_member_id), "handle": handle, "euid": str(x_user_id)},
+        )
+    else:
+        result = conn.execute(
+            text(
+                "UPDATE relay_member_identities SET member_id = :mid "
+                "WHERE platform = 'x' AND external_user_id = :euid"
+            ),
+            {"mid": int(new_member_id), "euid": str(x_user_id)},
+        )
+    return int(result.rowcount or 0) > 0
+
+
+def member_exists(conn: Connection, member_id: int) -> bool:
+    """True iff a ``relay_members`` row exists for ``member_id`` (merge precondition)."""
+    row = conn.execute(
+        text("SELECT 1 FROM relay_members WHERE id = :id"),
+        {"id": int(member_id)},
+    ).fetchone()
+    return row is not None
