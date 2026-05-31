@@ -4,6 +4,8 @@ Suite-level backbone for the Sable tool stack.
 
 SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a deterministic workflow engine, subprocess adapters to all four Sable repos, and the `sable-platform` CLI.
 
+> 💼 **Business / BD reader?** Start with the **[Suite Capability Map](docs/SUITE_CAPABILITIES.md)** — a plain-language, no-code tour of everything the whole Sable suite can do for a client, with a live-vs-roadmap status on each capability.
+
 ## Current scope (v0.5)
 
 - **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 30 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks helpers
@@ -107,6 +109,7 @@ docs/
 
 ## Docs
 
+- [Suite Capability Map](docs/SUITE_CAPABILITIES.md) — **BD-facing**: what the whole Sable suite can do for a client, by outcome, with live/roadmap status
 - [Architecture](docs/ARCHITECTURE.md) — module map, DB ownership, engine design
 - [CLI Reference](docs/CLI_REFERENCE.md) — complete command reference
 - [Cross-Repo Integration](docs/CROSS_REPO_INTEGRATION.md) — adapter reference, data flows, direct commands

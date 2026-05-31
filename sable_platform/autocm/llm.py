@@ -65,6 +65,47 @@ class AnthropicProvider:
             self._client = AsyncAnthropic(api_key=self._api_key)
         return self._client
 
+    def build_request(
+        self,
+        system: str,
+        prompt: str,
+        *,
+        max_tokens: int = 256,
+        model: Optional[str] = None,
+        stop: Optional[List[str]] = None,
+    ) -> dict:
+        """Build the EXACT Anthropic Messages request this adapter would send.
+
+        Prompt caching is MANDATORY on every Anthropic call (claude-api guidance +
+        MEGAPLAN §5): the ``system`` block is shipped as a LIST of content blocks
+        with ``cache_control: {"type": "ephemeral"}`` on the (single, stable) block,
+        so the large per-client persona/classifier system prompt is cached and the
+        only variable bytes (the delimited user message) sit AFTER it in the user
+        turn. The system string is the cache prefix; the user ``prompt`` is the
+        volatile suffix.
+
+        This is a PURE builder — no network, no SDK import — so tests can assert the
+        cache_control shape against the request the adapter BUILDS (the C3.4b /
+        §6 LLM-seam convention: the prompt-caching assertion runs against the built
+        request, never a live round-trip).
+        """
+        req: dict = {
+            "model": model or self._model,
+            "max_tokens": max_tokens,
+            # cache_control: ephemeral on the system block (MANDATORY).
+            "system": [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if stop:
+            req["stop_sequences"] = stop
+        return req
+
     async def complete(
         self,
         system: str,
@@ -78,19 +119,15 @@ class AnthropicProvider:
 
         Never raises (the seam contract): on any SDK / network / parse error it
         logs and returns ``None`` so the deterministic surface stays the hot path.
-        The full drafter wiring (prompt-cache control on the system block, thread
-        context, register selection) is C3.3 — this is the transport adapter.
+        The request is built by :meth:`build_request` (cache_control: ephemeral on
+        the system block — prompt caching is mandatory); the full drafter wiring
+        (thread context, register selection) is C3.3.
         """
         try:
             client = self._ensure_client()
-            kwargs: dict = {
-                "model": model or self._model,
-                "max_tokens": max_tokens,
-                "system": system,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-            if stop:
-                kwargs["stop_sequences"] = stop
+            kwargs = self.build_request(
+                system, prompt, max_tokens=max_tokens, model=model, stop=stop
+            )
             resp = await client.messages.create(**kwargs)
             parts = [
                 block.text
