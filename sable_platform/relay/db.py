@@ -12,7 +12,7 @@ named, typed functions, parameterized via SQLAlchemy ``text()`` bind params.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -508,3 +508,809 @@ def persist_inbound_message(
         },
     ).fetchone()
     return (int(row[0]), True) if with_inserted_flag else int(row[0])
+
+
+# ------------------------------------------------------------------
+# C2.4 feed: tweet hydration cache (relay_tweets upsert)
+#
+# §15.1: the hydrated SocialData payload is upserted into relay_tweets and the
+# hydrated x_id is the canonical id (never the URL). The poller (Flow A) and the
+# submission/flag-reply path both land their tweets here. Idempotent on the
+# ``relay_tweets.x_id`` UNIQUE constraint — a re-hydrate refreshes the cached
+# text/media/raw without inserting a duplicate row.
+# ------------------------------------------------------------------
+def upsert_tweet(
+    conn: Connection,
+    *,
+    x_id: str,
+    x_author_handle: str,
+    x_author_id: str | None = None,
+    text_body: str | None = None,
+    media_urls_json: str = "[]",
+    is_reply: bool = False,
+    in_reply_to_x_id: str | None = None,
+    conversation_x_id: str | None = None,
+    raw_json: str | None = None,
+) -> int:
+    """Upsert a hydrated tweet into ``relay_tweets``; return its row ``id``.
+
+    Idempotent on the ``x_id`` UNIQUE index: a repeat call UPDATEs the cached
+    fields (text/media/raw refresh on re-hydrate) and returns the existing row
+    id. ``x_id`` is the hydrated canonical id (§15.1 — NEVER the URL).
+    """
+    existing = conn.execute(
+        text("SELECT id FROM relay_tweets WHERE x_id = :x_id"),
+        {"x_id": str(x_id)},
+    ).fetchone()
+    params = {
+        "x_id": str(x_id),
+        "x_author_handle": x_author_handle,
+        "x_author_id": x_author_id,
+        "text": text_body,
+        "media_urls": media_urls_json,
+        "is_reply": 1 if is_reply else 0,
+        "in_reply_to_x_id": in_reply_to_x_id,
+        "conversation_x_id": conversation_x_id,
+        "raw": raw_json,
+    }
+    if existing is not None:
+        conn.execute(
+            text(
+                "UPDATE relay_tweets SET "
+                "  x_author_handle = :x_author_handle, "
+                "  x_author_id = :x_author_id, "
+                "  text = :text, "
+                "  media_urls = :media_urls, "
+                "  is_reply = :is_reply, "
+                "  in_reply_to_x_id = :in_reply_to_x_id, "
+                "  conversation_x_id = :conversation_x_id, "
+                "  fetched_at = :now, "
+                "  raw = :raw "
+                "WHERE x_id = :x_id"
+            ),
+            {**params, "now": _utc_now_iso()},
+        )
+        return int(existing[0])
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_tweets "
+            "(x_id, x_author_id, x_author_handle, text, media_urls, is_reply, "
+            " in_reply_to_x_id, conversation_x_id, raw) "
+            "VALUES (:x_id, :x_author_id, :x_author_handle, :text, :media_urls, "
+            "        :is_reply, :in_reply_to_x_id, :conversation_x_id, :raw) "
+            "RETURNING id"
+        ),
+        params,
+    ).fetchone()
+    return int(row[0])
+
+
+def get_tweet_by_x_id(conn: Connection, x_id: str) -> dict | None:
+    """Return the ``relay_tweets`` row for a hydrated ``x_id`` as a dict, or None."""
+    row = conn.execute(
+        text(
+            "SELECT id, x_id, x_author_id, x_author_handle, text, media_urls, "
+            "       is_reply, in_reply_to_x_id, conversation_x_id, fetched_at, raw "
+            "FROM relay_tweets WHERE x_id = :x_id"
+        ),
+        {"x_id": str(x_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def get_tweet_by_row_id(conn: Connection, tweet_row_id: int) -> dict | None:
+    """Return the ``relay_tweets`` row for a ``relay_tweets.id`` as a dict, or None.
+
+    ``relay_publication_jobs.tweet_id`` is the ``relay_tweets.id`` (NOT the X id),
+    so the publisher resolves the tweet payload it sends via this helper.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, x_id, x_author_id, x_author_handle, text, media_urls, "
+            "       is_reply, in_reply_to_x_id, conversation_x_id, fetched_at, raw "
+            "FROM relay_tweets WHERE id = :id"
+        ),
+        {"id": int(tweet_row_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+# ------------------------------------------------------------------
+# C2.4 feed: poller cursor (relay_clients.last_polled_at / last_seen_x_id)
+# ------------------------------------------------------------------
+def list_enabled_clients_for_poll(conn: Connection) -> list[dict]:
+    """Return the poller's per-enabled-client rows (Flow A working set).
+
+    Each dict carries the columns the poller needs without cracking JSON every
+    tick: ``org_id``, ``polling_interval_seconds``, ``last_polled_at``,
+    ``last_seen_x_id`` (the ``since_id`` cursor), and ``config`` (cracked only if
+    a per-org override is needed). Ordered by ``org_id`` for deterministic loop
+    order (the budget-gated skip test asserts a stable two-org pass).
+    """
+    rows = conn.execute(
+        text(
+            "SELECT org_id, polling_interval_seconds, last_polled_at, "
+            "       last_seen_x_id, config "
+            "FROM relay_clients WHERE enabled = 1 ORDER BY org_id"
+        )
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def list_active_destination_bindings(conn: Connection, org_id: str) -> list[dict]:
+    """Return the org's active broadcast/community destination bindings (Flow A).
+
+    Flow A fans an auto-broadcast out to every active ``broadcast`` /
+    ``community`` binding (PLAN §3.1 line 190: "each active broadcast/community
+    binding in (discord, telegram)"). Operator/shared chats are NOT broadcast
+    destinations. Returns ``{platform, chat_id, role}`` dicts.
+    """
+    rows = conn.execute(
+        text(
+            "SELECT platform, chat_id, role FROM relay_chat_bindings "
+            "WHERE org_id = :org_id AND status = 'active' "
+            "  AND role IN ('broadcast','community') "
+            "ORDER BY platform, chat_id"
+        ),
+        {"org_id": org_id},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def update_poll_cursor(
+    conn: Connection,
+    org_id: str,
+    *,
+    last_seen_x_id: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    """Stamp ``last_polled_at`` (now) and optionally advance ``last_seen_x_id``.
+
+    ``last_seen_x_id`` is the Flow A ``since_id`` cursor — advanced to the newest
+    tweet id seen this poll so the next tick dedupes. ``last_error`` records the
+    last poll error (cleared to NULL on a clean poll by passing ``None``).
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_clients SET "
+            "  last_polled_at = :now, "
+            "  last_seen_x_id = COALESCE(:last_seen_x_id, last_seen_x_id), "
+            "  last_error = :last_error "
+            "WHERE org_id = :org_id"
+        ),
+        {
+            "now": _utc_now_iso(),
+            "last_seen_x_id": last_seen_x_id,
+            "last_error": last_error,
+            "org_id": org_id,
+        },
+    )
+
+
+# ------------------------------------------------------------------
+# C2.4 feed: outbox publisher (claim → send OUTSIDE txn → record → done)
+#
+# The §3.1 publish-exactly-once state machine. ``claim_due_job`` and the
+# state-transition helpers each run inside ONE immediate_txn driven by the
+# publisher; the external send happens BETWEEN them, never inside a txn.
+# ------------------------------------------------------------------
+def enqueue_publication_job(
+    conn: Connection,
+    *,
+    org_id: str,
+    tweet_id: int,
+    destination_platform: str,
+    destination_chat_id: str,
+    submission_id: int | None = None,
+) -> int | None:
+    """Insert a ``pending`` publication job (idempotent on the dedupe index).
+
+    The partial unique index ``relay_publication_jobs_dedupe`` over
+    ``(org_id, tweet_id, destination_platform, destination_chat_id)`` WHERE state
+    IN ('pending','claimed','done') means a second enqueue for an already
+    in-flight/published (org, tweet, dest) is a no-op. Returns the new row id, or
+    ``None`` if a live duplicate already exists (the enqueue was skipped).
+    """
+    if destination_platform not in ("telegram", "discord"):
+        raise ValueError(
+            f"unknown destination platform {destination_platform!r}; "
+            "expected 'telegram' or 'discord'"
+        )
+    existing = conn.execute(
+        text(
+            "SELECT id FROM relay_publication_jobs "
+            "WHERE org_id = :org_id AND tweet_id = :tweet_id "
+            "  AND destination_platform = :dp AND destination_chat_id = :dc "
+            "  AND state IN ('pending','claimed','done')"
+        ),
+        {
+            "org_id": org_id,
+            "tweet_id": tweet_id,
+            "dp": destination_platform,
+            "dc": destination_chat_id,
+        },
+    ).fetchone()
+    if existing is not None:
+        return None
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_publication_jobs "
+            "(org_id, submission_id, tweet_id, destination_platform, "
+            " destination_chat_id, state, next_attempt_at) "
+            "VALUES (:org_id, :submission_id, :tweet_id, :dp, :dc, 'pending', :now) "
+            "RETURNING id"
+        ),
+        {
+            "org_id": org_id,
+            "submission_id": submission_id,
+            "tweet_id": tweet_id,
+            "dp": destination_platform,
+            "dc": destination_chat_id,
+            "now": _utc_now_iso(),
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+def claim_due_job(conn: Connection, worker: str) -> dict | None:
+    """Atomically claim ONE due publication job (§3.1 publisher claim).
+
+    Selects the oldest ``pending`` OR ``retry`` job whose ``next_attempt_at`` is
+    due (``<=`` now), flips it to ``claimed`` with ``claimed_by``/``claimed_at``,
+    and returns it as a dict (or ``None`` when nothing is due). MUST be called
+    inside an ``immediate_txn`` so the SELECT+UPDATE is atomic against other
+    workers (SQLite serializes writers; Postgres runs SERIALIZABLE).
+
+    Returns the full job dict so the caller can send WITHOUT re-reading the row.
+    """
+    now = _utc_now_iso()
+    candidate = conn.execute(
+        text(
+            "SELECT id FROM relay_publication_jobs "
+            "WHERE state IN ('pending','retry') AND next_attempt_at <= :now "
+            "ORDER BY next_attempt_at, id LIMIT 1"
+        ),
+        {"now": now},
+    ).fetchone()
+    if candidate is None:
+        return None
+    job_id = int(candidate[0])
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET "
+            "  state = 'claimed', claimed_by = :worker, claimed_at = :now "
+            "WHERE id = :id"
+        ),
+        {"worker": worker, "now": now, "id": job_id},
+    )
+    row = conn.execute(
+        text(
+            "SELECT id, org_id, submission_id, tweet_id, destination_platform, "
+            "       destination_chat_id, state, attempts, claimed_by, claimed_at, "
+            "       next_attempt_at, last_error, created_at "
+            "FROM relay_publication_jobs WHERE id = :id"
+        ),
+        {"id": job_id},
+    ).fetchone()
+    return dict(row._mapping)
+
+
+def mark_job_done(conn: Connection, job_id: int) -> None:
+    """Flip a claimed job to ``done`` (terminal success).
+
+    State-guarded (``AND state = 'claimed'``) to mirror :func:`reset_stuck_claim`
+    and :func:`reconcile_claim_done`. The publisher always reaches this from a
+    ``claimed`` job it just claimed, so the guard is a no-op on the happy path; it
+    only suppresses the dead→done resurrection in the kick-race (Publisher A
+    claims+sends+stalls, the binding is kicked → ``kill_inflight_jobs`` flips A's
+    job to ``dead``, A resumes into step-3). The message WAS sent before the kick
+    (DB-exactly-once is unaffected — ``record_publication``'s ON CONFLICT collapse
+    still holds), but the guard preserves the ``dead`` audit/halt state the kick
+    handler set instead of overwriting it.
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET state = 'done' "
+            "WHERE id = :id AND state = 'claimed'"
+        ),
+        {"id": job_id},
+    )
+
+
+def mark_job_retry(
+    conn: Connection,
+    job_id: int,
+    *,
+    retry_after_seconds: float,
+    last_error: str,
+    now: datetime | None = None,
+) -> None:
+    """Flip a job to ``retry`` with backoff (§3.1 ratelimit/retryable path).
+
+    Sets ``next_attempt_at = now + retry_after_seconds`` (computed in Python so
+    the arithmetic is dialect-agnostic — no ``datetime('now','+N seconds')``),
+    increments ``attempts``, and records ``last_error``. ``'retry'`` is in the
+    LOCKED §3.1 CHECK set so this write succeeds.
+    """
+    base = now or datetime.now(timezone.utc)
+    next_at = (base + timedelta(seconds=retry_after_seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET "
+            "  state = 'retry', next_attempt_at = :next_at, "
+            "  attempts = attempts + 1, last_error = :last_error "
+            "WHERE id = :id"
+        ),
+        {"next_at": next_at, "last_error": last_error, "id": job_id},
+    )
+
+
+def mark_job_dead(conn: Connection, job_id: int, *, last_error: str) -> None:
+    """Flip a job to ``dead`` (terminal failure — fatal or attempts exhausted)."""
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET state = 'dead', "
+            "  attempts = attempts + 1, last_error = :last_error WHERE id = :id"
+        ),
+        {"last_error": last_error, "id": job_id},
+    )
+
+
+def record_publication(
+    conn: Connection,
+    *,
+    org_id: str,
+    tweet_id: int,
+    destination_platform: str,
+    destination_chat_id: str,
+    destination_message_id: str,
+    submission_id: int | None = None,
+) -> bool:
+    """Insert a ``relay_publications`` row ON CONFLICT DO NOTHING (§3.1).
+
+    The unique index ``relay_publications_unique`` over
+    ``(org_id, tweet_id, destination_platform, destination_chat_id)`` enforces
+    DB-exactly-once: a second insert for the same (org, tweet, dest) is a no-op.
+    Returns ``True`` iff a NEW publication row was written (``False`` on
+    conflict — reconciliation/retry collapse to the existing row).
+
+    Dialect-agnostic: instead of ``INSERT ... ON CONFLICT`` (whose target syntax
+    differs subtly across SQLite/Postgres), we do a guarded existence check
+    inside the caller's ``immediate_txn`` — the write lock makes the
+    check-then-insert atomic (no second writer can slip a duplicate in).
+    """
+    existing = conn.execute(
+        text(
+            "SELECT id FROM relay_publications "
+            "WHERE org_id = :org_id AND tweet_id = :tweet_id "
+            "  AND destination_platform = :dp AND destination_chat_id = :dc"
+        ),
+        {
+            "org_id": org_id,
+            "tweet_id": tweet_id,
+            "dp": destination_platform,
+            "dc": destination_chat_id,
+        },
+    ).fetchone()
+    if existing is not None:
+        return False
+    conn.execute(
+        text(
+            "INSERT INTO relay_publications "
+            "(org_id, submission_id, tweet_id, destination_platform, "
+            " destination_chat_id, destination_message_id) "
+            "VALUES (:org_id, :submission_id, :tweet_id, :dp, :dc, :dmi)"
+        ),
+        {
+            "org_id": org_id,
+            "submission_id": submission_id,
+            "tweet_id": tweet_id,
+            "dp": destination_platform,
+            "dc": destination_chat_id,
+            "dmi": destination_message_id,
+        },
+    )
+    return True
+
+
+def find_publication_by_message(
+    conn: Connection,
+    *,
+    destination_platform: str,
+    destination_chat_id: str,
+    destination_message_id: str,
+) -> dict | None:
+    """Find an existing publication by its external message id (reconciliation).
+
+    The §3.2 reconciliation pass calls this with the external_message_id its
+    best-effort orphan search found, to decide whether the publication is already
+    recorded. ``None`` means no DB record exists for that external message yet.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, org_id, tweet_id FROM relay_publications "
+            "WHERE destination_platform = :dp AND destination_chat_id = :dc "
+            "  AND destination_message_id = :dmi"
+        ),
+        {
+            "dp": destination_platform,
+            "dc": destination_chat_id,
+            "dmi": destination_message_id,
+        },
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+# ------------------------------------------------------------------
+# C2.4 sweeper: stuck-claim reset + reconciliation candidate selection
+# ------------------------------------------------------------------
+def list_stuck_claims(conn: Connection, *, older_than_seconds: int) -> list[dict]:
+    """Return ``claimed`` jobs whose ``claimed_at`` is older than the threshold.
+
+    Used by BOTH the stuck-claim reset (>5min, §3.1) and the reconciliation pass
+    (>60s, §3.2). The caller passes the window. Rows with a NULL ``claimed_at``
+    are conservatively included (a claim with no timestamp is anomalous and
+    should be recovered). Returns the full job dicts so reconciliation can run
+    its best-effort external-message search.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        text(
+            "SELECT id, org_id, submission_id, tweet_id, destination_platform, "
+            "       destination_chat_id, state, attempts, claimed_by, claimed_at, "
+            "       next_attempt_at, last_error, created_at "
+            "FROM relay_publication_jobs "
+            "WHERE state = 'claimed' "
+            "  AND (claimed_at IS NULL OR claimed_at <= :cutoff) "
+            "ORDER BY id"
+        ),
+        {"cutoff": cutoff},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def reset_stuck_claim(conn: Connection, job_id: int) -> None:
+    """Recycle a stuck ``claimed`` job back to ``retry`` (due now), +1 attempt.
+
+    §3.1 stuck-claim sweeper: a ``claimed`` row older than 5min is treated as an
+    orphaned claim (worker crashed) and reset so it gets re-claimed. We reset to
+    ``retry`` (not ``pending``) because the claim selector includes both and
+    ``retry`` is the semantically-correct "re-attempt" state.
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET "
+            "  state = 'retry', next_attempt_at = :now, claimed_by = NULL, "
+            "  claimed_at = NULL, attempts = attempts + 1, "
+            "  last_error = 'stuck claim reset by sweeper' "
+            "WHERE id = :id AND state = 'claimed'"
+        ),
+        {"now": _utc_now_iso(), "id": job_id},
+    )
+
+
+def kill_stuck_claim(conn: Connection, job_id: int, *, last_error: str) -> None:
+    """Terminate a stuck ``claimed`` job to ``dead`` (recycle attempts exhausted).
+
+    §15.6 "Quorum reached but publish loops failed → after N attempts,
+    state=dead, alert admin" — upholds the same attempts→dead contract the
+    publisher's own send-failure path enforces, but on the SWEEPER recycle path
+    (a worker that repeatedly crashes mid-send is always re-claimed and never
+    reaches the publisher's exception handler). Guarded ``AND state = 'claimed'``
+    so it only acts on a still-stuck claim. Increments ``attempts`` so the dead
+    row's attempt count reflects the final (exhausting) attempt.
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET state = 'dead', "
+            "  attempts = attempts + 1, claimed_by = NULL, claimed_at = NULL, "
+            "  last_error = :last_error "
+            "WHERE id = :id AND state = 'claimed'"
+        ),
+        {"last_error": last_error, "id": job_id},
+    )
+
+
+def reconcile_claim_done(
+    conn: Connection, job_id: int, *, destination_message_id: str
+) -> None:
+    """Reconciliation found the orphan external message: record + mark done (§3.2).
+
+    Writes the publication row (ON CONFLICT DO NOTHING via :func:`record_publication`
+    is the caller's responsibility; here we only flip the job) and flips the job
+    to ``done``. Caller runs both inside one ``immediate_txn``.
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_publication_jobs SET state = 'done' "
+            "WHERE id = :id AND state = 'claimed'"
+        ),
+        {"id": job_id},
+    )
+
+
+# ------------------------------------------------------------------
+# C2.4 sweeper: submission expiry (pending past expires_at)
+# ------------------------------------------------------------------
+def expire_overdue_submissions(conn: Connection) -> int:
+    """Expire ``pending`` submissions whose ``expires_at`` has passed.
+
+    Distinct from :func:`expire_pending_submissions` (which expires by chat_id on
+    a kick): this is the time-based sweep over ALL orgs' pending submissions
+    whose quorum window elapsed. Returns the count expired.
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_submissions SET status = 'expired', resolved_at = :now "
+            "WHERE status = 'pending' AND expires_at <= :now"
+        ),
+        {"now": _utc_now_iso()},
+    )
+    return int(result.rowcount or 0)
+
+
+def reject_submission(conn: Connection, submission_id: int, *, reason: str) -> bool:
+    """Mark a submission ``rejected`` (§15.1 tweet-deleted-before-publish).
+
+    Guarded: only transitions a submission still in ``pending`` /
+    ``ready_to_publish`` (a terminal submission is left alone). ``reason`` is
+    appended to ``note`` so the source-chat notifier can echo the precise reason.
+    Returns ``True`` iff a row transitioned.
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_submissions SET "
+            "  status = 'rejected', resolved_at = :now, "
+            "  note = COALESCE(note || ' | ', '') || :reason "
+            "WHERE id = :id AND status IN ('pending','ready_to_publish')"
+        ),
+        {"now": _utc_now_iso(), "reason": f"rejected: {reason}", "id": submission_id},
+    )
+    return int(result.rowcount or 0) > 0
+
+
+def get_submission(conn: Connection, submission_id: int) -> dict | None:
+    """Return a submission row as a dict (for the §15.6 source-chat notifier), or None.
+
+    The publish-path rejection branch reads ``source_chat_id`` /
+    ``source_message_id`` so it can echo the precise rejection reason to the
+    submitter in the source chat (§15.6 "notify submitter in source chat").
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, org_id, tweet_id, submitter_id, source_chat_id, "
+            "       source_message_id, control_message_id, source_role, status "
+            "FROM relay_submissions WHERE id = :id"
+        ),
+        {"id": int(submission_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+# ------------------------------------------------------------------
+# C2.4 retention GC (SableRelay §15.5 — all five windows owned here)
+# ------------------------------------------------------------------
+def gc_processed_updates(conn: Connection, *, older_than_days: int = 7) -> int:
+    """GC ``relay_processed_updates`` rows older than N days post-``processed_at``.
+
+    §15.5 / Open-Q #7: retain 7 days. Uses the ``relay_processed_updates_gc``
+    index. Returns the count deleted.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = conn.execute(
+        text("DELETE FROM relay_processed_updates WHERE processed_at < :cutoff"),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+def gc_publication_jobs(conn: Connection, *, older_than_days: int = 30) -> int:
+    """GC terminal (``done``/``dead``) publication jobs older than N days (§15.5).
+
+    Retain 30 days post-terminal-state. We GC by ``created_at`` (no
+    ``terminal_at`` column exists; ``created_at`` is the conservative anchor — a
+    job created >30d ago that is terminal is safely past the window). Live states
+    (``pending``/``claimed``/``retry``) are NEVER GC'd. Returns the count deleted.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = conn.execute(
+        text(
+            "DELETE FROM relay_publication_jobs "
+            "WHERE state IN ('done','dead') AND created_at < :cutoff"
+        ),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+def gc_reply_notifications(conn: Connection, *, older_than_days: int = 90) -> int:
+    """GC ``relay_reply_notifications`` rows older than N days (§15.5, retain 90d).
+
+    The member-facing inbox is bounded to 90 days; aggregate stats live
+    elsewhere. GC by ``notified_at``. Returns the count deleted.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = conn.execute(
+        text("DELETE FROM relay_reply_notifications WHERE notified_at < :cutoff"),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+def gc_tweets_raw_payload(conn: Connection, *, older_than_days: int = 30) -> int:
+    """Null out ``relay_tweets.raw`` older than N days (§15.5, raw TTL 30d).
+
+    Tweet text + media URLs are retained indefinitely (cache); only the bulky
+    ``raw`` payload is TTL'd to limit footprint — so this is an UPDATE that nulls
+    ``raw`` (NOT a row delete; deleting would orphan submissions/publications
+    that FK to the tweet). GC by ``fetched_at``. Returns the count of rows whose
+    ``raw`` was cleared (only rows that still had a non-NULL ``raw``).
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = conn.execute(
+        text(
+            "UPDATE relay_tweets SET raw = NULL "
+            "WHERE raw IS NOT NULL AND fetched_at < :cutoff"
+        ),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+def gc_messages(conn: Connection, *, older_than_days: int = 90) -> int:
+    """GC ``relay_messages`` rows older than N days (§15.5 bounded window).
+
+    §5.2 reversed the "never persist inbound" posture: relay now keeps a minimal
+    inbound corpus, GC'd on a bounded window (the 90-day member-analytics window
+    pinned in §15.5 for ``relay_messages``). GC by ``received_at`` via the
+    ``relay_messages_gc`` index. Returns the count deleted.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=older_than_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = conn.execute(
+        text("DELETE FROM relay_messages WHERE received_at < :cutoff"),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+def gc_orphan_chats(conn: Connection, *, messages_older_than_days: int = 90) -> int:
+    """GC orphan ``relay_chats`` rows (§15.5 line 865 — owned by the C2.4 sweeper).
+
+    A ``relay_chats`` row is reclaimed ONLY once it is fully unreferenced:
+      * no ``relay_chat_bindings`` row references the chat (by platform + chat_id —
+        bindings carry the external chat id, not ``relay_chats.id``), AND
+      * no ``relay_messages`` row inside the 90-day messages window points at it
+        (``relay_messages.chat_id`` FKs ``relay_chats.id``).
+
+    Must run AFTER :func:`gc_messages` in the same pass so a chat whose last
+    in-window message was just swept becomes eligible immediately. The
+    ``messages_older_than_days`` cutoff mirrors the messages window so a chat is
+    only an orphan when no message NEWER than the cutoff references it (older
+    messages are already gone). Returns the count deleted.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=messages_older_than_days)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = conn.execute(
+        text(
+            "DELETE FROM relay_chats WHERE id IN ("
+            "  SELECT c.id FROM relay_chats c "
+            "  WHERE NOT EXISTS ("
+            "    SELECT 1 FROM relay_chat_bindings b "
+            "    WHERE b.platform = c.platform AND b.chat_id = c.chat_id"
+            "  ) AND NOT EXISTS ("
+            "    SELECT 1 FROM relay_messages m "
+            "    WHERE m.chat_id = c.id AND m.received_at >= :cutoff"
+            "  )"
+            ")"
+        ),
+        {"cutoff": cutoff},
+    )
+    return int(result.rowcount or 0)
+
+
+# ------------------------------------------------------------------
+# C2.4 Flow D 4.6 reply follow-through tracking
+#
+# §10/§3.2/Appendix: poll conversation_id:{tweet_id}, match replies against
+# relay_member_identities X user ids, write replied_at + replied_tweet_id.
+# ------------------------------------------------------------------
+def list_open_reply_notifications(
+    conn: Connection, org_id: str, *, within_hours: int = 24
+) -> list[dict]:
+    """Return reply notifications still awaiting follow-through for an org.
+
+    The 4.6 tracker only polls notifications that are (a) not yet ``replied_at``,
+    (b) inside the 24h tracking window (``notified_at`` within ``within_hours``),
+    joined to their opportunity to get the source ``tweet_id`` (the
+    conversation_id to poll) and the notified member. Returns one dict per
+    notification with the X identity to match against.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=within_hours)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        text(
+            "SELECT n.id AS notification_id, n.opportunity_id, n.member_id, "
+            "       n.notified_at, o.tweet_id AS tweet_row_id, "
+            "       t.x_id AS conversation_x_id "
+            "FROM relay_reply_notifications n "
+            "JOIN relay_reply_opportunities o ON o.id = n.opportunity_id "
+            "JOIN relay_tweets t ON t.id = o.tweet_id "
+            "WHERE o.org_id = :org_id "
+            "  AND n.replied_at IS NULL "
+            "  AND n.notified_at >= :cutoff "
+            "ORDER BY n.id"
+        ),
+        {"org_id": org_id, "cutoff": cutoff},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def get_member_x_user_id(conn: Connection, member_id: int) -> str | None:
+    """Return a member's linked X ``external_user_id`` (platform='x'), or None.
+
+    4.6 matches replies by stable X user id (NOT handle — handles change, per the
+    §10/Appendix note). ``None`` means the member has no linked X identity, so
+    their reply cannot be detected.
+    """
+    row = conn.execute(
+        text(
+            "SELECT external_user_id FROM relay_member_identities "
+            "WHERE member_id = :member_id AND platform = 'x'"
+        ),
+        {"member_id": member_id},
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+def mark_reply_followed_through(
+    conn: Connection,
+    notification_id: int,
+    *,
+    replied_tweet_id: str,
+) -> bool:
+    """Record a detected follow-through reply (§4.6 ``replied_at`` write).
+
+    Guarded: only writes if ``replied_at`` is still NULL (idempotent — a repeat
+    detection of the same reply is a no-op). Stamps ``replied_at`` = now and
+    ``replied_tweet_id`` = the matched reply's x_id. Returns ``True`` iff a row
+    transitioned (a NEW follow-through was recorded).
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_reply_notifications SET "
+            "  replied_at = :now, replied_tweet_id = :replied_tweet_id "
+            "WHERE id = :id AND replied_at IS NULL"
+        ),
+        {
+            "now": _utc_now_iso(),
+            "replied_tweet_id": replied_tweet_id,
+            "id": notification_id,
+        },
+    )
+    return int(result.rowcount or 0) > 0

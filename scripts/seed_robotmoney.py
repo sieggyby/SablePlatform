@@ -58,7 +58,7 @@ from sable_platform.db.connection import get_sa_engine
 
 ORG_ID = "robotmoney"
 DISPLAY_NAME = "RobotMoney"
-TWITTER_HANDLE = "@robotmoney"
+TWITTER_HANDLE = "@RobotMoneyAgent"   # NOT @robotmoney (a 2-follower namesake squat); verified 2026-05-31
 SECTOR = "AI"          # orgs.config_json sector enum
 STAGE = "launch"       # orgs.config_json stage enum
 
@@ -79,7 +79,7 @@ KB_CONSTANTS: list[tuple[str, str, str]] = [
     ("contract_address", "0x65021a79aeef22b17cdc1b768f5e79a8618beba3", "The only authoritative ROBOTMONEY contract (Base)."),
     ("chain", "base", "Chain the token and vault live on."),
     ("ticker", "ROBOTMONEY", "Token symbol. Impostor tickers exist on other chains."),
-    ("official_twitter", "@robotmoney", "Canonical X account."),
+    ("official_twitter", "@RobotMoneyAgent", "Canonical X account (verified 2026-05-31; @robotmoney is a 2-follower namesake, NOT the project)."),
     ("website", "https://www.robotmoney.net", "Official site (US-geoblocked)."),
     ("committee_url", "https://www.robotmoney.net/committee", "Public agentic investment-committee minutes."),
 ]
