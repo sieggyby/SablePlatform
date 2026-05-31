@@ -31,6 +31,23 @@ contract; the SQLite migration carries the strftime ISO-8601-Z default).
 autocm_clients.org_id FK -> orgs.org_id (TEXT). autocm_drafts source FKs ->
 relay_messages.id / relay_chats.id (the 057 relay surface).
 
+TIMESTAMP-CONTRACT NOTE (C3.5a rolling-window dependency): the SQLite 058 SQL
+defaults _at columns to strftime('%Y-%m-%dT%H:%M:%SZ','now') (the ``...T...Z``
+form), whereas this Alembic revision defaults them to func.now() over a TEXT
+column, which renders SPACE-separated (``2026-05-31 12:00:00+00``, no T/Z). The
+two forms are not lexically comparable. The C3.5a autonomy rolling-7d sweep
+(gate/autonomy.sweep_auto_demotions -> gather_review_stats) compares
+autocm_reviews.reviewed_at >= :since as TEXT, where :since is the _iso_z
+``...T...Z`` form. A review row written via the COLUMN DEFAULT on Postgres would
+therefore sort below any T-prefixed :since and be silently dropped from the
+window. The autocm convention (autocm/db.py) is to bind explicit _iso_z
+timestamps and NEVER rely on func.now()/strftime defaults; the (not-yet-built)
+C3.5b review write path MUST bind reviewed_at explicitly in _iso_z form (as
+kb/refresher already does), not rely on this column default, so the rolling-
+window comparison is dialect-consistent. (The audit_log breach window is already
+made dialect-safe in gather_review_stats by normalizing both sides to space
+form; this note covers the autocm_reviews leg, whose write path is C3.5b.)
+
 Revision ID: c5d6e7f8e058
 Revises: b5c6d7e8f057
 Create Date: 2026-05-31 12:00:00.000000
@@ -201,6 +218,10 @@ def upgrade() -> None:
         sa.Column('edit_diff_size', sa.Float(), nullable=False, server_default='0'),
         sa.Column('is_clean_approval', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('note', sa.Text(), nullable=True),
+        # ROLLING-WINDOW NOTE: func.now() renders SPACE-separated on Postgres, which
+        # is NOT lexically comparable to the _iso_z ``...T...Z`` :since bound the
+        # C3.5a sweep uses. The C3.5b review write path MUST bind reviewed_at
+        # explicitly in _iso_z form, not rely on this default. See module docstring.
         sa.Column('reviewed_at', sa.Text(), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint(
             "decision IN ('approve','edit','reject','punt_to_founder')",
