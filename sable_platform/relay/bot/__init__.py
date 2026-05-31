@@ -42,8 +42,10 @@ __all__ = [
     "InboundMessage",
     "MemberEvent",
     "CallbackEvent",
+    "CommandEvent",
     "TypingIndicator",
     "build_registry",
+    "parse_command",
 ]
 
 _REGISTRY_EXPORTS = (
@@ -52,8 +54,10 @@ _REGISTRY_EXPORTS = (
     "InboundMessage",
     "MemberEvent",
     "CallbackEvent",
+    "CommandEvent",
     "TypingIndicator",
     "build_registry",
+    "parse_command",
 )
 
 

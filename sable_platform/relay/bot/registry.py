@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 
 PLATFORMS = ("telegram", "discord")
 MEMBER_EVENTS = ("join", "leave")
+# A slash-command message starts with this prefix (TG ``/demote greeting`` etc.).
+# The command-registry routing (C2.7 command path, consumed by the C3.5c operator
+# slash-command surface) keys on the leading ``/<verb>`` token.
+COMMAND_PREFIX = "/"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,32 @@ class MemberEvent:
 
 
 @dataclass(frozen=True)
+class CommandEvent:
+    """A slash-command message handed to the registered command consumer.
+
+    Drives the C3.5c operator slash-command surface (``/demote`` / ``/promote`` /
+    ``/kb-add`` / ``/pause-client`` / …). ``command`` is the verb WITHOUT the
+    leading ``/`` (e.g. ``"demote"``), ``args`` the remaining whitespace-split
+    tokens, ``argstr`` the raw remainder (for commands like ``/kb-add`` whose tail
+    is free text). ``external_user_id`` is the platform user id of the operator who
+    typed it (the mod-gate resolves it to a ``relay_members`` row → role check).
+    ``message_row_id`` is the persisted ``relay_messages.id`` (the command message
+    itself was persisted by :meth:`RelayHandlerRegistry.dispatch_message`'s sibling
+    persistence; the command path reuses the same dedupe primitive).
+    """
+
+    org_id: Optional[str]
+    platform: str
+    chat_id: Optional[str]
+    command: str
+    args: tuple
+    argstr: str
+    external_user_id: Optional[str] = None
+    member_id: Optional[int] = None
+    message_row_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class CallbackEvent:
     """An inline-button callback handed back to the registered consumer.
 
@@ -124,6 +154,7 @@ class CallbackEvent:
 MessageHandler = Callable[[InboundMessage], None]
 MemberEventHandler = Callable[[MemberEvent], None]
 CallbackHandler = Callable[[CallbackEvent], None]
+CommandHandler = Callable[["CommandEvent"], None]
 
 
 @runtime_checkable
@@ -165,6 +196,11 @@ class RelayHandlerRegistry:
         # consumers can coexist (e.g. AutoCM review-queue vs. a future feature).
         self._callback_handlers: dict[str, CallbackHandler] = {}
         self._default_callback_handler: Optional[CallbackHandler] = None
+        # Slash-command consumers, routed by command verb (no leading '/'); a
+        # ``None`` command registers the catch-all command handler (the C3.5c
+        # operator surface registers ONE catch-all and dispatches internally).
+        self._command_handlers: dict[str, CommandHandler] = {}
+        self._default_command_handler: Optional[CommandHandler] = None
         self._dedupers = {p: Deduper(p) for p in PLATFORMS}
 
     # -- registration (called by AutoCM at boot) -----------------------------
@@ -207,6 +243,36 @@ class RelayHandlerRegistry:
                     "relay registry: callback handler for prefix %r re-registered", prefix
                 )
             self._callback_handlers[prefix] = handler
+
+    def register_command_handler(
+        self, handler: CommandHandler, *, command: Optional[str] = None
+    ) -> None:
+        """Register a slash-command consumer (the C2.7 command-registry path).
+
+        ``command`` (no leading ``/``) routes only that verb (e.g. ``"demote"``);
+        ``command=None`` registers the CATCH-ALL command handler used when no verb
+        matches. The C3.5c operator slash-command surface registers ONE catch-all
+        (it owns its own internal verb table + mod-gate) — the per-verb form exists
+        so a future feature can claim a single command without taking the whole
+        surface. Mirrors :meth:`register_callback_handler`'s default/prefix split.
+        """
+        if command is None:
+            if self._default_command_handler is not None:
+                logger.warning(
+                    "relay registry: default command handler re-registered (overwriting)"
+                )
+            self._default_command_handler = handler
+        else:
+            verb = command.lstrip("/").lower()
+            if verb in self._command_handlers:
+                logger.warning(
+                    "relay registry: command handler for %r re-registered", verb
+                )
+            self._command_handlers[verb] = handler
+
+    @property
+    def has_command_handler(self) -> bool:
+        return bool(self._command_handlers) or self._default_command_handler is not None
 
     def register_consumer(self, consumer: RelayConsumer, *, prefix: Optional[str] = None) -> None:
         """Register a single object implementing any of the consumer methods.
@@ -435,6 +501,67 @@ class RelayHandlerRegistry:
             )
         return True
 
+    def dispatch_command(
+        self,
+        *,
+        platform: str,
+        update_id: object,
+        text: str,
+        org_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        external_user_id: Optional[str] = None,
+        member_id: Optional[int] = None,
+        message_row_id: Optional[int] = None,
+    ) -> bool:
+        """Route a slash-command message to the registered command consumer.
+
+        ``text`` is the raw message body (``/demote greeting``); a body that does
+        not start with :data:`COMMAND_PREFIX`, or whose verb is empty, is NOT a
+        command and returns ``False`` (the listener falls back to the normal message
+        pipeline). The command is deduped inside one ``immediate_txn`` (a redelivered
+        command — TG retrying the update — does not double-apply a ``/demote`` /
+        ``/pause-client``), then the matching consumer (per-verb, else the catch-all)
+        is resolved and invoked OUTSIDE the transaction. Returns ``True`` iff routed
+        to a consumer, ``False`` if it was not a command, a duplicate, or no consumer
+        matched.
+
+        The MOD-GATE is the consumer's responsibility (the C3.5c operator surface
+        resolves ``external_user_id`` → ``relay_members`` → ``is_relay_operator`` and
+        rejects a non-operator). The registry only routes — it does not authorize.
+        """
+        if platform not in PLATFORMS:
+            raise ValueError(f"unknown relay platform {platform!r}")
+        parsed = parse_command(text)
+        if parsed is None:
+            return False
+        verb, args, argstr = parsed
+        with immediate_txn(self._conn):
+            is_new = self._dedupers[platform].claim(self._conn, update_id)
+            if not is_new:
+                return False
+        handler = self._command_handlers.get(verb) or self._default_command_handler
+        if handler is None:
+            logger.debug("relay registry: command %r matched no consumer", verb)
+            return False
+        evt = CommandEvent(
+            org_id=org_id,
+            platform=platform,
+            chat_id=chat_id,
+            command=verb,
+            args=tuple(args),
+            argstr=argstr,
+            external_user_id=external_user_id,
+            member_id=member_id,
+            message_row_id=message_row_id,
+        )
+        try:
+            handler(evt)
+        except Exception:  # pragma: no cover - defensive isolation
+            logger.exception(
+                "relay registry: command handler raised (verb=%s); swallowed", verb
+            )
+        return True
+
     # -- (b) operator-chat provisioning (HITL surface) ------------------------
     def get_operator_chat(self, org_id: str, platform: str = "telegram") -> Optional[str]:
         """Return the active operator-chat ``chat_id`` for a client (or None).
@@ -536,6 +663,36 @@ class TypingIndicator:
         supported transport self-expires, so ``clear`` is uniformly a safe no-op.
         """
         return False
+
+
+def parse_command(text: Optional[str]) -> Optional[tuple]:
+    """Parse a ``/verb arg1 arg2 …`` body → ``(verb, [args], argstr)`` or ``None``.
+
+    Returns ``None`` for a body that is not a slash command (empty, not
+    ``/``-prefixed, or just a bare ``/``). The verb is lower-cased and stripped of
+    a trailing ``@botname`` (TG appends it in group chats: ``/demote@nulo_bot``).
+    ``argstr`` is the raw remainder AFTER the verb (preserved un-split for commands
+    like ``/kb-add tag the full free-text answer``); ``args`` is its
+    whitespace-split tokenization.
+    """
+    if not text:
+        return None
+    body = text.strip()
+    if not body.startswith(COMMAND_PREFIX):
+        return None
+    body = body[len(COMMAND_PREFIX):]
+    if not body:
+        return None
+    parts = body.split(None, 1)
+    verb = parts[0].lower()
+    # strip a TG ``@botname`` suffix on the verb.
+    if "@" in verb:
+        verb = verb.split("@", 1)[0]
+    if not verb:
+        return None
+    argstr = parts[1].strip() if len(parts) > 1 else ""
+    args = argstr.split() if argstr else []
+    return verb, args, argstr
 
 
 def build_registry(conn: Connection) -> RelayHandlerRegistry:
