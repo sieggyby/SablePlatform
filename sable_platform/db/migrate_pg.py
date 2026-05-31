@@ -117,6 +117,44 @@ TABLE_LOAD_ORDER: list[str] = [
     # tracking the currently-pinned "stitzy state" message id in the
     # per-guild ops channel. No FKs.
     "discord_state_pins",  # no FKs (mig 054) - Integer autoincrement PK
+    # Migration 057: SableRelay (relay_* family). FK-safe order (children after
+    # parents). relay_clients.org_id FK -> orgs; everything else roots off
+    # relay_clients / relay_members / relay_tweets / relay_chats /
+    # relay_submissions / relay_reply_opportunities.
+    "relay_clients",                     # FK -> orgs (TEXT PK org_id, no sequence)
+    "relay_chats",                       # FK -> relay_clients (Integer autoincrement PK)
+    "relay_chat_bindings",               # FK -> relay_clients (Integer autoincrement PK)
+    "relay_members",                     # no FKs (Integer autoincrement PK)
+    "relay_member_identities",           # FK -> relay_members (composite TEXT PK)
+    "relay_member_roles",                # FK -> relay_members, relay_clients (composite PK)
+    "relay_member_preferences",          # FK -> relay_members, relay_clients (composite PK)
+    "relay_tweets",                      # no FKs (Integer autoincrement PK)
+    "relay_messages",                    # FK -> relay_clients, relay_chats, relay_members (Integer autoincrement PK)
+    "relay_submissions",                 # FK -> relay_clients, relay_tweets, relay_members (Integer autoincrement PK)
+    "relay_submission_reactions",        # FK -> relay_submissions, relay_members (composite PK)
+    "relay_publication_jobs",            # FK -> relay_clients, relay_submissions, relay_tweets (Integer autoincrement PK)
+    "relay_publications",                # FK -> relay_clients, relay_submissions, relay_tweets (Integer autoincrement PK)
+    "relay_reply_opportunities",         # FK -> relay_clients, relay_tweets, relay_members (Integer autoincrement PK)
+    "relay_reply_opportunity_targets",   # FK -> relay_reply_opportunities, relay_members (composite PK)
+    "relay_reply_notifications",         # FK -> relay_reply_opportunities, relay_members (Integer autoincrement PK)
+    "relay_processed_updates",           # no FKs (composite TEXT PK, no sequence)
+    # Migration 058: SableAutoCM (autocm_* family). FK-safe order (children after
+    # parents). autocm_clients.org_id FK -> orgs; autocm_drafts source FKs ->
+    # relay_messages / relay_chats (the 057 surface); everything else roots off
+    # autocm_clients / autocm_personas / autocm_kb_sources / autocm_drafts.
+    "autocm_personas",                   # no FKs (Integer autoincrement PK)
+    "autocm_clients",                    # FK -> orgs, autocm_personas (Integer autoincrement PK)
+    "autocm_kb_sources",                 # FK -> autocm_clients (Integer autoincrement PK)
+    "autocm_kb_chunks",                  # FK -> autocm_kb_sources, autocm_clients (Integer autoincrement PK)
+    "autocm_kb_constants",               # FK -> autocm_clients (composite TEXT PK, no sequence)
+    "autocm_drafts",                     # FK -> autocm_clients, relay_messages, relay_chats (Integer autoincrement PK)
+    "autocm_reviews",                    # FK -> autocm_drafts, autocm_clients (Integer autoincrement PK)
+    "autocm_category_state",             # FK -> autocm_clients (Integer autoincrement PK)
+    "autocm_escalations",                # FK -> autocm_clients, autocm_drafts, relay_messages (Integer autoincrement PK)
+    "autocm_flagged_users",              # FK -> autocm_clients, relay_members (Integer autoincrement PK)
+    "autocm_adversarial_runs",           # FK -> autocm_clients (Integer autoincrement PK)
+    "autocm_digest_interactions",        # FK -> autocm_clients (Integer autoincrement PK)
+    "autocm_time_saved_baseline",        # FK -> autocm_clients (Integer autoincrement PK)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -169,6 +207,36 @@ SEQUENCE_TABLES: dict[str, str] = {
     "discord_fitcheck_emoji_milestones": "id",
     # Migration 054: state-pin surface
     "discord_state_pins": "id",
+    # Migration 057: SableRelay tables with Integer autoincrement PKs.
+    # TEXT-PK tables (relay_clients) and composite-PK tables
+    # (relay_member_identities/roles/preferences, relay_submission_reactions,
+    # relay_reply_opportunity_targets, relay_processed_updates) are excluded.
+    "relay_chats": "id",
+    "relay_chat_bindings": "id",
+    "relay_members": "id",
+    "relay_tweets": "id",
+    "relay_messages": "id",
+    "relay_submissions": "id",
+    "relay_publication_jobs": "id",
+    "relay_publications": "id",
+    "relay_reply_opportunities": "id",
+    "relay_reply_notifications": "id",
+    # Migration 058: SableAutoCM tables with Integer autoincrement PKs.
+    # autocm_kb_constants is EXCLUDED (composite TEXT PK (client_id, key), no
+    # sequence). The FTS5 companion (autocm_kb_chunks_fts) is SQLite-only and not
+    # migrated to Postgres.
+    "autocm_personas": "id",
+    "autocm_clients": "id",
+    "autocm_kb_sources": "id",
+    "autocm_kb_chunks": "id",
+    "autocm_drafts": "id",
+    "autocm_reviews": "id",
+    "autocm_category_state": "id",
+    "autocm_escalations": "id",
+    "autocm_flagged_users": "id",
+    "autocm_adversarial_runs": "id",
+    "autocm_digest_interactions": "id",
+    "autocm_time_saved_baseline": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

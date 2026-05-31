@@ -75,6 +75,8 @@ _MIGRATIONS = [
     ("054_discord_state_pins.sql", 54),
     ("055_media_assets.sql", 55),
     ("056_operator_reply_suggestions.sql", 56),
+    ("057_relay.sql", 57),
+    ("058_autocm.sql", 58),
 ]
 
 

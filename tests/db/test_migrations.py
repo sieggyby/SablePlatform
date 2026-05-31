@@ -83,6 +83,19 @@ EXPECTED_TABLES = {
     "media_assets",
     # Migration 056: operator reply-suggestion feature.
     "operator_reply_quota", "reply_suggestions", "reply_outcomes",
+    # Migration 057: SableRelay (relay_* family)
+    "relay_clients", "relay_chats", "relay_chat_bindings", "relay_members",
+    "relay_member_identities", "relay_member_roles", "relay_member_preferences",
+    "relay_tweets", "relay_messages", "relay_submissions",
+    "relay_submission_reactions", "relay_publication_jobs", "relay_publications",
+    "relay_reply_opportunities", "relay_reply_opportunity_targets",
+    "relay_reply_notifications", "relay_processed_updates",
+    # Migration 058: SableAutoCM (autocm_* family)
+    "autocm_personas", "autocm_clients", "autocm_kb_sources", "autocm_kb_chunks",
+    "autocm_kb_constants", "autocm_drafts", "autocm_reviews",
+    "autocm_category_state", "autocm_escalations", "autocm_flagged_users",
+    "autocm_adversarial_runs", "autocm_digest_interactions",
+    "autocm_time_saved_baseline",
 }
 
 
@@ -97,7 +110,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 56
+    assert row["version"] == 58
 
 
 def test_all_tables_exist():
@@ -116,7 +129,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 56
+    assert row["version"] == 58
 
 
 def test_workflow_tables_columns():

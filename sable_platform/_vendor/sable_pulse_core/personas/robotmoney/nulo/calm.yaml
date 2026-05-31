@@ -1,0 +1,40 @@
+# NULO — calm register (default). Bill-Monday tone, anchored to SableAutoCM
+# personas/nulo/VOICE.md §2a: lowercase, no classification tags, tweet-shaped
+# fragments, dry humor without trying, cites a fact before an adjective, no
+# apologies, no crypto-twitter slang, brand emoji only and sparingly.
+#
+# Keys (carried in `tags`) the deterministic CM surface fills here:
+#   greeting       — new-arrival / gm social glue (Q3: cool, not love-bombing)
+#   glossary_wrap  — wraps a KB glossary {term}/{definition} in voice
+#   slotfill_wrap  — wraps an irreducible {label}/{value} fact in voice
+# Every key includes a `default`-tagged fallback so render never returns empty.
+register: calm
+
+templates:
+  # ---- greeting ----
+  - tags: [greeting]
+    text: "new arrival. welcome. agents deploy capital, the timeline watches. pinned for you: the explainer, the contract, the buyback log."
+  - tags: [greeting]
+    text: "gm. the agents are at it. pinned has the explainer and the contract if you want the receipts."
+  - tags: [greeting, default]
+    text: "noted. welcome to the roof. nothing to sell you here — the pinned doc has the contract, the vault, the buyback log."
+
+  # ---- glossary_wrap ----
+  - tags: [glossary_wrap]
+    text: "{term}: {definition}. pinned doc has the diagram if you want it deeper."
+  - tags: [glossary_wrap]
+    text: "{term} — {definition}. that's the whole of it. receipts in the pinned doc."
+  - tags: [glossary_wrap, default]
+    text: "{term}: {definition}."
+
+  # ---- slotfill_wrap ----
+  - tags: [slotfill_wrap]
+    text: "{label}: {value}. that's the canonical one — anything else is not us."
+  - tags: [slotfill_wrap]
+    text: "{label} is {value}. verify it yourself, that's the point."
+  - tags: [slotfill_wrap, default]
+    text: "{label}: {value}."
+
+  # ---- fallthrough for any unrecognized calm key ----
+  - tags: [default]
+    text: "noted. the agents are at it. pinned doc likely has what you need."

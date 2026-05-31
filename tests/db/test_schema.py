@@ -13,6 +13,18 @@ from sable_platform.db.schema import metadata
 # Helpers — build both schemas in-memory and introspect via PRAGMA / inspector
 # ---------------------------------------------------------------------------
 
+# Migration 058 / DECISION D-2: autocm_kb_chunks_fts is an FTS5 virtual table
+# (the C3.2a hybrid keyword leg) created only by the .sql migration — a
+# SQLite-only mechanism with no SQLAlchemy Core metadata representation. It and
+# its shadow tables (_config/_data/_docsize/_idx) appear in the legacy path but
+# not the SA path. This is the documented embedding/FTS dialect divergence the
+# parity tests must tolerate (mirrors the optional-pgvector divergence note); the
+# FTS family is filtered from both paths so the remaining table set stays in
+# parity.
+def _is_fts_table(name: str) -> bool:
+    return name == "autocm_kb_chunks_fts" or name.startswith("autocm_kb_chunks_fts_")
+
+
 def _legacy_schema() -> dict[str, list[dict]]:
     """Build schema via legacy ensure_schema().
 
@@ -26,6 +38,8 @@ def _legacy_schema() -> dict[str, list[dict]]:
     )
     tables: dict[str, list[dict]] = {}
     for (name,) in cursor.fetchall():
+        if _is_fts_table(name):
+            continue  # FTS5 virtual table + shadows — documented D-2 divergence
         cols = conn.execute(f"PRAGMA table_info({name})").fetchall()  # noqa: S608
         tables[name] = [
             {"name": r[1], "type": r[2].upper(), "notnull": bool(r[3]), "pk": bool(r[5])}
@@ -43,7 +57,7 @@ def _legacy_indexes() -> set[str]:
     cursor = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
     )
-    names = {row[0] for row in cursor.fetchall()}
+    names = {row[0] for row in cursor.fetchall() if not _is_fts_table(row[0])}
     conn.close()
     return names
 
