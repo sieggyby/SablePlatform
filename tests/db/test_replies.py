@@ -7,6 +7,7 @@ import pytest
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.replies import (
+    count_image_recs,
     find_suggestion,
     get_outcomes_summary,
     get_quota,
@@ -15,7 +16,7 @@ from sable_platform.db.replies import (
     refund_generation,
     reserve_generation,
 )
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 @pytest.fixture
@@ -99,6 +100,36 @@ def test_log_suggestion_persists(conn):
     assert row[0] == "@CahitArf11" and row[1] == "tig"
     assert json.loads(row[2])[0]["voice_fit"] == 8
     assert abs(row[3] - 0.012) < 1e-9
+
+
+def test_log_suggestion_records_clip_media_kind(conn):
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig", source_tweet_id="1",
+        variants=[{"text": "x"}], clip_media_kind="image",
+    )
+    conn.commit()
+    row = conn.execute("SELECT clip_media_kind FROM reply_suggestions WHERE id = ?", (sid,)).fetchone()
+    assert row[0] == "image"
+
+
+def test_count_image_recs_filters_kind_window_and_operator(conn):
+    now = datetime(2026, 5, 31, tzinfo=timezone.utc)
+
+    def _log(h, tid, kind, when):
+        log_suggestion(conn, operator_handle=h, org_id="tig", source_tweet_id=tid,
+                       variants=[{"text": tid}], clip_media_kind=kind, now=when)
+
+    _log("@arf", "1", "image", now)                       # in-window image ✓
+    _log("@arf", "2", "image", now - timedelta(days=2))   # in-window image ✓
+    _log("@arf", "3", "video", now)                       # video — ignored
+    _log("@arf", "4", None, now)                          # text-only — ignored
+    _log("@arf", "5", "image", now - timedelta(days=8))   # out-of-window — ignored
+    _log("@other", "6", "image", now)                     # other operator — ignored
+    conn.commit()
+
+    assert count_image_recs(conn, "@arf", days=7, now=now) == 2
+    assert count_image_recs(conn, "@other", days=7, now=now) == 1
+    assert count_image_recs(conn, "@nobody", days=7, now=now) == 0
 
 
 def test_record_outcome_is_idempotent(conn):

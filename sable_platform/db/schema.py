@@ -1515,6 +1515,9 @@ reply_suggestions = Table(
     Column("model", Text),
     Column("cost_usd", Float),
     Column("generated_at", Text, nullable=False, server_default=func.now()),
+    # mig 060 — media kind (image/video/none) the reply attached; backs the
+    # prefer-image ranking + per-operator anti-spam image throttle.
+    Column("clip_media_kind", Text),
     Index("ix_reply_suggestions_match", "operator_handle", "source_tweet_id"),
     Index("ix_reply_suggestions_org", "org_id", "generated_at"),
 )
@@ -2212,4 +2215,37 @@ Index(
     "autocm_time_saved_baseline_client_unique",
     autocm_time_saved_baseline.c.client_id,
     unique=True,
+)
+
+
+# ------------------------------------------------------------------
+# Operator work-tracking (migration 059 — SW-TASKING Phase 1)
+# ------------------------------------------------------------------
+
+mod_slot_sessions = Table(
+    "mod_slot_sessions",
+    metadata,
+    Column("session_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("ended_at", Text),
+    Column("chats_watched_json", Text, nullable=False, server_default="[]"),
+    Column("note", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_mod_slot_sessions_org", "org_id", "started_at"),
+    Index("ix_mod_slot_sessions_operator", "operator_handle", "ended_at"),
+)
+
+operator_work_events = Table(
+    "operator_work_events",
+    metadata,
+    Column("event_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("occurred_at", Text, nullable=False, server_default=func.now()),
+    Column("ref_json", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_operator_work_events_org", "org_id", "occurred_at"),
 )

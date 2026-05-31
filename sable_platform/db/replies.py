@@ -154,13 +154,15 @@ def log_suggestion(
     source_text: str | None = None,
     model: str | None = None,
     cost_usd: float | None = None,
+    clip_media_kind: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """Append a generation to the suggestion log. Returns the suggestion id.
 
     ``cost_usd`` is stored here for internal accounting only — it must never be
     returned to the browser (see the data-exposure rules in the design doc).
-    Caller commits.
+    ``clip_media_kind`` ('image' | 'video' | None) records the media kind the
+    reply attached, for the prefer-image throttle. Caller commits.
     """
     sid = uuid.uuid4().hex
     stamp = (now or _utc_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -168,8 +170,8 @@ def log_suggestion(
         text(
             "INSERT INTO reply_suggestions"
             " (id, operator_handle, org_id, source_tweet_id, source_author,"
-            "  source_text, variants_json, model, cost_usd, generated_at)"
-            " VALUES (:id, :h, :org, :tid, :author, :stext, :vj, :model, :cost, :now)"
+            "  source_text, variants_json, model, cost_usd, clip_media_kind, generated_at)"
+            " VALUES (:id, :h, :org, :tid, :author, :stext, :vj, :model, :cost, :ck, :now)"
         ),
         {
             "id": sid,
@@ -181,10 +183,36 @@ def log_suggestion(
             "vj": json.dumps(variants),
             "model": model,
             "cost": cost_usd,
+            "ck": clip_media_kind,
             "now": stamp,
         },
     )
     return sid
+
+
+def count_image_recs(
+    conn: Connection,
+    operator_handle: str,
+    *,
+    days: int = 7,
+    now: datetime | None = None,
+) -> int:
+    """How many image clips this operator was recommended in the last ``days``.
+
+    Backs the anti-spam image throttle: when this reaches the threshold the
+    system stops *auto*-preferring images (an explicit operator request still
+    attaches one). ``generated_at`` is ISO-8601-Z TEXT, lexically comparable.
+    """
+    cutoff = ((now or _utc_now()) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = conn.execute(
+        text(
+            "SELECT COUNT(*) AS n FROM reply_suggestions"
+            " WHERE operator_handle = :h AND clip_media_kind = 'image'"
+            "   AND generated_at >= :cutoff"
+        ),
+        {"h": operator_handle, "cutoff": cutoff},
+    ).fetchone()
+    return int(row[0] if row is not None else 0)
 
 
 def record_outcome(
@@ -315,3 +343,31 @@ def get_outcomes_summary(conn: Connection, org_id: str) -> dict[str, Any]:
         "adoption_rate": round(adopted / n, 3),
         "mean_engagement": round(engagement_total / n, 2),
     }
+
+
+def count_replies_delivered(
+    conn: Connection, org_id: str, since: str | None = None, until: str | None = None
+) -> int:
+    """Count delivered (posted) reply outcomes for an org over an optional window.
+
+    org_id / operator live on ``reply_suggestions``; an outcome row *is* a posted
+    reply (``posted_tweet_id NOT NULL``), so COUNT(rows) = posts delivered (a
+    single suggestion can yield multiple posts). ``posted_at`` is nullable, so we
+    window on ``COALESCE(posted_at, recorded_at)`` to avoid silently dropping
+    timestamp-less outcomes from this *measured* count. Used by the work-tracking
+    rollup (``work_tracking.get_work_summary``).
+    """
+    sql = (
+        "SELECT COUNT(*) FROM reply_outcomes o"
+        " JOIN reply_suggestions s ON o.suggestion_id = s.id"
+        " WHERE s.org_id = :org"
+    )
+    params: dict[str, Any] = {"org": org_id}
+    if since is not None:
+        sql += " AND COALESCE(o.posted_at, o.recorded_at) >= :since"
+        params["since"] = since
+    if until is not None:
+        sql += " AND COALESCE(o.posted_at, o.recorded_at) < :until"
+        params["until"] = until
+    row = conn.execute(text(sql), params).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
