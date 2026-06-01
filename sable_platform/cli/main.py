@@ -23,6 +23,7 @@ from sable_platform.cli.watchlist_cmds import watchlist
 from sable_platform.cli.webhook_cmds import webhooks
 from sable_platform.cli.cron_cmds import cron
 from sable_platform.cli.checkin_cmds import checkin
+from sable_platform.cli.relay_cmds import relay
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,7 @@ cli.add_command(watchlist)
 cli.add_command(webhooks)
 cli.add_command(cron)
 cli.add_command(checkin)
+cli.add_command(relay)
 
 from sable_platform.cli.migrate_cmds import migrate
 cli.add_command(migrate)
