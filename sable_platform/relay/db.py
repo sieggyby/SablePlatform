@@ -2353,3 +2353,166 @@ def member_exists(conn: Connection, member_id: int) -> bool:
         {"id": int(member_id)},
     ).fetchone()
     return row is not None
+
+
+# ==================================================================
+# C2.5 — relay operator CLI helpers (cli/relay_cmds.py)
+#
+# These back the `sable-platform relay` command surface (bind-chat,
+# register-operator, status, pending, enable, disable/pause-org). They take an
+# already-open SQLAlchemy Connection like every other helper here; the CLI owns
+# the connection lifecycle and the `immediate_txn` boundary for the writers
+# (enable, disable). NO engine is created here (the §5.3 layering boundary).
+# ==================================================================
+def ensure_relay_client(conn: Connection, org_id: str, *, enabled: int = 0) -> bool:
+    """Ensure a ``relay_clients`` row exists for ``org_id`` (idempotent).
+
+    Inserts the row with the given ``enabled`` value if absent. Returns ``True``
+    iff a NEW row was created (``False`` if it already existed). Does NOT touch an
+    existing row's ``enabled`` flag — flipping ``enabled`` is the caller's job
+    (see :func:`set_relay_client_enabled`). ``org_id`` MUST already exist in
+    ``orgs`` (``relay_clients.org_id`` is a FK to ``orgs(org_id)``); the caller is
+    responsible for that precondition. The caller MUST be inside an
+    ``immediate_txn`` (this writes).
+    """
+    existing = conn.execute(
+        text("SELECT 1 FROM relay_clients WHERE org_id = :org_id"),
+        {"org_id": org_id},
+    ).fetchone()
+    if existing is not None:
+        return False
+    conn.execute(
+        text(
+            "INSERT INTO relay_clients (org_id, enabled, created_at) "
+            "VALUES (:org_id, :enabled, :now)"
+        ),
+        {"org_id": org_id, "enabled": int(enabled), "now": _utc_now_iso()},
+    )
+    return True
+
+
+def set_relay_client_enabled(conn: Connection, org_id: str, *, enabled: int) -> None:
+    """Set ``relay_clients.enabled`` for an existing client (the poller gate).
+
+    ``enabled=1`` re-admits the org to the poller's per-enabled-client loop;
+    ``enabled=0`` removes it. Operates on an existing row only (use
+    :func:`ensure_relay_client` first for the create path). The caller MUST be
+    inside an ``immediate_txn`` (this writes).
+    """
+    conn.execute(
+        text("UPDATE relay_clients SET enabled = :enabled WHERE org_id = :org_id"),
+        {"enabled": int(enabled), "org_id": org_id},
+    )
+
+
+def kill_org_inflight_jobs(
+    conn: Connection, org_id: str, *, last_error: str = "org disabled by operator"
+) -> int:
+    """Halt ALL of an org's in-flight publication jobs (the kill-switch fan-out).
+
+    Flips every ``relay_publication_jobs`` row for ``org_id`` that is in
+    ``pending`` / ``retry`` / ``claimed`` to ``state='dead'`` with ``last_error``
+    (default ``'org disabled by operator'``). ``'dead'`` is the only CHECK-allowed
+    halted value in the LOCKED §3.1 set ``('pending','claimed','retry','done',
+    'dead')`` — there is NO ``'halted'`` state (inventing one would violate the
+    CHECK). This is the org-scoped sibling of :func:`kill_inflight_jobs` (which is
+    keyed by a single kicked destination chat): the relay-level kill-switch must
+    stop EVERY destination's in-flight publishing for the org, so it keys on
+    ``org_id`` instead. Done/dead jobs are left untouched (terminal). Returns the
+    count flipped. The caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_publication_jobs "
+            "SET state = 'dead', last_error = :last_error "
+            "WHERE org_id = :org_id AND state IN ('pending', 'retry', 'claimed')"
+        ),
+        {"last_error": last_error, "org_id": org_id},
+    )
+    return int(result.rowcount or 0)
+
+
+def list_pending_submissions(
+    conn: Connection, org_id: str, *, limit: int = 50
+) -> list[dict]:
+    """List an org's open submissions awaiting quorum (the ``/pending`` surface).
+
+    Returns ``pending`` and ``ready_to_publish`` ``relay_submissions`` rows for
+    ``org_id`` (the two non-terminal submission states), newest first, joined to
+    the tweet's author handle / x_id for a human-readable listing. Read-only.
+    """
+    rows = conn.execute(
+        text(
+            "SELECT s.id, s.status, s.source_role, s.note, s.created_at, "
+            "       s.expires_at, t.x_id, t.x_author_handle "
+            "FROM relay_submissions s "
+            "JOIN relay_tweets t ON t.id = s.tweet_id "
+            "WHERE s.org_id = :org_id "
+            "  AND s.status IN ('pending', 'ready_to_publish') "
+            "ORDER BY s.created_at DESC, s.id DESC "
+            "LIMIT :limit"
+        ),
+        {"org_id": org_id, "limit": int(limit)},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def get_relay_status(conn: Connection, org_id: str) -> dict | None:
+    """Return a bot-health summary for an org (the ``/status`` surface), or None.
+
+    ``None`` iff no ``relay_clients`` row exists for ``org_id``. Otherwise a dict
+    with the client's ``enabled`` flag, poll cursor (``last_polled_at`` /
+    ``last_seen_x_id``), ``last_error``, the count of active chat bindings, the
+    count of open submissions (``pending`` + ``ready_to_publish``), and the count
+    of in-flight publication jobs (``pending`` + ``claimed`` + ``retry``).
+    Read-only — no transaction required.
+    """
+    client = conn.execute(
+        text(
+            "SELECT enabled, last_polled_at, last_seen_x_id, last_error "
+            "FROM relay_clients WHERE org_id = :org_id"
+        ),
+        {"org_id": org_id},
+    ).fetchone()
+    if client is None:
+        return None
+    bindings = conn.execute(
+        text(
+            "SELECT COUNT(*) FROM relay_chat_bindings "
+            "WHERE org_id = :org_id AND status = 'active'"
+        ),
+        {"org_id": org_id},
+    ).fetchone()[0]
+    pending_submissions = conn.execute(
+        text(
+            "SELECT COUNT(*) FROM relay_submissions "
+            "WHERE org_id = :org_id AND status IN ('pending', 'ready_to_publish')"
+        ),
+        {"org_id": org_id},
+    ).fetchone()[0]
+    inflight_jobs = conn.execute(
+        text(
+            "SELECT COUNT(*) FROM relay_publication_jobs "
+            "WHERE org_id = :org_id AND state IN ('pending', 'claimed', 'retry')"
+        ),
+        {"org_id": org_id},
+    ).fetchone()[0]
+    return {
+        "org_id": org_id,
+        "enabled": int(client[0]),
+        "last_polled_at": client[1],
+        "last_seen_x_id": client[2],
+        "last_error": client[3],
+        "active_bindings": int(bindings),
+        "pending_submissions": int(pending_submissions),
+        "inflight_jobs": int(inflight_jobs),
+    }
+
+
+def org_exists(conn: Connection, org_id: str) -> bool:
+    """True iff an ``orgs`` row exists for ``org_id`` (relay-client FK precondition)."""
+    row = conn.execute(
+        text("SELECT 1 FROM orgs WHERE org_id = :org_id"),
+        {"org_id": org_id},
+    ).fetchone()
+    return row is not None

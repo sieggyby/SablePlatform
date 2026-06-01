@@ -20,6 +20,18 @@ providers register here without touching call sites.
 ``AnthropicProvider`` re-exports the vendored ``LLMProvider`` protocol so a single
 ``isinstance(provider, LLMProvider)`` check (runtime-checkable) proves any adapter
 SATISFIES the core seam — the C3.1 exit assertion.
+
+**Cost tracking (MEGAPLAN C3.10).** The ``AnthropicProvider`` is the ONLY place an
+LLM SDK + a real token-usage object (``resp.usage``) live, so it is where per-client
+spend is captured. When the adapter is constructed with a
+:class:`~sable_platform.autocm.cost.CostAccountant` and a ``client_id``, every
+successful ``complete`` records the call's token usage into the accountant as a
+SIDE EFFECT, keyed by ``client_id`` (per-client, no cross-client bleed). This does
+NOT change the ``LLMProvider`` protocol's ``Optional[str]`` return type — the
+recording is a pure side effect that does not alter the returned completion. The
+:class:`NullLLMProvider` makes no API call and therefore records NOTHING. The
+DB-persisted ``cost_events`` ledger is a deferred post-merge migration — see
+``cost.py`` (the branch is frozen at migration head 058).
 """
 from __future__ import annotations
 
@@ -28,6 +40,7 @@ from typing import List, Optional
 
 # The protocol-only seam shipped by the vendored core (zero anthropic).
 from sable_platform._vendor.sable_pulse_core import LLMProvider
+from sable_platform.autocm.cost import CostAccountant
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +58,13 @@ class AnthropicProvider:
     process that never makes an LLM call). ``api_key=None`` resolves the key from
     the standard ``ANTHROPIC_API_KEY`` env var (secrets-in-env; never inline —
     see the manifest secrets invariant).
+
+    **Cost capture (C3.10).** When ``accountant`` (a
+    :class:`~sable_platform.autocm.cost.CostAccountant`) and ``client_id`` are
+    supplied, each successful :meth:`complete` records that call's token usage into
+    the accountant keyed by ``client_id`` — a SIDE EFFECT that leaves the
+    ``Optional[str]`` return contract untouched. With no accountant the adapter
+    behaves exactly as before (cost capture is opt-in; the online handler wires it).
     """
 
     def __init__(
@@ -52,10 +72,15 @@ class AnthropicProvider:
         *,
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
+        accountant: Optional[CostAccountant] = None,
+        client_id: Optional[int] = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._client = None  # lazily constructed
+        # C3.10 per-client cost capture (opt-in; the only place token usage lives).
+        self._accountant = accountant
+        self._client_id = client_id
 
     def _ensure_client(self):
         if self._client is None:
@@ -122,6 +147,12 @@ class AnthropicProvider:
         The request is built by :meth:`build_request` (cache_control: ephemeral on
         the system block — prompt caching is mandatory); the full drafter wiring
         (thread context, register selection) is C3.3.
+
+        **Cost side effect (C3.10).** On a successful call the response's
+        ``usage`` is recorded into the configured :class:`CostAccountant` keyed by
+        the configured ``client_id`` — per-client attribution, no cross-client
+        bleed. The recording is wrapped so a cost-accounting failure can never break
+        the reply path, and it does not change the ``Optional[str]`` return value.
         """
         try:
             client = self._ensure_client()
@@ -129,6 +160,10 @@ class AnthropicProvider:
                 system, prompt, max_tokens=max_tokens, model=model, stop=stop
             )
             resp = await client.messages.create(**kwargs)
+            # C3.10: record token usage into the per-client accountant (side effect
+            # ONLY — the return contract is unchanged). Priced by the request's
+            # effective model. Never lets a cost-accounting error break the reply.
+            self._record_cost(resp, model=kwargs.get("model"))
             parts = [
                 block.text
                 for block in getattr(resp, "content", [])
@@ -139,6 +174,26 @@ class AnthropicProvider:
         except Exception:  # pragma: no cover - network/SDK failure path
             logger.exception("AnthropicProvider.complete failed; returning None")
             return None
+
+    def _record_cost(self, resp: object, *, model: Optional[str]) -> None:
+        """Record ``resp.usage`` into the per-client accountant (the C3.10 side effect).
+
+        A no-op when no accountant / client_id is wired. Reads ``resp.usage``
+        defensively and forwards to :meth:`CostAccountant.record_usage`, keyed by
+        ``self._client_id`` so the spend lands in THIS client's bucket and no
+        other's. Any failure is swallowed (cost capture must never break a reply).
+        """
+        if self._accountant is None or self._client_id is None:
+            return
+        try:
+            usage = getattr(resp, "usage", None)
+            if usage is None:
+                return
+            self._accountant.record_usage(
+                self._client_id, model=model or self._model, usage=usage
+            )
+        except Exception:  # pragma: no cover - cost capture must never block a reply
+            logger.exception("AnthropicProvider cost recording failed (continuing)")
 
 
 class NullLLMProvider:
@@ -173,6 +228,8 @@ def build_llm_provider(
     *,
     api_key: Optional[str] = None,
     model: Optional[str] = None,
+    accountant: Optional[CostAccountant] = None,
+    client_id: Optional[int] = None,
 ) -> LLMProvider:
     """Build a config-selected :class:`LLMProvider` (default: Anthropic).
 
@@ -180,6 +237,11 @@ def build_llm_provider(
     ``ValueError`` so a config typo fails loudly rather than silently disabling
     the LLM. The returned object satisfies the vendored-core ``LLMProvider``
     protocol (runtime-checkable).
+
+    ``accountant`` + ``client_id`` (C3.10) are passed THROUGH to the
+    :class:`AnthropicProvider` for per-client cost capture; they are IGNORED for the
+    ``null`` provider, which makes no API call and records nothing (cost is $0 on
+    the Null / budget-exhausted path).
     """
     key = provider.strip().lower()
     if key not in _PROVIDERS:
@@ -187,7 +249,12 @@ def build_llm_provider(
             f"unknown LLM provider {provider!r}; expected one of {sorted(_PROVIDERS)}"
         )
     if key == "anthropic":
-        return AnthropicProvider(api_key=api_key, model=model or DEFAULT_MODEL)
+        return AnthropicProvider(
+            api_key=api_key,
+            model=model or DEFAULT_MODEL,
+            accountant=accountant,
+            client_id=client_id,
+        )
     return NullLLMProvider()
 
 
@@ -197,4 +264,5 @@ __all__ = [
     "NullLLMProvider",
     "build_llm_provider",
     "DEFAULT_MODEL",
+    "CostAccountant",
 ]

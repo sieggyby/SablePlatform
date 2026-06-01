@@ -1,0 +1,28 @@
+[Unit]
+# MEGAPLAN C4.3 — the long-running TG/Discord relay LISTENER that ALSO hosts the
+# in-process AutoCM online handlers (filter->classify->draft->gate->HITL post),
+# per MEGAPLAN §2 runtime topology. This is the SOLE unit that instantiates the
+# in-memory core RateLimiter (the AutoCM online path's per-process quota).
+Description=SableRelay listener + in-process AutoCM online handlers (relay-bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sable
+WorkingDirectory=/opt/sable/platform
+# Secrets-in-env ONLY (MEGAPLAN §5): no inline secret value lives in this unit.
+# /opt/sable/.env (chmod 600, gitignored) carries SABLE_DATABASE_URL,
+# RELAY_TG_BOT_TOKEN, RELAY_DISCORD_BOT_TOKEN, ANTHROPIC_API_KEY, etc.
+EnvironmentFile=/opt/sable/.env
+Environment=SABLE_OPERATOR_ID=relay-bot
+ExecStart=/opt/sable/venv/bin/python3 scripts/run_relay_bot.py
+Restart=on-failure
+RestartSec=10
+# SINGLE-REPLICA INVARIANT (MEGAPLAN §2 / C4.3): the in-memory RateLimiter is
+# single-PROCESS state. relay-bot MUST run as EXACTLY ONE instance while it is
+# the only quota mechanism — do NOT template/scale this unit (no @-instances)
+# without first promoting the shared-store limiter. See OPERATIONS_RUNBOOK.md.
+
+[Install]
+WantedBy=multi-user.target
