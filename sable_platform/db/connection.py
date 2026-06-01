@@ -73,6 +73,13 @@ _MIGRATIONS = [
     ("052_discord_fitcheck_emoji_milestones.sql", 52),
     ("053_align_timestamp_columns_to_text.sql", 53),
     ("054_discord_state_pins.sql", 54),
+    ("055_media_assets.sql", 55),
+    ("056_operator_reply_suggestions.sql", 56),
+    ("057_relay.sql", 57),
+    ("058_autocm.sql", 58),
+    ("059_work_tracking.sql", 59),
+    ("060_reply_clip_media_kind.sql", 60),
+    ("061_reply_campaigns.sql", 61),
 ]
 
 

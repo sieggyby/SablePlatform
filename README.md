@@ -2,14 +2,23 @@
 
 Suite-level backbone for the Sable tool stack.
 
-SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a deterministic workflow engine, subprocess adapters to all four Sable repos, and the `sable-platform` CLI.
+SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a deterministic workflow engine, subprocess adapters to the specialized Sable repos, and the `sable-platform` CLI. It also now hosts several in-process subsystems (shared media layer, Alert-Triage API, client check-ins, the SableAutoCM "NULO" engine, and the SableRelay listener substrate).
 
-## Current scope (v0.5)
+> 💼 **Business / BD reader?** Start with the **[Suite Capability Map](docs/SUITE_CAPABILITIES.md)** — a plain-language, no-code tour of everything the whole Sable suite can do for a client, with a live-vs-roadmap status on each capability.
 
-- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 30 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks helpers
+> 🧰 **Operator?** Grab the **[Operator Handbook](docs/OPERATOR_HANDBOOK.md)** — a single self-contained, download-and-paste-into-an-LLM guide to using all the day-to-day tools (the website, Telegram content tracker, Discord engagement bot): clocking mod hours, reply-assist, logging content, moderation commands. Safe to share with an LLM (no secrets).
+
+## Current scope
+
+- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 60 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks/media/reply-suggestion/discord-scoring/work-tracking helpers
 - **`sable_platform.contracts`** — Lead, ProspectHandoff, DiagnosticRun, Entity, ContentItem, Artifact, SyncRun, WorkflowRun, Task, Outcome, Recommendation, TrackingMetadata
-- **`sable_platform.workflows`** — deterministic `WorkflowRunner`, registry, 5 builtin workflows, 12 alert checks, alert delivery (Telegram/Discord with cooldown)
-- **`sable_platform.adapters`** — subprocess adapters for CultGrader, SableTracking, Slopper, LeadIdentifier
+- **`sable_platform.workflows`** — deterministic `WorkflowRunner`, registry, 9 builtin workflows, 12 alert checks, alert delivery (Telegram/Discord with cooldown)
+- **`sable_platform.adapters`** — subprocess adapters for CultGrader, SableTracking, Slopper, LeadIdentifier, ClientComms (V1 stub). SableKOL integrates as a FastAPI sidecar, not a subprocess adapter.
+- **`sable_platform.media`** — shared media layer (R2 storage + HMAC-signed expiring URLs); paired with the `sable-media-proxy` Cloudflare Worker
+- **`sable_platform.api`** — token-authed Alert-Triage HTTP API (private-network MVP)
+- **`sable_platform.checkin`** — weekly client check-in generator (LLM synthesis; TIG trial)
+- **`sable_platform.autocm`** — SableAutoCM "NULO" engine (in active development; reuses the vendored `_vendor/sable_pulse_core`). See [AutoCM](docs/AUTOCM.md).
+- **`sable_platform.relay`** — SableRelay multi-tenant TG/Discord listener substrate (schema + dispatch built; feed/publish pending). See [Relay](docs/RELAY.md).
 - **`sable_platform.cli`** — full operator surface (see [CLI Reference](docs/CLI_REFERENCE.md))
 
 ## Installation
@@ -93,23 +102,34 @@ When `SABLE_DATABASE_URL` points at PostgreSQL, `sable-platform init` applies Al
 ```
 sable_platform/
 ├── contracts/      Canonical Pydantic models
-├── db/             DB layer + 30 migrations
+├── db/             DB layer + 60 migrations
 ├── workflows/      WorkflowRunner, registry, builtins, alert engine
 ├── adapters/       Subprocess adapters per repo
+├── media/          Shared media layer (R2 store, registry, URL signing)
+├── api/            Token-authed Alert-Triage HTTP API
+├── checkin/        Weekly client check-in generator (TIG trial)
+├── autocm/         SableAutoCM "NULO" engine (in development)
+├── relay/          SableRelay TG/Discord listener substrate
+├── _vendor/        Vendored sable_pulse_core (generated, never edited)
 ├── webhooks/       HMAC-SHA256 webhook dispatch
 ├── http_health.py  Bearer-authenticated /health HTTP server
 ├── metrics.py      Prometheus text format export
 ├── cron.py         Crontab scheduler
 └── cli/            sable-platform CLI
-tests/              996 tests (in-memory SQLite, no ~/.sable modification)
+tests/              2,450 tests (in-memory SQLite, no ~/.sable modification)
 docs/
 ```
 
 ## Docs
 
+- [Suite Capability Map](docs/SUITE_CAPABILITIES.md) — **BD-facing**: what the whole Sable suite can do for a client, by outcome, with live/roadmap status
+- [Sales & Marketing Kit](docs/marketing/) — outbound pitch deck, service-line one-pagers, messaging + language guardrails
+- [Operator Handbook](docs/OPERATOR_HANDBOOK.md) — **operator-facing**: how to use the website, Telegram tracker, and Discord bot day-to-day (download + give to an LLM)
 - [Architecture](docs/ARCHITECTURE.md) — module map, DB ownership, engine design
 - [CLI Reference](docs/CLI_REFERENCE.md) — complete command reference
 - [Cross-Repo Integration](docs/CROSS_REPO_INTEGRATION.md) — adapter reference, data flows, direct commands
+- [AutoCM](docs/AUTOCM.md) — SableAutoCM "NULO" engine: architecture, pipeline, what's built vs pending
+- [Relay](docs/RELAY.md) — SableRelay listener substrate: schema, dispatch, what's built vs pending
 - [End-to-End Workflows](docs/END_TO_END_WORKFLOWS.md) — operational runbooks
 - [Environment Setup](docs/ENVIRONMENT_SETUP.md) — full setup guide
 - [Workflows](docs/WORKFLOWS.md) — builtin workflow definitions and state machines

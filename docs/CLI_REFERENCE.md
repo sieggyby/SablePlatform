@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. Commands operate on `sable
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 54 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init                      # Create sable.db + apply all 61 migrations, or run Alembic on SABLE_DATABASE_URL
 sable-platform init --db-path /alt/path  # Force a specific SQLite file
 sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
 sable-platform db-health --json          # JSON output for Docker/automation
@@ -121,6 +121,41 @@ sable-platform org config list --json
 **Valid stages:** `pre_launch`, `launch`, `growth`, `mature`, `declining`
 
 Numeric threshold keys are coerced to `float` and validated against min/max bounds. Out-of-range values are rejected. See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full list of supported threshold keys and their ranges.
+
+---
+
+## relay — SableRelay Operator Surface
+
+The out-of-band operator equivalent of SableRelay's in-chat admin commands (PLAN §4). The CLI is gated by `SABLE_OPERATOR_ID` (the suite-wide operator-identity gate), so it does not re-run the in-chat admin role check. No migration needed — these operate on the `relay_*` tables shipped in migration 057.
+
+```bash
+# Enable a relay client (admit org to the poller; creates the relay_clients row if absent)
+sable-platform relay enable <ORG_ID>
+
+# Bind a chat as operator/shared/community/broadcast for a client
+sable-platform relay bind-chat <ORG_ID> operator --chat-id -100123 --platform telegram
+sable-platform relay bind-chat <ORG_ID> community --chat-id 99887766 --platform discord --title "Public"
+
+# Grant a relay role to a Telegram member (numeric mode)
+sable-platform relay register-operator <ORG_ID> --tg-user-id 555123 --role sable_operator --handle alice
+
+# Bot-health summary for a client
+sable-platform relay status <ORG_ID>
+sable-platform relay status <ORG_ID> --json
+
+# List open submissions awaiting quorum
+sable-platform relay pending <ORG_ID> [--limit 50] [--json]
+
+# Kill-switch: disable a client AND halt its in-flight publishing (alias: pause-org)
+sable-platform relay disable <ORG_ID>
+sable-platform relay pause-org <ORG_ID>
+```
+
+**Binding roles:** `operator`, `shared`, `community`, `broadcast` (the `relay_chat_bindings.role` CHECK set). One active binding per `(org, platform, role)` and per `(platform, chat)` — re-binding re-points the role / displaces any other role on the chat.
+
+**Grantable operator roles:** `sable_operator`, `admin`.
+
+**Kill-switch (`disable` / `pause-org`):** in one transaction sets `relay_clients.enabled=0` (stops the poller) **and** marks every `pending`/`retry`/`claimed` `relay_publication_jobs` row for the org to `state='dead'` with `last_error='org disabled by operator'` (stops the publisher). `'dead'` is the only CHECK-allowed halted value in the §3.1 state set `('pending','claimed','retry','done','dead')` — there is no `'halted'` state. Each command writes an `audit_log` row (`source='relay'`). Re-enable with `relay enable <ORG_ID>` (note: this does not resurrect the dead jobs — they stay terminal; new submissions enqueue fresh jobs).
 
 ---
 

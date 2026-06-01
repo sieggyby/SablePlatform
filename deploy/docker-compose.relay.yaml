@@ -1,0 +1,93 @@
+# MEGAPLAN C4.3 — SableRelay + SableAutoCM service deployment overlay.
+#
+# Compose alternative to the systemd units (deploy/sable-platform-relay-bot.service
+# et al.) for the THREE runtime roles defined in MEGAPLAN §2:
+#   * relay-bot     — long-running TG/Discord listener + in-process AutoCM online
+#                     handlers; SOLE unit with the in-memory core RateLimiter.
+#   * relay-poller  — X-timeline poller + publisher drain loop (no RateLimiter).
+#   * autocm-batch  — digest/KB-refresh/adversarial/auto-demotion (no RateLimiter).
+#
+# Run alongside the base stack:
+#   docker compose -f docker-compose.yaml -f deploy/docker-compose.relay.yaml up -d
+#
+# SECRETS-IN-ENV ONLY (MEGAPLAN §5): every value below is a ${VAR} interpolation
+# resolved from the host environment / an --env-file. NO inline secret literal
+# appears in this file. The ${VAR:-} default is the EMPTY string, never a token.
+#
+# The Dockerfile image copies only sable_platform/; the scripts/ entrypoints are
+# bind-mounted read-only so the units have a concrete ExecStart without rebuilding
+# the image (mirrors how the systemd units run scripts/ from the repo checkout).
+
+services:
+  relay-bot:
+    build: .
+    volumes:
+      - sable-data:/data
+      - ../scripts:/app/scripts:ro
+    environment:
+      - SABLE_DATABASE_URL=${SABLE_DATABASE_URL:-}
+      - SABLE_DB_PATH=/data/sable.db
+      - SABLE_OPERATOR_ID=relay-bot
+      - RELAY_TG_BOT_TOKEN=${RELAY_TG_BOT_TOKEN:-}
+      - RELAY_DISCORD_BOT_TOKEN=${RELAY_DISCORD_BOT_TOKEN:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    entrypoint: ["python3", "scripts/run_relay_bot.py"]
+    # SINGLE-REPLICA INVARIANT (MEGAPLAN §2 / C4.3): the in-memory RateLimiter is
+    # single-PROCESS state. Do NOT set deploy.replicas > 1 / scale relay-bot
+    # without first promoting the shared-store limiter. See OPERATIONS_RUNBOOK.md.
+    deploy:
+      replicas: 1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sable-platform", "db-health", "--json"]
+      interval: 60s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  relay-poller:
+    build: .
+    volumes:
+      - sable-data:/data
+      - ../scripts:/app/scripts:ro
+    environment:
+      - SABLE_DATABASE_URL=${SABLE_DATABASE_URL:-}
+      - SABLE_DB_PATH=/data/sable.db
+      - SABLE_OPERATOR_ID=relay-poller
+      - SOCIALDATA_API_KEY=${SOCIALDATA_API_KEY:-}
+      - RELAY_TG_BOT_TOKEN=${RELAY_TG_BOT_TOKEN:-}
+      - RELAY_POLLER_INTERVAL_SECONDS=${RELAY_POLLER_INTERVAL_SECONDS:-60}
+    entrypoint: ["python3", "scripts/run_relay_poller.py"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sable-platform", "db-health", "--json"]
+      interval: 120s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  autocm-batch:
+    build: .
+    volumes:
+      - sable-data:/data
+      - ../scripts:/app/scripts:ro
+    environment:
+      - SABLE_DATABASE_URL=${SABLE_DATABASE_URL:-}
+      - SABLE_DB_PATH=/data/sable.db
+      - SABLE_OPERATOR_ID=autocm-batch
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    # Daily loop (no OS cron needed — direct invoke, like the alerts-cron pattern).
+    # 86400s = 24h between full batch passes; the script no-ops when no AutoCM
+    # client is enabled, so a dormant tenant costs nothing.
+    entrypoint: ["sh", "-c"]
+    command: ["while true; do python3 scripts/run_autocm_batch.py; sleep 86400; done"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "sable-platform", "db-health", "--json"]
+      interval: 300s
+      timeout: 5s
+      start_period: 30s
+      retries: 2
+
+volumes:
+  sable-data:

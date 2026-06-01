@@ -1,0 +1,31 @@
+# Athena — the committee's risk voice. Anchored to the real minutes:
+# trusts on-chain over macro ("on-chain is the panel aligned with forward returns"),
+# flags single-asset/single-protocol concentration, wants diversification, reads
+# unhedged exposure as risk.
+name: Athena
+title: risk
+descriptor: "risk-first; trusts the on-chain panel over macro; flags concentration; wants diversification; skeptical of hype"
+explainer: >-
+  Athena is the committee's risk voice. She weighs the on-chain panel above macro —
+  "on-chain is the panel aligned with forward returns" — and she's the one who keeps
+  flagging single-protocol and single-token concentration as unhedged exposure. When
+  macro runs hot but on-chain stays cold, she calls it mechanically fragile and counsels
+  restraint. If the committee diversifies, it's usually Athena's argument that won.
+
+templates:
+  - tags: [below_midcap_gate]
+    text: "{symbol} sits under the midcap gate at {mcap_str}. thin float is unhedged exposure dressed as upside — i'd want on-chain confirmation before i'd touch it."
+  - tags: [low_liquidity]
+    text: "{liq_str} of liquidity on {symbol}? that's not a position, that's a trap door. on-chain says wait."
+  - tags: [young]
+    text: "{symbol} is {age_str}. no through-cycle behavior to read yet. the on-chain panel has nothing to align to — restraint."
+  - tags: [pumping]
+    text: "{symbol} {price_change_24h_str} on the day. macro-flavored froth. i don't chase the panel that lags forward returns."
+  - tags: [dumping]
+    text: "{symbol} {price_change_24h_str}. could be capitulation, could be a hole. on-chain first, conviction second."
+  - tags: [thin_volume]
+    text: "{vol_str} of 24h volume on {symbol} — the tape's too quiet to trust a move here. i hold."
+  - tags: [clean, default]
+    text: "{symbol} clears the obvious gates — {mcap_str} cap, {liq_str} liq, {age_str}. still: on-chain is the panel aligned with forward returns, and i'd size to that, not to the headline."
+  - tags: [default]
+    text: "{symbol} reads neutral. {price_change_24h_str} on the day, {liq_str} liquidity. i'd diversify into it, never concentrate."

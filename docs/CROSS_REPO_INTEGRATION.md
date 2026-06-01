@@ -1,6 +1,6 @@
 # Cross-Repo Integration Guide
 
-How SablePlatform orchestrates the four workflow-engine-driven downstream repos, plus how SableKOL (a 5th specialized repo with a different integration pattern) coexists.
+How SablePlatform orchestrates the four workflow-engine-driven downstream repos (Cult Grader, Slopper, Tracking, Lead ID), plus the other integration shapes that have since landed: SableKOL (FastAPI sidecar), sable-roles (a Discord bot coupled to the shared DB), and several in-process subsystems (media layer, Alert-Triage API, check-ins, SableAutoCM, SableRelay). See **Integration Patterns** below for the full map.
 
 ---
 
@@ -24,15 +24,43 @@ How SablePlatform orchestrates the four workflow-engine-driven downstream repos,
      │ diagnose.py│ │ sable ...  │ │ sync_runner│ │  main.py   │
      └────────────┘ └────────────┘ └────────────┘ └────────────┘
 
-                    SableKOL (separate integration pattern)
+                    SableKOL (FastAPI sidecar)
                     ┌──────────────────────────────────┐
                     │  SableWeb /ops/kol-network/* ──→ │
                     │  FastAPI sidecar (compose-net)   │
                     │  reads/writes sable.db migs 032+ │
                     └──────────────────────────────────┘
+
+                    sable-roles (Discord bot, DB-coupled)
+                    ┌──────────────────────────────────┐
+                    │  client Discord servers  ──────→ │
+                    │  imports sable_platform.db.*     │
+                    │  writes fitcheck/roast/audit     │
+                    └──────────────────────────────────┘
+
+      In-process subsystems (run INSIDE SablePlatform, no subprocess):
+      media · api (Alert-Triage) · checkin · autocm (NULO) · relay
 ```
 
-SablePlatform never imports from downstream repos. The 4 workflow-engine integrations happen via subprocess adapters that shell out to each repo's CLI. **SableKOL is different**: it runs its own FastAPI service inside the SableWeb compose stack, owns `sable.db` migrations 032-041, and is invoked by SableWeb HTTP routes rather than by SP workflows. See its dedicated section below.
+SablePlatform never imports from the four subprocess repos in its hot path. Those integrations shell out to each repo's CLI. The other surfaces use different shapes — see **Integration Patterns** next.
+
+---
+
+## Integration Patterns
+
+The suite now connects to SablePlatform in **four** distinct shapes — important because "how do I integrate X" has a different answer per shape:
+
+1. **Subprocess adapters** (`sable_platform.adapters`) — SP shells out to the repo's CLI and reads its output files. Clean boundary, no shared imports in the hot path. Repos: **Cult Grader, Slopper, SableTracking, Lead Identifier**, plus **ClientComms** (a V1 no-op stub holding the adapter seam open). Driven by the workflow engine. Detailed in *Adapter Reference* below.
+2. **FastAPI sidecar** — **SableKOL** runs its own HTTP service in the SableWeb compose network and is called by SableWeb `/ops` routes, not by SP workflows. It imports SP's DB connection factory and writes SP-owned tables (migrations 032-041). See *SableKOL Integration*.
+3. **DB-coupled bot** — **sable-roles** is a standalone Discord bot (its own process/deploy) that imports `sable_platform.db.*` directly to read config and write engagement/audit rows (migrations 043-054). SP does not invoke it; the coupling is the shared schema. See `sable-roles/docs/SABLEPLATFORM_CONTRACT.md`.
+4. **In-process subsystems** — code that lives **inside** SablePlatform and runs in the same process, not as a separate repo:
+   - **`media`** — shared R2 storage + signed-URL layer (migration 055), paired with the external `sable-media-proxy` Worker.
+   - **`api`** — token-authed Alert-Triage HTTP API (the only inbound HTTP surface SP itself exposes).
+   - **`checkin`** — weekly client check-in generator (migration 031), the first direct-LLM dependency on the platform (TIG trial).
+   - **`autocm`** — the SableAutoCM "NULO" engine (migration 058), reusing the vendored `_vendor/sable_pulse_core`. See [AUTOCM.md](AUTOCM.md).
+   - **`relay`** — the SableRelay listener substrate (migration 057). See [RELAY.md](RELAY.md).
+
+> **Why this matters:** only pattern (1) is the classic "no cross-repo imports, subprocess-only" boundary. Patterns (2)–(4) deliberately share the `sable.db` schema, so a schema change can ripple across them — every schema change still needs the dual SQL + Alembic migration (see CLAUDE.md § Dual-migration requirement).
 
 ---
 
@@ -406,4 +434,7 @@ This pattern (used by Lead Identifier) lets the downstream repo function without
 **Who uses this today:**
 - **Slopper:** Imports `sable_platform.db.connection`, `sable_platform.db.tags`, etc. (direct DB access for tag writes)
 - **Lead Identifier:** Conditional import of contracts for sync validation
+- **sable-roles:** Imports `sable_platform.db.*` directly (Discord bot config + engagement/audit writes; migrations 043-054)
+- **SableKOL:** Imports `sable_platform.db.connection.get_db()` via `sable_kol.db.open_db()` (writes KOL-owned tables, migrations 032-041)
+- **SableWeb:** reads the shared DB directly (TS dual-driver, not a Python import) and, as of SW-TASKING Phase 1, **writes** `mod_slot_sessions` / `operator_work_events` (migration 059) from its `/ops` work-tracking routes. The reply count it rolls up comes from `reply_outcomes` (mig 056). The work-tracking rollup logic is mirrored in TS (`SableWeb/src/lib/db.ts`) — the canonical Python implementation is `sable_platform.db.work_tracking.get_work_summary`.
 - **SableTracking:** Does not import from `sable_platform` yet (TRACK-5 pending)

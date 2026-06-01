@@ -1,0 +1,13 @@
+[Unit]
+Description=SablePlatform alert evaluator (TIG)
+# Runs the registered alert checks (incl. tracking_stale, which catches a
+# stalled SableTracking->content_items sync) and delivers any that fire.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=sable
+WorkingDirectory=/opt/sable/platform
+EnvironmentFile=/opt/sable/.env
+Environment=SABLE_OPERATOR_ID=alerts-timer
+ExecStart=/opt/sable/venv/bin/python3 scripts/run_alerts.py tig

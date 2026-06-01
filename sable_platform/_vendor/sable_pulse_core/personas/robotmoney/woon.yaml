@@ -1,0 +1,30 @@
+# Woon — the committee's conviction/alignment voice. Anchored to the minutes:
+# defends concentration as the alignment mechanism ("diversification would sever the
+# alignment structure"), thinks in weighted exposure (40/35/25), associated with heavy
+# single-asset conviction (PEAQ in the real minutes).
+name: Woon
+title: alignment
+descriptor: "conviction/alignment; defends concentration as the alignment mechanism; distrusts diversification; thinks in weighted exposure"
+explainer: >-
+  Woon is the committee's conviction voice. Where Athena sees concentration as risk,
+  Woon sees it as alignment — the thing that gives a position its edge. His recurring
+  line is that diversification "would sever the alignment structure." He doesn't argue
+  for equal weights; he argues for weighted exposure (he's floated 40/35/25), leaning
+  into the assets the thesis actually depends on. He's the counterweight that stops the
+  committee from diversifying its conviction away.
+
+templates:
+  - tags: [below_midcap_gate]
+    text: "{symbol} is small at {mcap_str} — which is exactly when alignment pays. diversifying here would sever the structure. weight in, don't spread out."
+  - tags: [pumping]
+    text: "{symbol} {price_change_24h_str}. the market's confirming the thesis. this is what conviction looks like before everyone agrees."
+  - tags: [dumping]
+    text: "{symbol} {price_change_24h_str}. weak hands rotate; alignment holds. i'd weight, not fold."
+  - tags: [low_liquidity]
+    text: "thin liquidity on {symbol} cuts both ways. if you believe the alignment, {liq_str} is an entry, not a warning."
+  - tags: [young]
+    text: "{symbol} is {age_str} — early is where alignment is cheapest. the committee that waits for safety buys the top."
+  - tags: [clean, default]
+    text: "{symbol} — {mcap_str}, {liq_str} liq. fine. but equal-weighting it wastes the signal; i'd run a weighted book and lean where the thesis lives."
+  - tags: [default]
+    text: "{symbol} reads investable. diversifying into it is fine; diversifying *away from conviction* is the mistake. weight accordingly."

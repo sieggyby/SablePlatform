@@ -79,6 +79,25 @@ EXPECTED_TABLES = {
     # Migration 054: state-pin surface — currently-pinned message id per
     # (guild_id, characteristic) for the per-guild ops channel.
     "discord_state_pins",
+    # Migration 055: shared media-asset registry.
+    "media_assets",
+    # Migration 056: operator reply-suggestion feature.
+    "operator_reply_quota", "reply_suggestions", "reply_outcomes",
+    # Migration 057: SableRelay (relay_* family)
+    "relay_clients", "relay_chats", "relay_chat_bindings", "relay_members",
+    "relay_member_identities", "relay_member_roles", "relay_member_preferences",
+    "relay_tweets", "relay_messages", "relay_submissions",
+    "relay_submission_reactions", "relay_publication_jobs", "relay_publications",
+    "relay_reply_opportunities", "relay_reply_opportunity_targets",
+    "relay_reply_notifications", "relay_processed_updates",
+    # Migration 058: SableAutoCM (autocm_* family)
+    "autocm_personas", "autocm_clients", "autocm_kb_sources", "autocm_kb_chunks",
+    "autocm_kb_constants", "autocm_drafts", "autocm_reviews",
+    "autocm_category_state", "autocm_escalations", "autocm_flagged_users",
+    "autocm_adversarial_runs", "autocm_digest_interactions",
+    "autocm_time_saved_baseline",
+    # Migration 059: operator work-tracking
+    "mod_slot_sessions", "operator_work_events",
 }
 
 
@@ -93,7 +112,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 54
+    assert row["version"] == 61
 
 
 def test_all_tables_exist():
@@ -112,7 +131,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 54
+    assert row["version"] == 61
 
 
 def test_workflow_tables_columns():

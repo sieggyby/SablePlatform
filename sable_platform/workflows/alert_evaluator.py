@@ -22,6 +22,29 @@ from sable_platform.workflows.alert_checks import (
 log = logging.getLogger(__name__)
 
 
+def _run_check(conn, fn, *args) -> list[str]:
+    """Run one alert check in isolation.
+
+    Commits the check's alerts on success; rolls back on failure. On Postgres a
+    failed statement aborts the whole transaction ("current transaction is
+    aborted, commands ignored…"), so without this boundary one broken check
+    (e.g. a dialect issue) would poison every sibling check AND the final
+    heartbeat/commit — which is exactly why no alerts (incl. tracking_stale)
+    ever fired in prod. Isolating per check keeps the others working.
+    """
+    try:
+        ids = fn(conn, *args)
+        conn.commit()
+        return ids
+    except Exception as exc:  # noqa: BLE001 — one bad check must not sink the rest
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log.error("evaluate_alerts: check %s failed, skipping: %s", getattr(fn, "__name__", fn), exc)
+        return []
+
+
 def evaluate_alerts(
     conn: sqlite3.Connection,
     org_id: str | None = None,
@@ -36,30 +59,29 @@ def evaluate_alerts(
         org_ids = [r["org_id"] for r in rows]
 
     created: list[str] = []
+    # Per-org checks, each run in its own commit/rollback boundary (see _run_check)
+    # so a single check failing on Postgres can't abort the whole evaluation.
+    _per_org_checks = [
+        _check_tracking_stale,
+        _check_cultist_tag_expiring,
+        _check_sentiment_shift,
+        _check_mvl_score_change,
+        _check_actions_unclaimed,
+        _check_discord_pulse_stale,
+        _check_stuck_runs,
+        _check_member_decay,
+        _check_bridge_decay,
+        _check_watchlist_changes,
+    ]
     for oid in org_ids:
-        try:
-            created.extend(_check_tracking_stale(conn, oid))
-            created.extend(_check_cultist_tag_expiring(conn, oid))
-            created.extend(_check_sentiment_shift(conn, oid))
-            created.extend(_check_mvl_score_change(conn, oid))
-            created.extend(_check_actions_unclaimed(conn, oid))
-            created.extend(_check_discord_pulse_stale(conn, oid))
-            created.extend(_check_stuck_runs(conn, oid))
-            created.extend(_check_member_decay(conn, oid))
-            created.extend(_check_bridge_decay(conn, oid))
-            created.extend(_check_watchlist_changes(conn, oid))
-        except Exception as exc:
-            log.error("evaluate_alerts: unexpected error for org %s, skipping: %s", oid, exc)
+        for check in _per_org_checks:
+            created.extend(_run_check(conn, check, oid))
 
-    try:
-        created.extend(_check_workflow_failures(conn, org_id if (org_id and org_id != "_all") else None))
-    except Exception as exc:
-        log.error("evaluate_alerts: unexpected error in workflow_failures check, skipping: %s", exc)
+    created.extend(
+        _run_check(conn, _check_workflow_failures, org_id if (org_id and org_id != "_all") else None)
+    )
     for oid in org_ids:
-        try:
-            created.extend(_check_discord_pulse_regression(conn, oid))
-        except Exception as exc:
-            log.error("evaluate_alerts: unexpected error for org %s in regression check: %s", oid, exc)
+        created.extend(_run_check(conn, _check_discord_pulse_regression, oid))
 
     try:
         conn.execute(

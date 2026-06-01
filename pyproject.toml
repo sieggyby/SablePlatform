@@ -9,11 +9,14 @@ description = "Suite-level platform backbone for the Sable tool stack"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
+    "pydantic-settings>=2.0",
     "click>=8.0",
     "pyyaml>=6.0",
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "anthropic>=0.40",
+    "python-telegram-bot~=21.0",
+    "discord.py~=2.4",
 ]
 
 [project.optional-dependencies]
@@ -36,3 +39,10 @@ sable_platform = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # discord.py 2.7.1's escape_markdown passes re.sub's `count` positionally,
+    # which CPython 3.14 deprecates. Library-internal (not a relay defect — the
+    # §15.2 escaping invariant still holds); narrowly scoped so it never masks a
+    # real relay warning. Drop when discord.py bumps past the fix.
+    "ignore:'count' is passed as positional argument:DeprecationWarning:discord.utils",
+]

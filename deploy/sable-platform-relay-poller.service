@@ -1,0 +1,25 @@
+[Unit]
+# MEGAPLAN C4.3 — the X-timeline poller + publisher drain loop (SableRelay PLAN
+# §7). Runs SEPARATELY from relay-bot: per tick it polls enabled clients
+# (Flow A), sweeps (expiry/recon/GC), and drains the publish outbox. It governs
+# spend via the per-org SocialData daily cap + cost_events, and MUST NOT
+# instantiate the in-memory core RateLimiter (that lives only in relay-bot).
+Description=SableRelay X-timeline poller + publisher drain (relay-poller)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sable
+WorkingDirectory=/opt/sable/platform
+# Secrets-in-env ONLY (MEGAPLAN §5): no inline secret value lives in this unit.
+# /opt/sable/.env carries SABLE_DATABASE_URL, SOCIALDATA_API_KEY,
+# RELAY_TG_BOT_TOKEN (send transport), RELAY_POLLER_INTERVAL_SECONDS, etc.
+EnvironmentFile=/opt/sable/.env
+Environment=SABLE_OPERATOR_ID=relay-poller
+ExecStart=/opt/sable/venv/bin/python3 scripts/run_relay_poller.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

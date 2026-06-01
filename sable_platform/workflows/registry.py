@@ -35,6 +35,10 @@ def _auto_register() -> None:
     from sable_platform.workflows.builtins import lead_discovery  # noqa: F401
     from sable_platform.workflows.builtins import onboard_client  # noqa: F401
     from sable_platform.workflows.builtins import client_checkin_loop  # noqa: F401
+    from sable_platform.workflows.builtins import autocm_kb_refresh  # noqa: F401
+    from sable_platform.workflows.builtins import autocm_autonomy_sweep  # noqa: F401
+    from sable_platform.workflows.builtins import autocm_weekly_digest  # noqa: F401
+    from sable_platform.workflows.builtins import autocm_adversarial_sweep  # noqa: F401
 
 
 _auto_register()

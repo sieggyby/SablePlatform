@@ -1457,3 +1457,831 @@ kol_enrichment = Table(
     ),
     Index("idx_kol_enrichment_operator", "operator_email"),
 )
+
+# ------------------------------------------------------------------
+# Migration 055 — shared media-asset registry
+# ------------------------------------------------------------------
+
+media_assets = Table(
+    "media_assets",
+    metadata,
+    Column("asset_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("source_project", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("r2_ref", Text, nullable=False),
+    Column("mime", Text),
+    Column("bytes", Integer),
+    Column("sha256", Text),
+    Column("entity_id", Text, ForeignKey("entities.entity_id")),
+    Column("content_item_id", Text, ForeignKey("content_items.item_id")),
+    Column("source_ref", Text),
+    Column("caption", Text),
+    Column("metadata_json", Text, nullable=False, server_default="{}"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_media_assets_org_kind", "org_id", "kind"),
+    Index("ix_media_assets_sha", "org_id", "sha256"),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index("ux_media_assets_org_ref", media_assets.c.org_id, media_assets.c.r2_ref, unique=True)
+
+
+# ------------------------------------------------------------------
+# Migration 056 — operator reply-suggestion feature
+# ------------------------------------------------------------------
+
+operator_reply_quota = Table(
+    "operator_reply_quota",
+    metadata,
+    Column("operator_handle", Text, primary_key=True),
+    Column("day_utc", Text, primary_key=True),
+    Column("org_id", Text),
+    Column("count", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+
+reply_suggestions = Table(
+    "reply_suggestions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("operator_handle", Text, nullable=False),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("source_tweet_id", Text, nullable=False),
+    Column("source_author", Text),
+    Column("source_text", Text),
+    Column("variants_json", Text, nullable=False, server_default="[]"),
+    Column("model", Text),
+    Column("cost_usd", Float),
+    Column("generated_at", Text, nullable=False, server_default=func.now()),
+    # mig 060 — media kind (image/video/none) the reply attached; backs the
+    # prefer-image ranking + per-operator anti-spam image throttle.
+    Column("clip_media_kind", Text),
+    Index("ix_reply_suggestions_match", "operator_handle", "source_tweet_id"),
+    Index("ix_reply_suggestions_org", "org_id", "generated_at"),
+)
+
+reply_outcomes = Table(
+    "reply_outcomes",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("suggestion_id", Text, ForeignKey("reply_suggestions.id"), nullable=False),
+    Column("posted_tweet_id", Text, nullable=False),
+    Column("posted_at", Text),
+    Column("chosen_variant_idx", Integer),
+    Column("was_edited", Integer, nullable=False, server_default="0"),
+    Column("engagement_json", Text, nullable=False, server_default="{}"),
+    Column("recorded_at", Text, nullable=False, server_default=func.now()),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index(
+    "ux_reply_outcomes_match",
+    reply_outcomes.c.suggestion_id,
+    reply_outcomes.c.posted_tweet_id,
+    unique=True,
+)
+
+
+# ------------------------------------------------------------------
+# Migration 061 — coordinated reply campaigns (the "flash mob")
+# ------------------------------------------------------------------
+reply_campaigns = Table(
+    "reply_campaigns",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("target_tweet_id", Text, nullable=False),
+    Column("target_url", Text),
+    Column("target_author", Text),
+    Column("objective", Text),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("created_by", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("won_at", Text),
+    Column("closed_at", Text),
+    Index("ix_reply_campaigns_org", "org_id", "status", "created_at"),
+)
+
+reply_campaign_assignments = Table(
+    "reply_campaign_assignments",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("campaign_id", Text, ForeignKey("reply_campaigns.id"), nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("suggestion_id", Text),
+    Column("posted_tweet_id", Text),
+    Column("angle", Text),
+    Column("status", Text, nullable=False, server_default="assigned"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("posted_at", Text),
+    Index("ix_reply_campaign_assignments_campaign", "campaign_id"),
+)
+
+
+# ------------------------------------------------------------------
+# Migration 057 — SableRelay (relay_* table family)
+# ------------------------------------------------------------------
+# Mirrors 057_relay.sql. The .sql file carries the strftime ISO-8601-Z _at
+# default + the CHECK constraints; test_schema.py parity compares only table
+# names, column names, type affinity, nullability, and named indexes — so this
+# uses the house server_default=func.now() (defaults are not compared) and the
+# named partial indexes are reproduced exactly. relay_publication_jobs.state
+# CHECK = the corrected section-3.1 set ('pending','claimed','retry','done','dead').
+
+relay_clients = Table(
+    "relay_clients",
+    metadata,
+    Column("org_id", Text, ForeignKey("orgs.org_id"), primary_key=True),
+    Column("enabled", Integer, nullable=False, server_default="0"),
+    Column("x_handle_override", Text),
+    Column("polling_interval_seconds", Integer, nullable=False, server_default="300"),
+    Column("last_polled_at", Text),
+    Column("last_seen_x_id", Text),
+    Column("last_error", Text),
+    Column("config", Text, nullable=False, server_default="{}"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+)
+
+relay_chats = Table(
+    "relay_chats",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("chat_id", Text, nullable=False),
+    Column("title", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "platform IN ('telegram','discord')",
+        name="ck_relay_chats_platform",
+    ),
+    Index("relay_chats_by_org", "org_id"),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index("relay_chats_unique", relay_chats.c.platform, relay_chats.c.chat_id, unique=True)
+
+relay_chat_bindings = Table(
+    "relay_chat_bindings",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("chat_id", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("superseded_by_chat_id", Text),
+    Column("last_seen_at", Text),
+    Column("last_error", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "platform IN ('telegram','discord')",
+        name="ck_relay_chat_bindings_platform",
+    ),
+    CheckConstraint(
+        "role IN ('operator','shared','community','broadcast')",
+        name="ck_relay_chat_bindings_role",
+    ),
+    CheckConstraint(
+        "status IN ('active','migrated','kicked','disabled')",
+        name="ck_relay_chat_bindings_status",
+    ),
+)
+
+# Partial unique indexes (WHERE status='active') — named to match the migration.
+Index(
+    "relay_chat_bindings_unique_role",
+    relay_chat_bindings.c.org_id,
+    relay_chat_bindings.c.platform,
+    relay_chat_bindings.c.role,
+    unique=True,
+    sqlite_where=relay_chat_bindings.c.status == "active",
+    postgresql_where=relay_chat_bindings.c.status == "active",
+)
+Index(
+    "relay_chat_bindings_unique_chat",
+    relay_chat_bindings.c.platform,
+    relay_chat_bindings.c.chat_id,
+    unique=True,
+    sqlite_where=relay_chat_bindings.c.status == "active",
+    postgresql_where=relay_chat_bindings.c.status == "active",
+)
+
+relay_members = Table(
+    "relay_members",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("display_name", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+)
+
+relay_member_identities = Table(
+    "relay_member_identities",
+    metadata,
+    Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("external_user_id", Text, nullable=False),
+    Column("handle", Text),
+    Column("linked_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "platform IN ('telegram','x','discord')",
+        name="ck_relay_member_identities_platform",
+    ),
+    PrimaryKeyConstraint("platform", "external_user_id"),
+    Index("relay_member_identities_by_member", "member_id"),
+)
+
+relay_member_roles = Table(
+    "relay_member_roles",
+    metadata,
+    Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("role", Text, nullable=False),
+    Column("granted_by", Integer, ForeignKey("relay_members.id")),
+    Column("granted_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "role IN ('sable_operator','client_team','admin')",
+        name="ck_relay_member_roles_role",
+    ),
+    PrimaryKeyConstraint("member_id", "org_id", "role"),
+    Index("relay_member_roles_by_org_role", "org_id", "role"),
+)
+
+relay_member_preferences = Table(
+    "relay_member_preferences",
+    metadata,
+    Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("replies_optin", Integer, nullable=False, server_default="0"),
+    Column("mute_until", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("member_id", "org_id"),
+    Index("relay_member_preferences_optin", "org_id", "replies_optin", "mute_until"),
+)
+
+relay_tweets = Table(
+    "relay_tweets",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("x_id", Text, nullable=False, unique=True),
+    Column("x_author_id", Text),
+    Column("x_author_handle", Text, nullable=False),
+    Column("text", Text),
+    Column("media_urls", Text, nullable=False, server_default="[]"),
+    Column("is_reply", Integer, nullable=False, server_default="0"),
+    Column("in_reply_to_x_id", Text),
+    Column("conversation_x_id", Text),
+    Column("fetched_at", Text, nullable=False, server_default=func.now()),
+    Column("raw", Text),
+    Index("relay_tweets_author", "x_author_id"),
+)
+
+relay_messages = Table(
+    "relay_messages",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("chat_id", Integer, ForeignKey("relay_chats.id"), nullable=False),
+    Column("member_id", Integer, ForeignKey("relay_members.id")),
+    Column("platform", Text, nullable=False),
+    Column("external_message_id", Text, nullable=False),
+    Column("external_user_id", Text),
+    Column("text", Text),
+    Column("reply_to_external_message_id", Text),
+    Column("received_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "platform IN ('telegram','discord')",
+        name="ck_relay_messages_platform",
+    ),
+    Index("relay_messages_org_received", "org_id", "received_at"),
+    Index("relay_messages_member", "member_id", "received_at"),
+    Index("relay_messages_gc", "received_at"),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index(
+    "relay_messages_unique",
+    relay_messages.c.platform,
+    relay_messages.c.chat_id,
+    relay_messages.c.external_message_id,
+    unique=True,
+)
+
+relay_submissions = Table(
+    "relay_submissions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("tweet_id", Integer, ForeignKey("relay_tweets.id"), nullable=False),
+    Column("submitter_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("source_chat_id", Text, nullable=False),
+    Column("source_message_id", Text, nullable=False),
+    Column("control_message_id", Text),
+    Column("source_role", Text, nullable=False),
+    Column("note", Text),
+    Column("status", Text, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("expires_at", Text, nullable=False),
+    Column("resolved_at", Text),
+    CheckConstraint(
+        "source_role IN ('operator','shared')",
+        name="ck_relay_submissions_source_role",
+    ),
+    CheckConstraint(
+        "status IN ('pending','ready_to_publish','published','expired','rejected')",
+        name="ck_relay_submissions_status",
+    ),
+    Index("relay_submissions_org_status", "org_id", "status", "created_at"),
+    Index("relay_submissions_expires", "status", "expires_at"),
+    Index("relay_submissions_control_lookup", "source_chat_id", "control_message_id"),
+)
+
+# Partial unique index (WHERE status IN ('pending','ready_to_publish')).
+Index(
+    "relay_submissions_one_pending_per_tweet",
+    relay_submissions.c.org_id,
+    relay_submissions.c.tweet_id,
+    unique=True,
+    sqlite_where=relay_submissions.c.status.in_(["pending", "ready_to_publish"]),
+    postgresql_where=relay_submissions.c.status.in_(["pending", "ready_to_publish"]),
+)
+
+relay_submission_reactions = Table(
+    "relay_submission_reactions",
+    metadata,
+    Column("submission_id", Integer, ForeignKey("relay_submissions.id"), nullable=False),
+    Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("emoji", Text, nullable=False),
+    Column("reacted_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("submission_id", "member_id", "emoji"),
+    Index("relay_submission_reactions_by_emoji", "submission_id", "emoji"),
+)
+
+relay_publication_jobs = Table(
+    "relay_publication_jobs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("submission_id", Integer, ForeignKey("relay_submissions.id")),
+    Column("tweet_id", Integer, ForeignKey("relay_tweets.id"), nullable=False),
+    Column("destination_platform", Text, nullable=False),
+    Column("destination_chat_id", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("claimed_by", Text),
+    Column("claimed_at", Text),
+    Column("next_attempt_at", Text, nullable=False, server_default=func.now()),
+    Column("last_error", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "destination_platform IN ('discord','telegram')",
+        name="ck_relay_publication_jobs_destination_platform",
+    ),
+    CheckConstraint(
+        "state IN ('pending','claimed','retry','done','dead')",
+        name="ck_relay_publication_jobs_state",
+    ),
+    Index("relay_publication_jobs_due", "state", "next_attempt_at"),
+)
+
+# Partial unique dedupe index (WHERE state IN ('pending','claimed','done')).
+Index(
+    "relay_publication_jobs_dedupe",
+    relay_publication_jobs.c.org_id,
+    relay_publication_jobs.c.tweet_id,
+    relay_publication_jobs.c.destination_platform,
+    relay_publication_jobs.c.destination_chat_id,
+    unique=True,
+    sqlite_where=relay_publication_jobs.c.state.in_(["pending", "claimed", "done"]),
+    postgresql_where=relay_publication_jobs.c.state.in_(["pending", "claimed", "done"]),
+)
+
+relay_publications = Table(
+    "relay_publications",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("submission_id", Integer, ForeignKey("relay_submissions.id")),
+    Column("tweet_id", Integer, ForeignKey("relay_tweets.id"), nullable=False),
+    Column("destination_platform", Text, nullable=False),
+    Column("destination_chat_id", Text, nullable=False),
+    Column("destination_message_id", Text, nullable=False),
+    Column("published_at", Text, nullable=False, server_default=func.now()),
+    Index("relay_publications_by_tweet", "tweet_id"),
+    Index(
+        "relay_publications_by_message",
+        "destination_platform", "destination_chat_id", "destination_message_id",
+    ),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index(
+    "relay_publications_unique",
+    relay_publications.c.org_id,
+    relay_publications.c.tweet_id,
+    relay_publications.c.destination_platform,
+    relay_publications.c.destination_chat_id,
+    unique=True,
+)
+
+relay_reply_opportunities = Table(
+    "relay_reply_opportunities",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("tweet_id", Integer, ForeignKey("relay_tweets.id"), nullable=False),
+    Column("flagger_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("origin", Text, nullable=False),
+    Column("note", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "origin IN ('explicit_command','reaction','auto_mention')",
+        name="ck_relay_reply_opportunities_origin",
+    ),
+    Index("relay_reply_opportunities_by_org", "org_id", "created_at"),
+)
+
+relay_reply_opportunity_targets = Table(
+    "relay_reply_opportunity_targets",
+    metadata,
+    Column(
+        "opportunity_id",
+        Integer,
+        ForeignKey("relay_reply_opportunities.id"),
+        nullable=False,
+    ),
+    Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    PrimaryKeyConstraint("opportunity_id", "member_id"),
+)
+
+relay_reply_notifications = Table(
+    "relay_reply_notifications",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "opportunity_id",
+        Integer,
+        ForeignKey("relay_reply_opportunities.id"),
+        nullable=False,
+    ),
+    Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
+    Column("notified_at", Text, nullable=False, server_default=func.now()),
+    Column("dismissed_at", Text),
+    Column("replied_at", Text),
+    Column("replied_tweet_id", Text),
+    Index("relay_reply_notifications_inbox", "member_id", "dismissed_at"),
+)
+
+# Named unique index (NOT a UniqueConstraint — must match the SQL migration's
+# named CREATE UNIQUE INDEX for test_schema.py legacy-index parity).
+Index(
+    "relay_reply_notifications_unique",
+    relay_reply_notifications.c.opportunity_id,
+    relay_reply_notifications.c.member_id,
+    unique=True,
+)
+
+relay_processed_updates = Table(
+    "relay_processed_updates",
+    metadata,
+    Column("platform", Text, nullable=False),
+    Column("update_id", Text, nullable=False),
+    Column("processed_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "platform IN ('telegram','discord')",
+        name="ck_relay_processed_updates_platform",
+    ),
+    PrimaryKeyConstraint("platform", "update_id"),
+    Index("relay_processed_updates_gc", "processed_at"),
+)
+
+# ------------------------------------------------------------------
+# Migration 058 — SableAutoCM (autocm_* table family)
+# ------------------------------------------------------------------
+# Mirrors 058_autocm.sql. The .sql carries the strftime ISO-8601-Z _at default +
+# the CHECK constraints; test_schema.py parity compares only table names, column
+# names, type affinity, nullability, and named indexes — so this uses the house
+# server_default=func.now() (defaults not compared) and the named indexes are
+# reproduced exactly. DECISION D-2: autocm_kb_chunks.chunk_embedding is Text
+# (JSON-encoded float vector; app-side cosine). The companion FTS5 virtual table
+# autocm_kb_chunks_fts (+ its shadow tables) is a SQLite-only mechanism not
+# representable in SA Core metadata — it is the documented schema-parity
+# divergence tolerated by test_schema.py (mirrors the D-2 pgvector divergence
+# note). autocm_clients.org_id FK -> orgs.org_id; autocm_drafts source FKs ->
+# relay_messages.id / relay_chats.id (the 057 surface).
+
+autocm_personas = Table(
+    "autocm_personas",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False),
+    Column("description", Text),
+    Column("calm_prompt", Text),
+    Column("reactive_prompt", Text),
+    Column("calibration_set", Text, nullable=False, server_default="{}"),
+    Column("config", Text, nullable=False, server_default="{}"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+Index("autocm_personas_name_unique", autocm_personas.c.name, unique=True)
+
+autocm_clients = Table(
+    "autocm_clients",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("persona_id", Integer, ForeignKey("autocm_personas.id")),
+    Column("display_name", Text),
+    Column("autonomy_state", Text, nullable=False, server_default="hitl"),
+    Column("incident_active", Integer, nullable=False, server_default="0"),
+    Column("surface_config", Text, nullable=False, server_default="{}"),
+    Column("kb_config", Text, nullable=False, server_default="{}"),
+    Column("enabled", Integer, nullable=False, server_default="0"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "autonomy_state IN ('hitl','partial','auto','paused')",
+        name="ck_autocm_clients_autonomy_state",
+    ),
+    Index("autocm_clients_persona", "persona_id"),
+)
+Index("autocm_clients_org_unique", autocm_clients.c.org_id, unique=True)
+
+autocm_kb_sources = Table(
+    "autocm_kb_sources",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("source_type", Text, nullable=False),
+    Column("source_url", Text),
+    Column("refresh_cadence", Text),
+    Column("authority_default", Float, nullable=False, server_default="0.5"),
+    Column("fetch_config", Text, nullable=False, server_default="{}"),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("last_refreshed_at", Text),
+    Column("last_changed_at", Text),
+    Column("last_error", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('active','stale','disabled')",
+        name="ck_autocm_kb_sources_status",
+    ),
+    Index("autocm_kb_sources_by_client", "client_id", "source_type"),
+    Index("autocm_kb_sources_refresh", "status", "last_refreshed_at"),
+)
+
+# DECISION D-2: chunk_embedding is Text (JSON-encoded float vector; app-side
+# cosine). The FTS5 companion (autocm_kb_chunks_fts) is created by the .sql
+# migration only — it is the documented SQLite-only divergence (no SA metadata
+# representation; test_schema.py tolerates it).
+autocm_kb_chunks = Table(
+    "autocm_kb_chunks",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("source_id", Integer, ForeignKey("autocm_kb_sources.id"), nullable=False),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("chunk_text", Text, nullable=False),
+    Column("chunk_embedding", Text),
+    Column("chunk_metadata", Text, nullable=False, server_default="{}"),
+    Column("chunk_authority", Float, nullable=False, server_default="0.5"),
+    Column("content_hash", Text),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("indexed_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('active','stale','wrong')",
+        name="ck_autocm_kb_chunks_status",
+    ),
+    Index("autocm_kb_chunks_by_source", "source_id"),
+    Index("autocm_kb_chunks_by_client_status", "client_id", "status"),
+)
+
+autocm_kb_constants = Table(
+    "autocm_kb_constants",
+    metadata,
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("key", Text, nullable=False),
+    Column("value", Text, nullable=False),
+    Column("description", Text),
+    Column("updated_by", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("client_id", "key"),
+)
+
+autocm_drafts = Table(
+    "autocm_drafts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("source_message_id", Integer, ForeignKey("relay_messages.id")),
+    Column("source_chat_id", Integer, ForeignKey("relay_chats.id")),
+    Column("category", Text),
+    Column("tier", Integer),
+    Column("register", Text),
+    Column("draft_text", Text),
+    Column("confidence", Float),
+    Column("cited_chunk_ids", Text, nullable=False, server_default="[]"),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("resolved_at", Text),
+    CheckConstraint(
+        "register IN ('calm','reactive')",
+        name="ck_autocm_drafts_register",
+    ),
+    CheckConstraint(
+        "status IN ('pending','auto_sent','hitl_pending','approved','rejected',"
+        "'published','escalated','suppressed')",
+        name="ck_autocm_drafts_status",
+    ),
+    Index("autocm_drafts_by_client_status", "client_id", "status", "created_at"),
+    Index("autocm_drafts_by_category", "client_id", "category", "created_at"),
+    Index("autocm_drafts_by_message", "source_message_id"),
+)
+
+autocm_reviews = Table(
+    "autocm_reviews",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("draft_id", Integer, ForeignKey("autocm_drafts.id"), nullable=False),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("reviewer", Text),
+    Column("decision", Text, nullable=False),
+    Column("edited_text", Text),
+    Column("edit_diff_size", Float, nullable=False, server_default="0"),
+    Column("is_clean_approval", Integer, nullable=False, server_default="0"),
+    Column("note", Text),
+    Column("reviewed_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "decision IN ('approve','edit','reject','punt_to_founder')",
+        name="ck_autocm_reviews_decision",
+    ),
+    Index("autocm_reviews_by_draft", "draft_id"),
+    Index("autocm_reviews_by_client", "client_id", "reviewed_at"),
+)
+
+autocm_category_state = Table(
+    "autocm_category_state",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("category", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="hitl"),
+    Column("confidence_threshold", Float, nullable=False, server_default="0.8"),
+    Column("sample_count", Integer, nullable=False, server_default="0"),
+    Column("clean_approval_count", Integer, nullable=False, server_default="0"),
+    Column("freeze_until", Text),
+    Column("freeze_reason", Text),
+    Column("frozen_by", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "state IN ('hitl','auto')",
+        name="ck_autocm_category_state_state",
+    ),
+    Index("autocm_category_state_frozen", "freeze_until"),
+)
+Index(
+    "autocm_category_state_unique",
+    autocm_category_state.c.client_id,
+    autocm_category_state.c.category,
+    unique=True,
+)
+
+autocm_escalations = Table(
+    "autocm_escalations",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("draft_id", Integer, ForeignKey("autocm_drafts.id")),
+    Column("source_message_id", Integer, ForeignKey("relay_messages.id")),
+    Column("reason", Text),
+    Column("founder_status", Text, nullable=False, server_default="pending"),
+    Column("oncall_status", Text, nullable=False, server_default="pending"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("resolved_at", Text),
+    CheckConstraint(
+        "founder_status IN ('pending','notified','acknowledged','resolved')",
+        name="ck_autocm_escalations_founder_status",
+    ),
+    CheckConstraint(
+        "oncall_status IN ('pending','notified','acknowledged','resolved')",
+        name="ck_autocm_escalations_oncall_status",
+    ),
+    Index("autocm_escalations_by_client", "client_id", "created_at"),
+    Index("autocm_escalations_open", "founder_status", "oncall_status"),
+)
+
+autocm_flagged_users = Table(
+    "autocm_flagged_users",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("member_id", Integer, ForeignKey("relay_members.id")),
+    Column("external_user_id", Text),
+    Column("reason", Text),
+    Column("status", Text, nullable=False, server_default="silenced"),
+    Column("flagged_at", Text, nullable=False, server_default=func.now()),
+    Column("cleared_at", Text),
+    Column("cleared_by", Text),
+    CheckConstraint(
+        "status IN ('silenced','cleared')",
+        name="ck_autocm_flagged_users_status",
+    ),
+    Index("autocm_flagged_users_by_client", "client_id", "status"),
+    Index("autocm_flagged_users_by_member", "member_id"),
+)
+
+autocm_adversarial_runs = Table(
+    "autocm_adversarial_runs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("suite", Text),
+    Column("total_cases", Integer, nullable=False, server_default="0"),
+    Column("passed", Integer, nullable=False, server_default="0"),
+    Column("failed", Integer, nullable=False, server_default="0"),
+    Column("result", Text, nullable=False, server_default="{}"),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("ran_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('pending','passed','failed','error')",
+        name="ck_autocm_adversarial_runs_status",
+    ),
+    Index("autocm_adversarial_runs_by_client", "client_id", "ran_at"),
+)
+
+autocm_digest_interactions = Table(
+    "autocm_digest_interactions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("digest_period", Text),
+    Column("section", Text),
+    Column("action", Text, nullable=False),
+    Column("target_ref", Text),
+    Column("payload", Text, nullable=False, server_default="{}"),
+    Column("actor", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "action IN ('approve_for_kb','recognize','demote','compose','ignore','ask')",
+        name="ck_autocm_digest_interactions_action",
+    ),
+    Index("autocm_digest_interactions_by_client", "client_id", "digest_period"),
+    Index("autocm_digest_interactions_by_action", "client_id", "action"),
+)
+
+autocm_time_saved_baseline = Table(
+    "autocm_time_saved_baseline",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_id", Integer, ForeignKey("autocm_clients.id"), nullable=False),
+    Column("minutes_per_auto", Float, nullable=False, server_default="0"),
+    Column("minutes_per_hitl", Float, nullable=False, server_default="0"),
+    Column("engagement_start_at", Text),
+    Column("calibrated_by", Text),
+    Column("notes", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+Index(
+    "autocm_time_saved_baseline_client_unique",
+    autocm_time_saved_baseline.c.client_id,
+    unique=True,
+)
+
+
+# ------------------------------------------------------------------
+# Operator work-tracking (migration 059 — SW-TASKING Phase 1)
+# ------------------------------------------------------------------
+
+mod_slot_sessions = Table(
+    "mod_slot_sessions",
+    metadata,
+    Column("session_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("ended_at", Text),
+    Column("chats_watched_json", Text, nullable=False, server_default="[]"),
+    Column("note", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_mod_slot_sessions_org", "org_id", "started_at"),
+    Index("ix_mod_slot_sessions_operator", "operator_handle", "ended_at"),
+)
+
+operator_work_events = Table(
+    "operator_work_events",
+    metadata,
+    Column("event_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("event_type", Text, nullable=False),
+    Column("occurred_at", Text, nullable=False, server_default=func.now()),
+    Column("ref_json", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_operator_work_events_org", "org_id", "occurred_at"),
+)
