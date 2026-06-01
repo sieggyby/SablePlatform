@@ -1,0 +1,15 @@
+[Unit]
+# MEGAPLAN C4.3 — schedule for the AutoCM batch worker. Default cadence runs the
+# full set daily; the adversarial regression (C3.9) is a DAILY job and the KB
+# refresh / auto-demotion sweep are safe to run daily. The weekly digest (C3.7)
+# is idempotent within a week; to give it a true weekly cadence, add a separate
+# drop-in/timer pinned to autocm_weekly_digest (see the .service comment).
+Description=Run SableAutoCM batch jobs daily (autocm-batch)
+
+[Timer]
+OnBootSec=20min
+OnCalendar=*-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

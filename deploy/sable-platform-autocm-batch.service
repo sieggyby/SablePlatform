@@ -1,0 +1,26 @@
+[Unit]
+# MEGAPLAN C4.3 — the AutoCM BATCH worker (digest / KB-refresh / adversarial /
+# auto-demotion sweep). These are scheduled jobs ONLY — the AutoCM online path
+# co-runs inside relay-bot, NOT here. Batch LLM spend is governed by SP
+# check_budget()/cost_events; this unit MUST NOT instantiate the in-memory core
+# RateLimiter (that lives only in relay-bot). oneshot, driven by the .timer.
+Description=SableAutoCM batch jobs (digest/KB-refresh/adversarial/auto-demotion)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=sable
+WorkingDirectory=/opt/sable/platform
+# Secrets-in-env ONLY (MEGAPLAN §5): no inline secret value lives in this unit.
+# /opt/sable/.env carries SABLE_DATABASE_URL, ANTHROPIC_API_KEY, etc.
+EnvironmentFile=/opt/sable/.env
+Environment=SABLE_OPERATOR_ID=autocm-batch
+# No args = run all four batch workflows for every enabled AutoCM client.
+# To split cadences (e.g. weekly digest on its own timer), add a drop-in that
+# overrides ExecStart with explicit workflow name(s), e.g.:
+#   ExecStart=/opt/sable/venv/bin/python3 scripts/run_autocm_batch.py autocm_weekly_digest
+ExecStart=/opt/sable/venv/bin/python3 scripts/run_autocm_batch.py
+
+[Install]
+WantedBy=multi-user.target
