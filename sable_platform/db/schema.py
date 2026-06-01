@@ -1546,6 +1546,42 @@ Index(
 
 
 # ------------------------------------------------------------------
+# Migration 061 — coordinated reply campaigns (the "flash mob")
+# ------------------------------------------------------------------
+reply_campaigns = Table(
+    "reply_campaigns",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("target_tweet_id", Text, nullable=False),
+    Column("target_url", Text),
+    Column("target_author", Text),
+    Column("objective", Text),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("created_by", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("won_at", Text),
+    Column("closed_at", Text),
+    Index("ix_reply_campaigns_org", "org_id", "status", "created_at"),
+)
+
+reply_campaign_assignments = Table(
+    "reply_campaign_assignments",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("campaign_id", Text, ForeignKey("reply_campaigns.id"), nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("suggestion_id", Text),
+    Column("posted_tweet_id", Text),
+    Column("angle", Text),
+    Column("status", Text, nullable=False, server_default="assigned"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("posted_at", Text),
+    Index("ix_reply_campaign_assignments_campaign", "campaign_id"),
+)
+
+
+# ------------------------------------------------------------------
 # Migration 057 — SableRelay (relay_* table family)
 # ------------------------------------------------------------------
 # Mirrors 057_relay.sql. The .sql file carries the strftime ISO-8601-Z _at
