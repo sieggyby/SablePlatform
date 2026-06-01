@@ -1,0 +1,147 @@
+# RobotMoney — AutoCM deployment manifest (MEGAPLAN C4.1).
+#
+# This is the per-client deployment manifest in the PRODUCTIZATION.md §3 shape,
+# validated by `sable_platform.autocm.manifest.DeploymentManifest`
+# (`load_manifest(open(...).read())`). It is the YAML twin of what
+# `scripts/seed_robotmoney.py` writes into the 058 `autocm_clients` /
+# `autocm_personas` / `relay_clients` rows — the two MUST stay aligned (the seed
+# is the DB authority; this manifest is the reviewable source-of-truth +
+# zero-code-deploy artifact). Where they overlap (persona ref, surface set,
+# autonomy posture, the six irreducibles), this file mirrors the seed exactly.
+#
+# INVARIANTS this file is shaped to satisfy (asserted by tests/autocm/test_rm_manifest.py):
+#   * Secrets-as-references only — every credential is an `env:NAME` / `secret://`
+#     HANDLE, NEVER an inline token (ManifestSecretError-clean).
+#   * X surface OFF — there is NO `surfaces.x` block here. NULO v1 is TG-only;
+#     X enablement is relay-owned (`relay_clients.config` seeds x.enabled=0), and
+#     the manifest never re-declares `surfaces.x.enabled` (tension #6). Omitting the
+#     block entirely means the manifest carries no X detail to contradict relay.
+#   * Autonomy starts PAUSED / silent (gate-0) — `ops.autonomy.initial_state: paused`
+#     mirrors `autocm_clients.autonomy_state='paused'` + `enabled=0` in the seed.
+#   * Persona + KB point at what the seed already seeds — `persona.ref:
+#     personas/nulo` resolves to the vendored NULO calm/reactive banks
+#     (`robotmoney/nulo`), the SAME banks the seed's NULO persona is derived from.
+
+client:
+  id: robotmoney
+  display_name: RobotMoney
+  founder_handle: LexSokolin            # @LexSokolin — tier-3 dual-route target (seed ops.escalation)
+  escalation_channel: env:RM_OPERATOR_CHAT_ID   # relay-owned operator chat; a REFERENCE, set at deploy
+
+persona:
+  # Resolves to the vendored NULO banks at personas/robotmoney/nulo via
+  # persona_data_dir("robotmoney", "nulo"). The bimodal calm+reactive persona the
+  # seed writes into autocm_personas('NULO') is derived from these SAME banks.
+  ref: personas/nulo
+
+surfaces:
+  # TG-only (v1). bot_account is a REFERENCE — the bot token never appears inline.
+  # chat_id is supplied at deploy time (the RM TG community chat id is a DEFERRED
+  # live input in the seed). NO `x:` block: X stays OFF (relay-owned), and with no
+  # X detail here the manifest cannot contradict relay's x.enabled=0.
+  tg:
+    chat_id: env:RM_TG_COMMUNITY_CHAT_ID
+    bot_account: env:RM_TG_BOT
+
+kb_sources:
+  # The slot-fill irreducibles (the six the seed writes into autocm_kb_constants)
+  # are constants, not refreshable sources — they live in the DB constants table,
+  # not here. These vector-KB sources are the Q14 baseline source list; they are
+  # DEFERRED (the C3.4+ refresher owns the live fetch) — `kb_config.vector_kb_enabled`
+  # is False in the seed. Listed so the baseline is reviewable.
+  - type: website
+    url: https://www.robotmoney.net
+    refresh: weekly
+    deferred: true            # robotmoney.net is US-geoblocked + refuses fetchers (network control, NOT a bot control)
+  - type: committee
+    url: https://www.robotmoney.net/committee
+    refresh: daily
+    deferred: true
+  - type: on_chain
+    adapter: base_alchemy
+    chain: base
+    queries: [vault_tvl, last_buyback, treasury_balance]
+    deferred: true
+
+categories:
+  # Launch posture mirrors the seed (autonomy paused, launch_gates open): every
+  # category starts HITL. Trust/price get the highest thresholds — they are the
+  # securities-sensitive paths held in HITL weeks 1-4 (R-6).
+  greeting:
+    initial_state: hitl
+    threshold: 0.70
+  mechanics:
+    initial_state: hitl
+    threshold: 0.80
+  status:
+    initial_state: hitl
+    threshold: 0.80
+  price:
+    initial_state: hitl
+    threshold: 0.92
+  trust:
+    initial_state: hitl
+    threshold: 0.92
+
+llm:
+  provider: anthropic
+  model: claude-opus-4-8
+  api_key_ref: secret://anthropic/rm    # REFERENCE — the Anthropic key never appears inline
+
+ops:
+  # Operators that staff the tenant (mirrors seed OPERATORS + on-call). These are
+  # hidden from public attribution per the operator-persona convention.
+  hidden_operators: [sieggy, arf, monasex, ben]
+  oncall_primary: arf
+
+  escalation:
+    founder: lex
+    founder_handle: LexSokolin
+    tier3_dual_route: [founder, oncall]
+
+  # Gate-0: autonomy starts PAUSED and silent. Mirrors the seed's
+  # autocm_clients.autonomy_state='paused' + enabled=0. Nothing auto-sends until a
+  # deliberate go-live flip (seed's GO-LIVE FLIP: paused -> hitl, enabled 0 -> 1).
+  autonomy:
+    initial_state: paused
+    silent: true
+    enabled: false
+
+  # Launch gates — mirror seed surface_config.ops.launch_gates. persona_greenlit /
+  # ai_disclosure stay OPEN (False) until Lex signs off; securities_disclaimer is
+  # always ON (non-negotiable).
+  launch_gates:
+    persona_greenlit: false
+    ai_disclosure: false
+    securities_disclaimer: true
+
+  # ---- Securities control the bot actually applies (R-6, C4.1 scope) ----
+  # A mandatory, tested invariant: every market/committee output carries a
+  # disclaimer; no recommendation-shaped output in the fund's voice; the hard
+  # refusals (price/financial/legal/portfolio) are never overridden. The
+  # disclaimer text below mirrors sable-pulse/config/robotmoney.yaml `disclaimer`.
+  securities:
+    disclaimer_required_on: [market, committee]
+    disclaimer: "simulation · entertainment · not financial advice · not the live RM committee"
+    no_recommendation_shape: true
+    hard_refusals_never_overridden: [price_prediction, financial_advice, legal_regulatory, personal_portfolio]
+
+  # ---- TG AI-disclosure decision (C4.1 OWNED; closes SAFETY §8 open item) ----
+  # v1 ships TG-only; X_INTEGRATION §3's 3-layer disclosure is X-only, so the TG
+  # surface needs its own fact-of-AI disclosure decision. RECORDED here with a
+  # named owner (Lex). Status is `pending_signoff` until Lex signs off — the
+  # decision is OWNED and recorded, not left as the unowned SAFETY §8 item.
+  tg_ai_disclosure:
+    owner: lex
+    status: pending_signoff           # locked -> when Lex signs off, before any live TG deploy
+    bot_bio_line: "Some replies here are from NULO, RobotMoney's autonomous community agent."
+    what_the_bot_wont_do_page:
+      decision: pending_signoff       # SAFETY §8 page decision — owned, awaiting sign-off
+      owner: lex
+
+  digest:
+    cadence: weekly_monday
+    timezone: America/New_York
+    preview_to: operator_chat
+    deliver_to: founder
+    auto_deliver_from: week 5
