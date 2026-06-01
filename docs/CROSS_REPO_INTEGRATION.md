@@ -436,4 +436,5 @@ This pattern (used by Lead Identifier) lets the downstream repo function without
 - **Lead Identifier:** Conditional import of contracts for sync validation
 - **sable-roles:** Imports `sable_platform.db.*` directly (Discord bot config + engagement/audit writes; migrations 043-054)
 - **SableKOL:** Imports `sable_platform.db.connection.get_db()` via `sable_kol.db.open_db()` (writes KOL-owned tables, migrations 032-041)
+- **SableWeb:** reads the shared DB directly (TS dual-driver, not a Python import) and, as of SW-TASKING Phase 1, **writes** `mod_slot_sessions` / `operator_work_events` (migration 059) from its `/ops` work-tracking routes. The reply count it rolls up comes from `reply_outcomes` (mig 056). The work-tracking rollup logic is mirrored in TS (`SableWeb/src/lib/db.ts`) — the canonical Python implementation is `sable_platform.db.work_tracking.get_work_summary`.
 - **SableTracking:** Does not import from `sable_platform` yet (TRACK-5 pending)

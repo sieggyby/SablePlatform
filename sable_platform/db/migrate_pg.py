@@ -48,6 +48,8 @@ TABLE_LOAD_ORDER: list[str] = [
     "operator_reply_quota",  # no FKs (mig 056) - composite TEXT PK (operator_handle, day_utc)
     "reply_suggestions",     # FK -> orgs (mig 056)
     "reply_outcomes",        # FK -> reply_suggestions (mig 056) - must follow it
+    "mod_slot_sessions",     # FK -> orgs (mig 059) - TEXT PK, no sequence
+    "operator_work_events",  # FK -> orgs (mig 059) - TEXT PK, no sequence
     "alert_configs",
     "entity_interactions",
     "entity_decay_scores",
