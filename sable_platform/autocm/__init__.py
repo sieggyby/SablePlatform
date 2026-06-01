@@ -49,6 +49,9 @@ from .llm import (
     build_llm_provider,
 )
 
+# --- per-client cost accounting (C3.10; in-process, migration-free) ----------
+from .cost import CostAccountant, price_for_usage
+
 __all__ = [
     # loaders
     "ClientConfig",
@@ -70,4 +73,7 @@ __all__ = [
     "AnthropicProvider",
     "NullLLMProvider",
     "build_llm_provider",
+    # cost accounting (C3.10)
+    "CostAccountant",
+    "price_for_usage",
 ]
