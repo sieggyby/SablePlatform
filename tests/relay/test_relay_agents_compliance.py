@@ -271,31 +271,38 @@ def test_escaping_is_the_only_handler_layer_discord_import():
 
 
 # ==========================================================================
-# 4. doc/version parity derived from _MIGRATIONS (confirm head == 58)
+# 4. doc/version parity derived from _MIGRATIONS (migration-count-agnostic:
+#    the relay [057] + autocm [058] migrations are present, the version chain
+#    is monotonic/unique with head == count, and every migration file exists.
+#    Count-agnostic so it survives later migrations merged from sibling work.)
 # ==========================================================================
-def test_doc_parity_migration_head_is_58():
-    """``_MIGRATIONS`` head is 58, the on-disk filename matches, and the max
-    version literal is consistent — the C2.6 ``test_doc_parity`` confirmation."""
+def test_relay_autocm_migrations_present_and_chain_intact():
+    """The relay (057) + autocm (058) migrations are present in ``_MIGRATIONS``,
+    the version chain is monotonic + unique with head == count, and every
+    migration file exists on disk. Count-agnostic — survives later migrations."""
     from sable_platform.db.connection import _MIGRATIONS
 
-    assert len(_MIGRATIONS) == 58, f"expected 58 migrations, got {len(_MIGRATIONS)}"
-    last_name, last_version = _MIGRATIONS[-1]
-    assert last_version == 58
-    assert last_name.startswith("058_"), last_name
-    # The on-disk migration file for the head exists.
-    head_file = (
-        importlib.resources.files("sable_platform.db") / "migrations" / last_name
-    )
-    assert head_file.is_file(), f"head migration file {last_name} missing on disk"
+    names = [n for n, _ in _MIGRATIONS]
+    versions = [v for _, v in _MIGRATIONS]
+    # the C2/C3 substrate migrations are present.
+    assert any(n.startswith("057_") for n in names), names
+    assert any(n.startswith("058_") for n in names), names
+    # version chain is monotonic, unique, and the head version equals the count.
+    assert versions == sorted(versions), "migration versions not monotonic"
+    assert len(set(versions)) == len(versions), "duplicate migration versions"
+    assert _MIGRATIONS[-1][1] == len(_MIGRATIONS), "head version != migration count"
+    # the on-disk file for every migration exists.
+    for name in names:
+        f = importlib.resources.files("sable_platform.db") / "migrations" / name
+        assert f.is_file(), f"migration file {name} missing on disk"
 
 
-def test_cli_reference_states_58_migrations():
-    """``CLI_REFERENCE.md`` states '58 migrations' (the _MIGRATIONS-derived count
-    asserted by the suite-wide test_doc_parity, re-checked in the relay set)."""
+def test_cli_reference_migration_count_consistent():
+    """``CLI_REFERENCE.md`` states the ``_MIGRATIONS``-derived migration count
+    (re-checked in the relay set; count-agnostic)."""
     from sable_platform.db.connection import _MIGRATIONS
 
     cli_ref = (
         Path(__file__).resolve().parent.parent.parent / "docs" / "CLI_REFERENCE.md"
     ).read_text(encoding="utf-8")
     assert f"{len(_MIGRATIONS)} migrations" in cli_ref
-    assert "58 migrations" in cli_ref
