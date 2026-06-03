@@ -7,6 +7,7 @@ import pytest
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.replies import (
+    conversation_already_replied,
     count_image_recs,
     find_suggestion,
     get_outcomes_summary,
@@ -110,6 +111,83 @@ def test_log_suggestion_records_clip_media_kind(conn):
     conn.commit()
     row = conn.execute("SELECT clip_media_kind FROM reply_suggestions WHERE id = ?", (sid,)).fetchone()
     assert row[0] == "image"
+
+
+# ---- mig 062: opportunity_id + source_conversation_id round-trip ---------
+
+def test_log_suggestion_persists_opportunity_and_conversation(conn):
+    """mig 062 columns round-trip through log_suggestion."""
+    sid = log_suggestion(
+        conn,
+        operator_handle="@arf",
+        org_id="tig",
+        source_tweet_id="555",
+        variants=[{"text": "x"}],
+        opportunity_id=42,
+        source_conversation_id="conv-abc",
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT opportunity_id, source_conversation_id FROM reply_suggestions WHERE id = ?",
+        (sid,),
+    ).fetchone()
+    assert row[0] == 42
+    assert row[1] == "conv-abc"
+
+
+def test_log_suggestion_mig062_columns_default_null(conn):
+    """Existing callers (no new kwargs) leave the mig 062 columns NULL — backward compat."""
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="556", variants=[{"text": "x"}],
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT opportunity_id, source_conversation_id FROM reply_suggestions WHERE id = ?",
+        (sid,),
+    ).fetchone()
+    assert row[0] is None
+    assert row[1] is None
+
+
+# ---- mig 062: conversation_already_replied (local depress-already-replied) -
+
+def test_conversation_already_replied_hit_and_miss(conn):
+    log_suggestion(
+        conn, operator_handle="@arf", org_id="tig", source_tweet_id="700",
+        variants=[{"text": "x"}], source_conversation_id="conv-1",
+    )
+    conn.commit()
+    # hit — a reply was logged in this conversation for this org
+    assert conversation_already_replied(conn, "tig", "conv-1") is True
+    # miss — different conversation
+    assert conversation_already_replied(conn, "tig", "conv-unknown") is False
+
+
+def test_conversation_already_replied_is_org_scoped(conn):
+    # second org so the scoping is observable
+    conn.execute(
+        "INSERT INTO orgs (org_id, display_name, status) VALUES (?, ?, ?)",
+        ("solstitch", "SolStitch", "active"),
+    )
+    log_suggestion(
+        conn, operator_handle="@arf", org_id="tig", source_tweet_id="800",
+        variants=[{"text": "x"}], source_conversation_id="conv-shared",
+    )
+    conn.commit()
+    # same conversation id, different org → must NOT depress
+    assert conversation_already_replied(conn, "tig", "conv-shared") is True
+    assert conversation_already_replied(conn, "solstitch", "conv-shared") is False
+
+
+def test_conversation_already_replied_ignores_null_conversation(conn):
+    # a suggestion logged WITHOUT a conversation id must never match
+    log_suggestion(
+        conn, operator_handle="@arf", org_id="tig", source_tweet_id="900",
+        variants=[{"text": "x"}],
+    )
+    conn.commit()
+    assert conversation_already_replied(conn, "tig", "conv-x") is False
 
 
 def test_count_image_recs_filters_kind_window_and_operator(conn):

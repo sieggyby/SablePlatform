@@ -159,6 +159,28 @@ def test_upsert_sweep_terminal_row_not_revived(sa_conn):
     assert statuses[oid2] == "active"
 
 
+def test_get_opportunity_org_returns_owning_org(sa_conn):
+    """The IDOR-guard lookup returns the owning org for a known id (regardless of
+    status), and None for an unknown id."""
+    _seed(sa_conn, org_id="orgA")
+    _seed(sa_conn, org_id="orgB")
+    sa_conn.commit()
+    ta = _seed_tweet(sa_conn, "own-a")
+    tb = _seed_tweet(sa_conn, "own-b")
+    with immediate_txn(sa_conn):
+        oid_a = relay_db.upsert_sweep_opportunity(
+            sa_conn, org_id="orgA", tweet_id=ta, sweep_source="topic", score=0.5
+        )
+        oid_b = relay_db.upsert_sweep_opportunity(
+            sa_conn, org_id="orgB", tweet_id=tb, sweep_source="topic", score=0.5
+        )
+        # Owning org is returned even once the row is terminal (handled).
+        relay_db.mark_opportunity_handled(sa_conn, oid_b)
+    assert relay_db.get_opportunity_org(sa_conn, oid_a) == "orgA"
+    assert relay_db.get_opportunity_org(sa_conn, oid_b) == "orgB"
+    assert relay_db.get_opportunity_org(sa_conn, 9_999_999) is None  # unknown id
+
+
 def test_upsert_sweep_rejects_unknown_source(sa_conn):
     _seed(sa_conn)
     sa_conn.commit()
@@ -243,6 +265,55 @@ def test_feed_depresses_handled_to_bottom(sa_conn):
     # The handled (score 0.99) row sinks below the active (score 0.1) row.
     assert feed[-1]["id"] == o_handled
     assert feed[0]["tweet_id"] == t_high
+
+
+# ==========================================================================
+# mark_opportunity_handled (the team-depress on generate/post, §5)
+# ==========================================================================
+def test_mark_opportunity_handled_flips_active_and_is_idempotent(sa_conn):
+    _seed(sa_conn)
+    sa_conn.commit()
+    tid = _seed_tweet(sa_conn, "mh-1")
+    with immediate_txn(sa_conn):
+        oid = relay_db.upsert_sweep_opportunity(
+            sa_conn, org_id="orgA", tweet_id=tid, sweep_source="topic", score=0.5,
+        )
+        relay_db.mark_opportunity_handled(sa_conn, oid)
+    status = sa_conn.execute(
+        text("SELECT status FROM relay_reply_opportunities WHERE id = :i"), {"i": oid},
+    ).fetchone()[0]
+    assert status == "handled"
+    # Idempotent: a second call is a harmless no-op (already handled).
+    with immediate_txn(sa_conn):
+        relay_db.mark_opportunity_handled(sa_conn, oid)
+    status2 = sa_conn.execute(
+        text("SELECT status FROM relay_reply_opportunities WHERE id = :i"), {"i": oid},
+    ).fetchone()[0]
+    assert status2 == "handled"
+
+
+def test_mark_opportunity_handled_never_unterminals_a_terminal_row(sa_conn):
+    """A row already EXPIRED (terminal) is NOT flipped back via handled — the
+    guard only acts on 'active' rows, so a terminal status is never disturbed."""
+    _seed(sa_conn)
+    sa_conn.commit()
+    tid = _seed_tweet(sa_conn, "mh-2")
+    with immediate_txn(sa_conn):
+        oid = relay_db.upsert_sweep_opportunity(
+            sa_conn, org_id="orgA", tweet_id=tid, sweep_source="topic", score=0.5,
+        )
+    # Force the row terminal (expired) directly, then try to mark handled.
+    sa_conn.execute(
+        text("UPDATE relay_reply_opportunities SET status = 'expired' WHERE id = :i"),
+        {"i": oid},
+    )
+    sa_conn.commit()
+    with immediate_txn(sa_conn):
+        relay_db.mark_opportunity_handled(sa_conn, oid)
+    status = sa_conn.execute(
+        text("SELECT status FROM relay_reply_opportunities WHERE id = :i"), {"i": oid},
+    ).fetchone()[0]
+    assert status == "expired"  # untouched — never un-terminaled
 
 
 # ==========================================================================

@@ -2595,6 +2595,21 @@ def get_or_create_sweep_sentinel(conn: Connection, org_id: str) -> int:
     return member_id
 
 
+def get_opportunity_org(conn: Connection, opportunity_id: int) -> str | None:
+    """Return the owning ``org_id`` of an opportunity by id, or ``None`` if absent.
+
+    Org-ownership lookup for callers that receive a client-supplied (global) PK
+    ``opportunity_id`` and must verify it belongs to the authorized org BEFORE
+    acting on it (defense-in-depth for cross-org IDOR — plan §5). Read-only;
+    returns the ``org_id`` regardless of the opportunity's status.
+    """
+    row = conn.execute(
+        text("SELECT org_id FROM relay_reply_opportunities WHERE id = :id"),
+        {"id": int(opportunity_id)},
+    ).fetchone()
+    return None if row is None else row[0]
+
+
 def find_active_opportunity_for_tweet(
     conn: Connection, org_id: str, tweet_id: int
 ) -> dict | None:

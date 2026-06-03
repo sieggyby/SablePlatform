@@ -155,6 +155,8 @@ def log_suggestion(
     model: str | None = None,
     cost_usd: float | None = None,
     clip_media_kind: str | None = None,
+    opportunity_id: int | None = None,
+    source_conversation_id: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """Append a generation to the suggestion log. Returns the suggestion id.
@@ -162,7 +164,15 @@ def log_suggestion(
     ``cost_usd`` is stored here for internal accounting only — it must never be
     returned to the browser (see the data-exposure rules in the design doc).
     ``clip_media_kind`` ('image' | 'video' | None) records the media kind the
-    reply attached, for the prefer-image throttle. Caller commits.
+    reply attached, for the prefer-image throttle.
+
+    ``opportunity_id`` (mig 062, INTEGER) is the learning join back to the
+    reply-opportunity feed row this generation came from (NULL for a paste-URL
+    generation with no feed origin). ``source_conversation_id`` (mig 062, TEXT)
+    is the target tweet's ``conversation_id`` stamped at generation time so the
+    sweep's depress-already-replied is a LOCAL lookup (no SocialData call) — see
+    :func:`conversation_already_replied`. Both default to ``None`` so existing
+    callers are unaffected. Caller commits.
     """
     sid = uuid.uuid4().hex
     stamp = (now or _utc_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -170,8 +180,10 @@ def log_suggestion(
         text(
             "INSERT INTO reply_suggestions"
             " (id, operator_handle, org_id, source_tweet_id, source_author,"
-            "  source_text, variants_json, model, cost_usd, clip_media_kind, generated_at)"
-            " VALUES (:id, :h, :org, :tid, :author, :stext, :vj, :model, :cost, :ck, :now)"
+            "  source_text, variants_json, model, cost_usd, clip_media_kind,"
+            "  opportunity_id, source_conversation_id, generated_at)"
+            " VALUES (:id, :h, :org, :tid, :author, :stext, :vj, :model, :cost, :ck,"
+            "  :oid, :scid, :now)"
         ),
         {
             "id": sid,
@@ -184,10 +196,36 @@ def log_suggestion(
             "model": model,
             "cost": cost_usd,
             "ck": clip_media_kind,
+            "oid": None if opportunity_id is None else int(opportunity_id),
+            "scid": source_conversation_id,
             "now": stamp,
         },
     )
     return sid
+
+
+def conversation_already_replied(
+    conn: Connection, org_id: str, conversation_id: str
+) -> bool:
+    """True iff this org has already logged a reply in ``conversation_id`` (mig 062).
+
+    A purely LOCAL lookup over ``reply_suggestions.source_conversation_id`` — the
+    cheap depress-already-replied signal the sweep uses to drop candidates whose
+    conversation an operator already replied to *through* reply-assist, with NO
+    per-candidate SocialData call (plan §4.4 / §9). Org-scoped, so one client's
+    replies never depress another's. Read-only.
+    """
+    if conversation_id is None:
+        return False
+    row = conn.execute(
+        text(
+            "SELECT 1 FROM reply_suggestions"
+            " WHERE org_id = :org AND source_conversation_id = :cid"
+            " LIMIT 1"
+        ),
+        {"org": org_id, "cid": conversation_id},
+    ).fetchone()
+    return row is not None
 
 
 def count_image_recs(
