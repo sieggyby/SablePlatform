@@ -157,6 +157,8 @@ def log_suggestion(
     clip_media_kind: str | None = None,
     opportunity_id: int | None = None,
     source_conversation_id: str | None = None,
+    tell_score: float | None = None,
+    tell_flags_json: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """Append a generation to the suggestion log. Returns the suggestion id.
@@ -171,8 +173,17 @@ def log_suggestion(
     generation with no feed origin). ``source_conversation_id`` (mig 062, TEXT)
     is the target tweet's ``conversation_id`` stamped at generation time so the
     sweep's depress-already-replied is a LOCAL lookup (no SocialData call) — see
-    :func:`conversation_already_replied`. Both default to ``None`` so existing
-    callers are unaffected. Caller commits.
+    :func:`conversation_already_replied`.
+
+    ``tell_score`` (mig 063, REAL) is the persisted §10 anti-AI-tell score (0..1
+    weighted flag density) and ``tell_flags_json`` (mig 063, TEXT) is the §10
+    flags blob ({type, span, why} list as JSON) — the quality-dashboard /
+    guardrail-refinement inputs (plan §10.4 / §6). The caller passes
+    ``tell_flags_json`` already JSON-encoded (this helper does not interpret it).
+
+    All of ``opportunity_id`` / ``source_conversation_id`` / ``tell_score`` /
+    ``tell_flags_json`` default to ``None`` so existing callers are unaffected.
+    Caller commits.
     """
     sid = uuid.uuid4().hex
     stamp = (now or _utc_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -181,9 +192,10 @@ def log_suggestion(
             "INSERT INTO reply_suggestions"
             " (id, operator_handle, org_id, source_tweet_id, source_author,"
             "  source_text, variants_json, model, cost_usd, clip_media_kind,"
-            "  opportunity_id, source_conversation_id, generated_at)"
+            "  opportunity_id, source_conversation_id, tell_score, tell_flags_json,"
+            "  generated_at)"
             " VALUES (:id, :h, :org, :tid, :author, :stext, :vj, :model, :cost, :ck,"
-            "  :oid, :scid, :now)"
+            "  :oid, :scid, :tscore, :tflags, :now)"
         ),
         {
             "id": sid,
@@ -198,6 +210,8 @@ def log_suggestion(
             "ck": clip_media_kind,
             "oid": None if opportunity_id is None else int(opportunity_id),
             "scid": source_conversation_id,
+            "tscore": None if tell_score is None else float(tell_score),
+            "tflags": tell_flags_json,
             "now": stamp,
         },
     )

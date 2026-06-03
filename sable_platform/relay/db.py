@@ -3297,3 +3297,265 @@ def gc_expired_opportunities(conn: Connection, *, now: str | None = None) -> dic
         purged += 1
 
     return {"expired": expired, "purged": purged, "feedback_pruned": feedback_pruned}
+
+
+# ------------------------------------------------------------------
+# Migration 063 — relay_tweets embedding cache (P3 ranker, plan §8 P3)
+#
+# The P3 embedding ranker embeds each candidate once and re-ranks per operator.
+# To avoid re-embedding every sweep, the vector is cached on relay_tweets keyed
+# by the hydrated x_id, alongside the provider/model that produced it (so a model
+# swap invalidates correctly — a caller compares the stored embedding_model
+# against the model it is about to use and re-embeds on mismatch).
+# ------------------------------------------------------------------
+def get_tweet_embedding(conn: Connection, x_id: str) -> tuple[str, str | None] | None:
+    """Return the cached ``(embedding_json, embedding_model)`` for ``x_id``, or None.
+
+    ``None`` means either the tweet is not cached at all OR it has no embedding
+    yet (``embedding_json IS NULL``) — in both cases the P3 ranker must embed it.
+    When a row IS returned, ``embedding_json`` is the (non-NULL) vector blob and
+    ``embedding_model`` is the producing provider/model (may be NULL on legacy
+    rows). The caller decides whether ``embedding_model`` is still acceptable.
+    Read-only.
+    """
+    row = conn.execute(
+        text(
+            "SELECT embedding_json, embedding_model FROM relay_tweets "
+            "WHERE x_id = :x_id"
+        ),
+        {"x_id": str(x_id)},
+    ).fetchone()
+    if row is None or row._mapping["embedding_json"] is None:
+        return None
+    return (row._mapping["embedding_json"], row._mapping["embedding_model"])
+
+
+def set_tweet_embedding(
+    conn: Connection, x_id: str, embedding_json: str, model: str
+) -> bool:
+    """Write the cached embedding vector + model onto an EXISTING relay_tweets row.
+
+    Updates ``embedding_json`` / ``embedding_model`` for the tweet keyed by
+    ``x_id``. Does NOT insert a tweet (the sweep upserts the tweet via
+    :func:`upsert_relay_tweet` first, then caches its embedding here). Returns
+    ``True`` iff a row was updated (``False`` if no tweet with that ``x_id``
+    exists). The caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    result = conn.execute(
+        text(
+            "UPDATE relay_tweets SET embedding_json = :ej, embedding_model = :em "
+            "WHERE x_id = :x_id"
+        ),
+        {"ej": embedding_json, "em": model, "x_id": str(x_id)},
+    )
+    return int(result.rowcount or 0) > 0
+
+
+# ------------------------------------------------------------------
+# Migration 063 — learning queries for the Slopper scorer + quality dashboard
+#
+# All read-only and ORG-SCOPED (one client's signal never leaks into another's),
+# and NONE select a cost column (the cost-never-in-response rule, plan §5 / §10.5).
+# These back the §6 rolling in-context rubric examples, the §10.4/§6
+# guardrail-refinement proposals, and the §8 P3 quality dashboard.
+# ------------------------------------------------------------------
+def recent_picked_skipped_examples(
+    conn: Connection, org_id: str, limit: int = 20
+) -> dict[str, list[dict]]:
+    """Return recent PICKED vs SKIPPED opportunity examples for the §6 rubric.
+
+    PICKED = an operator acted on the opportunity: either a generation was logged
+    against it (``reply_suggestions.opportunity_id``) OR it received an
+    opportunity-level thumbs-up (``relay_opportunity_feedback.thumb = 1`` with
+    ``suggestion_id IS NULL``). SKIPPED = the opportunity went terminal without a
+    pick — ``status IN ('dismissed','expired')``. Each row carries the target
+    tweet text + ``sweep_source`` (the in-context rubric inputs). ORG-SCOPED,
+    read-only, NO cost column. Returns ``{"picked": [...], "skipped": [...]}``,
+    each newest-first and capped at ``limit``.
+    """
+    n = int(limit)
+    picked = conn.execute(
+        text(
+            "SELECT o.id, o.tweet_id, o.sweep_source, o.score, o.created_at, "
+            "       t.x_id, t.x_author_handle, t.text AS tweet_text "
+            "FROM relay_reply_opportunities o "
+            "JOIN relay_tweets t ON t.id = o.tweet_id "
+            "WHERE o.org_id = :org_id "
+            "  AND ( "
+            "      EXISTS ( "
+            "          SELECT 1 FROM reply_suggestions s "
+            "          WHERE s.opportunity_id = o.id "
+            "      ) "
+            "      OR EXISTS ( "
+            "          SELECT 1 FROM relay_opportunity_feedback f "
+            "          WHERE f.opportunity_id = o.id "
+            "            AND f.suggestion_id IS NULL AND f.thumb = 1 "
+            "      ) "
+            "  ) "
+            "ORDER BY o.created_at DESC, o.id DESC "
+            "LIMIT :limit"
+        ),
+        {"org_id": org_id, "limit": n},
+    ).fetchall()
+    skipped = conn.execute(
+        text(
+            "SELECT o.id, o.tweet_id, o.sweep_source, o.score, o.created_at, "
+            "       o.status, t.x_id, t.x_author_handle, t.text AS tweet_text "
+            "FROM relay_reply_opportunities o "
+            "JOIN relay_tweets t ON t.id = o.tweet_id "
+            "WHERE o.org_id = :org_id "
+            "  AND o.status IN ('dismissed', 'expired') "
+            "  AND NOT EXISTS ( "
+            "      SELECT 1 FROM reply_suggestions s WHERE s.opportunity_id = o.id "
+            "  ) "
+            "  AND NOT EXISTS ( "
+            "      SELECT 1 FROM relay_opportunity_feedback f "
+            "      WHERE f.opportunity_id = o.id "
+            "        AND f.suggestion_id IS NULL AND f.thumb = 1 "
+            "  ) "
+            "ORDER BY o.created_at DESC, o.id DESC "
+            "LIMIT :limit"
+        ),
+        {"org_id": org_id, "limit": n},
+    ).fetchall()
+    return {
+        "picked": [dict(r._mapping) for r in picked],
+        "skipped": [dict(r._mapping) for r in skipped],
+    }
+
+
+def low_quality_suggestions(
+    conn: Connection,
+    org_id: str,
+    limit: int = 20,
+    *,
+    tell_score_threshold: float = 0.6,
+) -> list[dict]:
+    """Return recent low-quality suggestions for the §10.4/§6 guardrail proposals.
+
+    A suggestion is "low quality" if it carries a thumbs-DOWN
+    (``relay_opportunity_feedback.thumb = -1`` with ``suggestion_id`` SET on it)
+    AND/OR a high ``tell_score`` (``>= tell_score_threshold``). Each row carries
+    the suggestion's ``tell_score`` / ``tell_flags_json`` plus the lowest thumb
+    seen on it (NULL if none) and the source tweet text. ORG-SCOPED (via
+    ``reply_suggestions.org_id``), read-only, NO cost column. Newest-first,
+    capped at ``limit``.
+    """
+    rows = conn.execute(
+        text(
+            "SELECT s.id, s.operator_handle, s.source_tweet_id, s.source_text, "
+            "       s.tell_score, s.tell_flags_json, s.opportunity_id, "
+            "       s.generated_at, "
+            "       MIN(f.thumb) AS min_thumb "
+            "FROM reply_suggestions s "
+            "LEFT JOIN relay_opportunity_feedback f "
+            "  ON f.suggestion_id = s.id AND f.thumb = -1 "
+            "WHERE s.org_id = :org_id "
+            "GROUP BY s.id, s.operator_handle, s.source_tweet_id, s.source_text, "
+            "         s.tell_score, s.tell_flags_json, s.opportunity_id, s.generated_at "
+            "HAVING MIN(f.thumb) = -1 "
+            "    OR (s.tell_score IS NOT NULL AND s.tell_score >= :thr) "
+            "ORDER BY s.generated_at DESC, s.id DESC "
+            "LIMIT :limit"
+        ),
+        {"org_id": org_id, "thr": float(tell_score_threshold), "limit": int(limit)},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def quality_dashboard_aggregates(conn: Connection, org_id: str) -> dict:
+    """Return the §8 P3 quality-dashboard rollup for an org. Read-only, NO cost.
+
+    Three aggregates, all ORG-SCOPED:
+      * ``tell_score_buckets`` — distribution of suggestion tell-scores in 0..1
+        quintile buckets (``low`` 0-0.2, ``mid_low`` 0.2-0.4, ``mid`` 0.4-0.6,
+        ``mid_high`` 0.6-0.8, ``high`` 0.8-1.0) + a ``null`` count for unlinted
+        suggestions.
+      * ``pick_rate_by_source`` — per ``sweep_source``: ``{total, picked,
+        pick_rate}`` where picked = opportunity drafted (``reply_suggestions``)
+        or opportunity-thumbed-up.
+      * ``suggestion_thumbs`` — ``{up, down}`` counts of suggestion-level thumbs
+        (``relay_opportunity_feedback`` rows with ``suggestion_id`` SET).
+    """
+    # --- tell-score distribution buckets ---
+    buckets = {
+        "null": 0,
+        "low": 0,
+        "mid_low": 0,
+        "mid": 0,
+        "mid_high": 0,
+        "high": 0,
+    }
+    tell_rows = conn.execute(
+        text(
+            "SELECT "
+            "  SUM(CASE WHEN tell_score IS NULL THEN 1 ELSE 0 END) AS n_null, "
+            "  SUM(CASE WHEN tell_score >= 0 AND tell_score < 0.2 THEN 1 ELSE 0 END) AS n_low, "
+            "  SUM(CASE WHEN tell_score >= 0.2 AND tell_score < 0.4 THEN 1 ELSE 0 END) AS n_mid_low, "
+            "  SUM(CASE WHEN tell_score >= 0.4 AND tell_score < 0.6 THEN 1 ELSE 0 END) AS n_mid, "
+            "  SUM(CASE WHEN tell_score >= 0.6 AND tell_score < 0.8 THEN 1 ELSE 0 END) AS n_mid_high, "
+            "  SUM(CASE WHEN tell_score >= 0.8 THEN 1 ELSE 0 END) AS n_high "
+            "FROM reply_suggestions WHERE org_id = :org_id"
+        ),
+        {"org_id": org_id},
+    ).fetchone()
+    if tell_rows is not None:
+        m = tell_rows._mapping
+        buckets["null"] = int(m["n_null"] or 0)
+        buckets["low"] = int(m["n_low"] or 0)
+        buckets["mid_low"] = int(m["n_mid_low"] or 0)
+        buckets["mid"] = int(m["n_mid"] or 0)
+        buckets["mid_high"] = int(m["n_mid_high"] or 0)
+        buckets["high"] = int(m["n_high"] or 0)
+
+    # --- pick-rate by sweep_source ---
+    source_rows = conn.execute(
+        text(
+            "SELECT o.sweep_source AS sweep_source, "
+            "  COUNT(*) AS total, "
+            "  SUM(CASE WHEN ( "
+            "        EXISTS (SELECT 1 FROM reply_suggestions s "
+            "                WHERE s.opportunity_id = o.id) "
+            "        OR EXISTS (SELECT 1 FROM relay_opportunity_feedback f "
+            "                   WHERE f.opportunity_id = o.id "
+            "                     AND f.suggestion_id IS NULL AND f.thumb = 1) "
+            "      ) THEN 1 ELSE 0 END) AS picked "
+            "FROM relay_reply_opportunities o "
+            "WHERE o.org_id = :org_id "
+            "GROUP BY o.sweep_source "
+            "ORDER BY o.sweep_source"
+        ),
+        {"org_id": org_id},
+    ).fetchall()
+    pick_rate_by_source: dict[str, dict] = {}
+    for r in source_rows:
+        rm = r._mapping
+        src = rm["sweep_source"] if rm["sweep_source"] is not None else "legacy"
+        total = int(rm["total"] or 0)
+        picked = int(rm["picked"] or 0)
+        pick_rate_by_source[src] = {
+            "total": total,
+            "picked": picked,
+            "pick_rate": round(picked / total, 3) if total else 0.0,
+        }
+
+    # --- suggestion thumbs up/down ---
+    thumb_row = conn.execute(
+        text(
+            "SELECT "
+            "  SUM(CASE WHEN f.thumb = 1 THEN 1 ELSE 0 END) AS up, "
+            "  SUM(CASE WHEN f.thumb = -1 THEN 1 ELSE 0 END) AS down "
+            "FROM relay_opportunity_feedback f "
+            "JOIN reply_suggestions s ON s.id = f.suggestion_id "
+            "WHERE s.org_id = :org_id AND f.suggestion_id IS NOT NULL"
+        ),
+        {"org_id": org_id},
+    ).fetchone()
+    up = int(thumb_row._mapping["up"] or 0) if thumb_row is not None else 0
+    down = int(thumb_row._mapping["down"] or 0) if thumb_row is not None else 0
+
+    return {
+        "tell_score_buckets": buckets,
+        "pick_rate_by_source": pick_rate_by_source,
+        "suggestion_thumbs": {"up": up, "down": down},
+    }

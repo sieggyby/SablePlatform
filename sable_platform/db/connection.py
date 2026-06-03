@@ -81,6 +81,7 @@ _MIGRATIONS = [
     ("060_reply_clip_media_kind.sql", 60),
     ("061_reply_campaigns.sql", 61),
     ("062_reply_opportunity_feed.sql", 62),
+    ("063_reply_learning.sql", 63),
 ]
 
 

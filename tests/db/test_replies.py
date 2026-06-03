@@ -150,6 +150,43 @@ def test_log_suggestion_mig062_columns_default_null(conn):
     assert row[1] is None
 
 
+# ---- mig 063: tell_score + tell_flags_json round-trip -------------------
+
+def test_log_suggestion_persists_tell_score_and_flags(conn):
+    """mig 063 columns round-trip through log_suggestion."""
+    sid = log_suggestion(
+        conn,
+        operator_handle="@arf",
+        org_id="tig",
+        source_tweet_id="t63",
+        variants=[{"text": "x"}],
+        tell_score=0.42,
+        tell_flags_json=json.dumps([{"type": "em_dash", "span": [3, 4], "why": "tell"}]),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT tell_score, tell_flags_json FROM reply_suggestions WHERE id = ?",
+        (sid,),
+    ).fetchone()
+    assert abs(row[0] - 0.42) < 1e-9
+    assert json.loads(row[1])[0]["type"] == "em_dash"
+
+
+def test_log_suggestion_mig063_columns_default_null(conn):
+    """Existing callers (no new kwargs) leave the mig 063 columns NULL — backward compat."""
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="t63b", variants=[{"text": "x"}],
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT tell_score, tell_flags_json FROM reply_suggestions WHERE id = ?",
+        (sid,),
+    ).fetchone()
+    assert row[0] is None
+    assert row[1] is None
+
+
 # ---- mig 062: conversation_already_replied (local depress-already-replied) -
 
 def test_conversation_already_replied_hit_and_miss(conn):

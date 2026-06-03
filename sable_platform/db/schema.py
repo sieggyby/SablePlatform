@@ -1524,6 +1524,12 @@ reply_suggestions = Table(
     # the .sql matches).
     Column("opportunity_id", Integer),
     Column("source_conversation_id", Text),
+    # mig 063 — §10 anti-AI-tell humanizer signals persisted for the quality
+    # dashboard / guardrail-refinement proposals (§10.4 / §6). tell_score is the
+    # 0..1 weighted flag density; tell_flags_json is the {type,span,why} blob.
+    # Both nullable (NULL for pre-063 / unlinted rows).
+    Column("tell_score", Float),
+    Column("tell_flags_json", Text),
     Index("ix_reply_suggestions_match", "operator_handle", "source_tweet_id"),
     Index("ix_reply_suggestions_org", "org_id", "generated_at"),
 )
@@ -1747,6 +1753,11 @@ relay_tweets = Table(
     Column("engagement_json", Text),
     Column("lang", Text),
     Column("author_followers", Integer),
+    # Migration 063 — P3 embedding-ranker cache (§8 P3): the candidate's cached
+    # embedding vector + the provider/model that produced it (a model swap
+    # invalidates correctly). Both nullable.
+    Column("embedding_json", Text),
+    Column("embedding_model", Text),
     Index("relay_tweets_author", "x_author_id"),
 )
 

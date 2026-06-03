@@ -149,6 +149,11 @@ TABLE_LOAD_ORDER: list[str] = [
     "relay_sweep_config",                # FK -> relay_clients (TEXT PK org_id, no sequence)
     "relay_sweep_cursor",                # no FKs (composite PK, no sequence)
     "relay_operator_heartbeat",          # no FKs (composite PK, no sequence)
+    # Migration 063: reply-learning. Pure ADD COLUMN on reply_suggestions
+    # (tell_score/tell_flags_json) + relay_tweets (embedding_json/embedding_model)
+    # -- NO new tables, so no TABLE_LOAD_ORDER/SEQUENCE_TABLES entries. The copy
+    # enumerates columns dynamically (SELECT * + list(rows[0].keys())), so the new
+    # columns ride along automatically.
     # Migration 058: SableAutoCM (autocm_* family). FK-safe order (children after
     # parents). autocm_clients.org_id FK -> orgs; autocm_drafts source FKs ->
     # relay_messages / relay_chats (the 057 surface); everything else roots off

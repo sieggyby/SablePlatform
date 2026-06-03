@@ -105,6 +105,9 @@ EXPECTED_TABLES = {
     # asserted by test_migration_062_*).
     "relay_opportunity_operator_state", "relay_opportunity_feedback",
     "relay_sweep_config", "relay_sweep_cursor", "relay_operator_heartbeat",
+    # Migration 063: reply-learning is purely ADD COLUMN (no new tables) —
+    # tell_score/tell_flags_json on reply_suggestions + embedding_json/
+    # embedding_model on relay_tweets, asserted by test_migration_063_*.
 }
 
 
@@ -154,7 +157,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 62
+    assert row["version"] == 63
 
 
 def test_all_tables_exist():
@@ -173,7 +176,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 62
+    assert row["version"] == 63
 
 
 def test_workflow_tables_columns():
@@ -1038,3 +1041,131 @@ def test_migration_062_dual_migration_seed_then_upgrade():
     for t in ("relay_opportunity_operator_state", "relay_opportunity_feedback",
               "relay_sweep_config", "relay_sweep_cursor", "relay_operator_heartbeat"):
         assert t in tables, f"new table '{t}' not created by 062"
+
+
+# ---------------------------------------------------------------------------
+# Migration 063 — reply-learning (additive tell-score + embedding cache columns)
+# ---------------------------------------------------------------------------
+
+def test_migration_063_additive_columns_exist():
+    """Migration 063: the 2+2 additive columns are present on a fresh DB."""
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    sugg_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_suggestions)"
+    ).fetchall()}
+    for expected in ("tell_score", "tell_flags_json"):
+        assert expected in sugg_cols, f"reply_suggestions missing '{expected}'"
+
+    tweet_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_tweets)"
+    ).fetchall()}
+    for expected in ("embedding_json", "embedding_model"):
+        assert expected in tweet_cols, f"relay_tweets missing '{expected}'"
+
+
+def test_migration_063_adds_no_new_tables():
+    """Migration 063 is purely ADD COLUMN — it must not introduce any table."""
+    conn = _make_conn()
+    _apply_migrations_through(conn, 62)
+    before = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    _apply_migrations_through(conn, 63)
+    after = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert after == before, f"063 unexpectedly created tables: {after - before}"
+
+
+def test_migration_063_dual_migration_seed_then_upgrade():
+    """HARD requirement (plan §3 / §8 / §10.4): POPULATED reply_suggestions +
+    relay_tweets on the PRE-063 schema must survive the 063 upgrade — the 4 new
+    columns appear (NULL on seeded rows), the seeded data is intact, and the old
+    columns are untouched.
+
+    The seed-then-upgrade dual-migration parity check (not just an empty-DB run):
+    it proves 063 is genuinely additive (no rebuild on either table).
+    """
+    conn = _make_conn()
+    # 1. Bring the schema up to 062 (the verified single head BEFORE 063).
+    _apply_migrations_through(conn, 62)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 62
+    # The 063 columns must NOT exist yet.
+    pre_sugg = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_suggestions)"
+    ).fetchall()}
+    assert "tell_score" not in pre_sugg
+    assert "tell_flags_json" not in pre_sugg
+    pre_tweet = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_tweets)"
+    ).fetchall()}
+    assert "embedding_json" not in pre_tweet
+    assert "embedding_model" not in pre_tweet
+
+    # 2. Seed REAL populated rows on the pre-063 schema.
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute(
+        "INSERT INTO reply_suggestions "
+        "(id, operator_handle, org_id, source_tweet_id, source_author, "
+        " source_text, variants_json, model, cost_usd, opportunity_id, "
+        " source_conversation_id) "
+        "VALUES ('sug-pre63', '@arf', 'tig', '777', 'someone', 'pre-063 text', "
+        "        '[{\"text\":\"hi\"}]', 'claude', 0.01, 9, 'conv-9')"
+    )
+    conn.execute(
+        "INSERT INTO relay_tweets "
+        "(x_id, x_author_handle, text, engagement_json, lang, author_followers) "
+        "VALUES ('tw-pre63', 'alice', 'pre-063 tweet', '{\"likes\":5}', 'en', 42)"
+    )
+    conn.commit()
+
+    # 3. Apply 063 on the POPULATED tables.
+    _apply_migrations_through(conn, 63)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 63
+
+    # 4a. The 4 additive columns now exist.
+    post_sugg = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_suggestions)"
+    ).fetchall()}
+    assert {"tell_score", "tell_flags_json"} <= post_sugg
+    post_tweet = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_tweets)"
+    ).fetchall()}
+    assert {"embedding_json", "embedding_model"} <= post_tweet
+
+    # 4b. The seeded reply_suggestions row survived intact; new cols NULL.
+    srow = conn.execute(
+        "SELECT operator_handle, org_id, source_tweet_id, source_text, cost_usd, "
+        "       opportunity_id, source_conversation_id, tell_score, tell_flags_json "
+        "FROM reply_suggestions WHERE id = 'sug-pre63'"
+    ).fetchone()
+    assert srow is not None, "seeded suggestion lost across the 063 upgrade"
+    assert srow["operator_handle"] == "@arf"
+    assert srow["org_id"] == "tig"
+    assert srow["source_tweet_id"] == "777"
+    assert srow["source_text"] == "pre-063 text"
+    assert srow["opportunity_id"] == 9
+    assert srow["source_conversation_id"] == "conv-9"
+    assert srow["tell_score"] is None
+    assert srow["tell_flags_json"] is None
+
+    # 4c. The seeded relay_tweets row survived intact; new cols NULL.
+    trow = conn.execute(
+        "SELECT x_id, x_author_handle, text, engagement_json, lang, "
+        "       author_followers, embedding_json, embedding_model "
+        "FROM relay_tweets WHERE x_id = 'tw-pre63'"
+    ).fetchone()
+    assert trow is not None, "seeded tweet lost across the 063 upgrade"
+    assert trow["x_author_handle"] == "alice"
+    assert trow["text"] == "pre-063 tweet"
+    assert trow["engagement_json"] == '{"likes":5}'
+    assert trow["lang"] == "en"
+    assert trow["author_followers"] == 42
+    assert trow["embedding_json"] is None
+    assert trow["embedding_model"] is None

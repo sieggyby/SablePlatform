@@ -8,6 +8,9 @@ from unittest.mock import Mock
 from click.testing import CliRunner
 
 from sable_platform.cli.main import cli
+from sable_platform.db.connection import _MIGRATIONS
+
+LATEST_SCHEMA_VERSION = _MIGRATIONS[-1][1]
 
 
 def test_init_creates_schema(tmp_path):
@@ -18,7 +21,7 @@ def test_init_creates_schema(tmp_path):
     conn = sqlite3.connect(db_path)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
     conn.close()
-    assert row[0] == 62
+    assert row[0] == LATEST_SCHEMA_VERSION
 
 
 def test_init_idempotent(tmp_path):
@@ -27,8 +30,8 @@ def test_init_idempotent(tmp_path):
     r2 = CliRunner().invoke(cli, ["init", "--db-path", db_path])
     assert r1.exit_code == 0
     assert r2.exit_code == 0
-    assert "62" in r1.output
-    assert "62" in r2.output
+    assert str(LATEST_SCHEMA_VERSION) in r1.output
+    assert str(LATEST_SCHEMA_VERSION) in r2.output
 
 
 def test_init_prints_path(tmp_path):
