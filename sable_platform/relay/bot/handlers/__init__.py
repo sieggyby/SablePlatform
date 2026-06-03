@@ -31,6 +31,11 @@ C2.3b lands the operator-/member-facing flows:
     THREE §8 resolution modes: numeric ``tg_user_id`` / self-claim-via-recent-DM /
     forwarded-message — NO bare-handle resolution) and ``/bind-chat``, both
     admin-gated with an in-txn audit row.
+  * :mod:`~sable_platform.relay.bot.handlers.sweep_config` — ``/sweep-config`` (mig
+    062): admin-gated management of the per-client reply-opportunity sweep query
+    set (mention_handles / topic_queries / from_set / operator_handles / enabled /
+    expiry_hours). The daily cost cap is NOT settable here (it stays in
+    ``relay_clients.config.polling``). Registers onto the C2.7 command registry.
 
 C2.3c lands the PII / identity-integrity flows:
 

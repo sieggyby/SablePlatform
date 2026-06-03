@@ -2516,3 +2516,769 @@ def org_exists(conn: Connection, org_id: str) -> bool:
         {"org_id": org_id},
     ).fetchone()
     return row is not None
+
+
+# ==================================================================
+# Migration 062 — reply-opportunity feed (reply-assist x SableRelay)
+#
+# The hourly Slopper sweep auto-sources reply opportunities into the EXISTING
+# relay_reply_opportunities table (unified store — manual /flag-reply and
+# auto-sweeps land in one table). These helpers back the sweep writer, the
+# per-operator web feed, the two thumbs, the per-client curated query set, the
+# sweep state machine (the §4 one-click-one-sweep selection), the relay_tweets
+# read-through cache, the logged-in heartbeat gate, and GC. See
+# SableRelay/REPLY_OPPORTUNITY_FEED_PLAN.md §3-§4. Every writer documents the
+# immediate_txn contract; reads are transaction-free.
+# ==================================================================
+
+# Terminal opportunity statuses — a re-seen opportunity in one of these states
+# NEVER flips back to 'active' (plan §4 step 6). Dedup is application-level
+# (there is NO UNIQUE(org_id, tweet_id) constraint — §3.1).
+_TERMINAL_OPPORTUNITY_STATUSES = ("handled", "expired", "dismissed")
+
+# sweep_source -> origin map. Auto rows reuse an EXISTING allowed origin value so
+# the 057 origin CHECK passes unchanged; the real detail rides sweep_source.
+_SWEEP_SOURCE_TO_ORIGIN = {
+    "operator_submit": "explicit_command",
+    "mention": "auto_mention",
+    "topic": "auto_mention",
+    "from_set": "auto_mention",
+}
+_VALID_SWEEP_SOURCES = tuple(_SWEEP_SOURCE_TO_ORIGIN.keys())
+
+# Read-through cache TTL for relay_tweets (a read-side policy, plan §3.7).
+_TWEET_CACHE_TTL_HOURS = 6
+
+# The sweep sentinel keeps flagger_id NOT NULL on auto-sourced rows.
+_SWEEP_SENTINEL_DISPLAY = "__sweep__"
+
+
+def get_or_create_sweep_sentinel(conn: Connection, org_id: str) -> int:
+    """Get-or-create ONE sentinel ``relay_members`` row PER ORG for the sweep.
+
+    Auto-sourced opportunities need a non-NULL ``flagger_id`` (the 057 column
+    stays NOT NULL — plan §3.1, no rebuild). The sweep attributes them to a
+    deterministic per-org sentinel member (``display_name='__sweep__'``) with a
+    ``platform='x'`` identity keyed ``'__sweep__::'+org_id`` so it is stable and
+    idempotent across sweeps. Mirrors :func:`auto_create_member_identity`
+    (auto-creation grants NO roles). The caller MUST be inside an
+    ``immediate_txn`` (this writes). Returns the sentinel ``relay_members.id``.
+    """
+    external_user_id = f"{_SWEEP_SENTINEL_DISPLAY}::{org_id}"
+    existing = conn.execute(
+        text(
+            "SELECT member_id FROM relay_member_identities "
+            "WHERE platform = 'x' AND external_user_id = :euid"
+        ),
+        {"euid": external_user_id},
+    ).fetchone()
+    if existing is not None:
+        return int(existing[0])
+    row = conn.execute(
+        text("INSERT INTO relay_members (display_name) VALUES (:name) RETURNING id"),
+        {"name": _SWEEP_SENTINEL_DISPLAY},
+    ).fetchone()
+    member_id = int(row[0])
+    conn.execute(
+        text(
+            "INSERT INTO relay_member_identities "
+            "(member_id, platform, external_user_id, handle, linked_at) "
+            "VALUES (:member_id, 'x', :euid, :handle, :now)"
+        ),
+        {
+            "member_id": member_id,
+            "euid": external_user_id,
+            "handle": _SWEEP_SENTINEL_DISPLAY,
+            "now": _utc_now_iso(),
+        },
+    )
+    return member_id
+
+
+def find_active_opportunity_for_tweet(
+    conn: Connection, org_id: str, tweet_id: int
+) -> dict | None:
+    """Return the existing NON-TERMINAL opportunity for ``(org_id, tweet_id)``, or None.
+
+    The application-level dedup lookup (plan §3.1 — there is no UNIQUE constraint
+    to lean on). "Non-terminal" = status NOT IN ('handled','expired','dismissed').
+    Returns ``{id, status, score, expires_at, sweep_source}`` (newest first if
+    somehow more than one) or ``None``. Read-only.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, status, score, expires_at, sweep_source "
+            "FROM relay_reply_opportunities "
+            "WHERE org_id = :org_id AND tweet_id = :tweet_id "
+            "  AND status NOT IN ('handled','expired','dismissed') "
+            "ORDER BY id DESC LIMIT 1"
+        ),
+        {"org_id": org_id, "tweet_id": int(tweet_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def upsert_sweep_opportunity(
+    conn: Connection,
+    *,
+    org_id: str,
+    tweet_id: int,
+    sweep_source: str,
+    score: float | None = None,
+    score_reason: str | None = None,
+    suggested_angle: str | None = None,
+    expiry_hours: int = 36,
+    note: str | None = None,
+) -> int:
+    """Application-level upsert of a sweep-sourced opportunity; return its id.
+
+    Dedup is purely app-level (plan §3.1 — NO ``UNIQUE(org_id, tweet_id)``): look
+    up any existing non-terminal opportunity for ``(org_id, tweet_id)`` and, if
+    present, UPDATE its ``score``/``score_reason``/``suggested_angle`` (re-score
+    on re-surface) WITHOUT touching ``expires_at`` or flipping ``status`` (a
+    handled/expired/dismissed row is excluded from the lookup and so is never
+    revived). Otherwise INSERT a new row with ``flagger_id`` = the per-org sweep
+    sentinel, ``origin`` mapped from ``sweep_source`` (operator_submit ->
+    explicit_command, else auto_mention), ``status='active'``, and
+    ``expires_at = now + expiry_hours`` (set ONCE at creation, never extended).
+    The caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    if sweep_source not in _VALID_SWEEP_SOURCES:
+        raise ValueError(
+            f"unknown sweep_source {sweep_source!r}; expected one of {_VALID_SWEEP_SOURCES}"
+        )
+    existing = find_active_opportunity_for_tweet(conn, org_id, tweet_id)
+    if existing is not None:
+        conn.execute(
+            text(
+                "UPDATE relay_reply_opportunities SET "
+                "  score = :score, "
+                "  score_reason = :score_reason, "
+                "  suggested_angle = :suggested_angle "
+                "WHERE id = :id"
+            ),
+            {
+                "score": score,
+                "score_reason": score_reason,
+                "suggested_angle": suggested_angle,
+                "id": int(existing["id"]),
+            },
+        )
+        return int(existing["id"])
+
+    flagger_id = get_or_create_sweep_sentinel(conn, org_id)
+    origin = _SWEEP_SOURCE_TO_ORIGIN[sweep_source]
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(hours=int(expiry_hours))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_reply_opportunities "
+            "(org_id, tweet_id, flagger_id, origin, note, status, score, "
+            " score_reason, suggested_angle, expires_at, sweep_source) "
+            "VALUES (:org_id, :tweet_id, :flagger_id, :origin, :note, 'active', "
+            "        :score, :score_reason, :suggested_angle, :expires_at, :sweep_source) "
+            "RETURNING id"
+        ),
+        {
+            "org_id": org_id,
+            "tweet_id": int(tweet_id),
+            "flagger_id": flagger_id,
+            "origin": origin,
+            "note": note,
+            "score": score,
+            "score_reason": score_reason,
+            "suggested_angle": suggested_angle,
+            "expires_at": expires_at,
+            "sweep_source": sweep_source,
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+def list_feed_opportunities(
+    conn: Connection,
+    org_id: str,
+    operator_handle: str,
+    *,
+    limit: int = 50,
+) -> list[dict]:
+    """Return the per-operator reply-opportunity feed for an org (plan §5).
+
+    ORG-FILTERED server-side (defense-in-depth, not just the UI dropdown). Joins
+    :func:`relay_opportunity_operator_state` for ``operator_handle`` and EXCLUDES
+    rows that operator dismissed or has currently snoozed (``snooze_until`` in the
+    future). Orders ``score DESC`` (NULLs last), with ``handled`` depressed to the
+    bottom. NEVER selects any cost column (the cost-never-in-response rule). The
+    target tweet's author/x_id/text are joined for display. Read-only.
+    """
+    now = _utc_now_iso()
+    rows = conn.execute(
+        text(
+            "SELECT o.id, o.org_id, o.tweet_id, o.origin, o.note, o.status, "
+            "       o.score, o.score_reason, o.suggested_angle, o.expires_at, "
+            "       o.sweep_source, o.created_at, "
+            "       t.x_id, t.x_author_handle, t.text AS tweet_text "
+            "FROM relay_reply_opportunities o "
+            "JOIN relay_tweets t ON t.id = o.tweet_id "
+            "LEFT JOIN relay_opportunity_operator_state s "
+            "  ON s.opportunity_id = o.id AND s.operator_handle = :operator_handle "
+            "WHERE o.org_id = :org_id "
+            "  AND o.status IN ('active', 'handled') "
+            "  AND (s.state IS NULL "
+            "       OR (s.state = 'snoozed' "
+            "           AND (s.snooze_until IS NULL OR s.snooze_until <= :now))) "
+            "ORDER BY CASE WHEN o.status = 'handled' THEN 1 ELSE 0 END ASC, "
+            "         CASE WHEN o.score IS NULL THEN 1 ELSE 0 END ASC, "
+            "         o.score DESC, o.created_at DESC, o.id DESC "
+            "LIMIT :limit"
+        ),
+        {
+            "org_id": org_id,
+            "operator_handle": operator_handle,
+            "now": now,
+            "limit": int(limit),
+        },
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def set_operator_opportunity_state(
+    conn: Connection,
+    *,
+    opportunity_id: int,
+    operator_handle: str,
+    state: str,
+    snooze_until: str | None = None,
+) -> None:
+    """Upsert a per-operator ``dismissed``/``snoozed`` state on an opportunity (§3.2).
+
+    ``state`` must be ``'dismissed'`` or ``'snoozed'`` (``snooze_until`` is the
+    ISO-8601-Z wake time for a snooze; ignored for a dismiss). Idempotent on the
+    composite PK ``(opportunity_id, operator_handle)`` — a repeat call overwrites
+    the prior state. The caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    if state not in ("dismissed", "snoozed"):
+        raise ValueError(
+            f"unknown operator opportunity state {state!r}; expected 'dismissed' or 'snoozed'"
+        )
+    existing = conn.execute(
+        text(
+            "SELECT 1 FROM relay_opportunity_operator_state "
+            "WHERE opportunity_id = :oid AND operator_handle = :h"
+        ),
+        {"oid": int(opportunity_id), "h": operator_handle},
+    ).fetchone()
+    if existing is not None:
+        conn.execute(
+            text(
+                "UPDATE relay_opportunity_operator_state "
+                "SET state = :state, snooze_until = :snooze_until "
+                "WHERE opportunity_id = :oid AND operator_handle = :h"
+            ),
+            {
+                "state": state,
+                "snooze_until": snooze_until,
+                "oid": int(opportunity_id),
+                "h": operator_handle,
+            },
+        )
+        return
+    conn.execute(
+        text(
+            "INSERT INTO relay_opportunity_operator_state "
+            "(opportunity_id, operator_handle, state, snooze_until, created_at) "
+            "VALUES (:oid, :h, :state, :snooze_until, :now)"
+        ),
+        {
+            "oid": int(opportunity_id),
+            "h": operator_handle,
+            "state": state,
+            "snooze_until": snooze_until,
+            "now": _utc_now_iso(),
+        },
+    )
+
+
+def mark_opportunity_handled(conn: Connection, opportunity_id: int) -> None:
+    """Depress an opportunity to ``handled`` (team-wide) once an operator acts (§5).
+
+    On generate/post through the feed's Draft-reply, the opportunity is marked
+    ``handled`` so it falls to the bottom of every operator's feed (campaign
+    targets are exempt — the caller decides). The caller MUST be inside an
+    ``immediate_txn`` (this writes).
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_reply_opportunities SET status = 'handled' "
+            "WHERE id = :id AND status = 'active'"
+        ),
+        {"id": int(opportunity_id)},
+    )
+
+
+def record_opportunity_feedback(
+    conn: Connection,
+    *,
+    opportunity_id: int,
+    rater_handle: str,
+    rater_role: str,
+    thumb: int,
+    suggestion_id: str | None = None,
+) -> int:
+    """Insert a thumb into ``relay_opportunity_feedback``; return the row id (§3.3).
+
+    ``suggestion_id`` NULL = a thumb on the OPPORTUNITY (relevance / ranker
+    label); set = a thumb on a SUGGESTION (generation-quality signal). ``thumb``
+    is +1 or -1; ``rater_role`` is ``'operator'`` or ``'client_ops'``. The caller
+    MUST be inside an ``immediate_txn`` (this writes).
+    """
+    if thumb not in (1, -1):
+        raise ValueError(f"thumb must be +1 or -1, got {thumb!r}")
+    if rater_role not in ("operator", "client_ops"):
+        raise ValueError(
+            f"unknown rater_role {rater_role!r}; expected 'operator' or 'client_ops'"
+        )
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_opportunity_feedback "
+            "(opportunity_id, suggestion_id, rater_handle, rater_role, thumb, created_at) "
+            "VALUES (:oid, :sid, :rater_handle, :rater_role, :thumb, :now) "
+            "RETURNING id"
+        ),
+        {
+            "oid": int(opportunity_id),
+            "sid": suggestion_id,
+            "rater_handle": rater_handle,
+            "rater_role": rater_role,
+            "thumb": int(thumb),
+            "now": _utc_now_iso(),
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+# ------------------------------------------------------------------
+# relay_sweep_config CRUD + the §4 sweep state machine
+# ------------------------------------------------------------------
+def get_sweep_config(conn: Connection, org_id: str) -> dict | None:
+    """Return the ``relay_sweep_config`` row for an org as a dict, or None. Read-only."""
+    row = conn.execute(
+        text(
+            "SELECT org_id, mention_handles, topic_queries, from_set, "
+            "       operator_handles, enabled, expiry_hours, last_sweep_at, "
+            "       sweep_requested_at, updated_at "
+            "FROM relay_sweep_config WHERE org_id = :org_id"
+        ),
+        {"org_id": org_id},
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(row._mapping)
+
+
+def upsert_sweep_config(
+    conn: Connection,
+    *,
+    org_id: str,
+    mention_handles: str | None = None,
+    topic_queries: str | None = None,
+    from_set: str | None = None,
+    operator_handles: str | None = None,
+    enabled: int | None = None,
+    expiry_hours: int | None = None,
+) -> None:
+    """Create or update the per-client curated query set (plan §3.4).
+
+    JSON-array fields (``mention_handles`` / ``topic_queries`` / ``from_set`` /
+    ``operator_handles``) are passed as already-encoded JSON strings; ``None``
+    leaves an existing value unchanged (on INSERT, ``None`` falls back to the
+    column default ``'[]'`` / ``0`` / ``36``). The daily cost cap is NOT here (it
+    lives in ``relay_clients.config.polling.daily_cost_cap_usd`` — the single cap
+    source). ``last_sweep_at`` / ``sweep_requested_at`` are managed by the state
+    machine, not by this writer. The caller MUST be inside an ``immediate_txn``.
+    """
+    now = _utc_now_iso()
+    existing = conn.execute(
+        text("SELECT 1 FROM relay_sweep_config WHERE org_id = :org_id"),
+        {"org_id": org_id},
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            text(
+                "INSERT INTO relay_sweep_config "
+                "(org_id, mention_handles, topic_queries, from_set, operator_handles, "
+                " enabled, expiry_hours, updated_at) "
+                "VALUES (:org_id, "
+                "        COALESCE(:mention_handles, '[]'), "
+                "        COALESCE(:topic_queries, '[]'), "
+                "        COALESCE(:from_set, '[]'), "
+                "        COALESCE(:operator_handles, '[]'), "
+                "        COALESCE(:enabled, 0), "
+                "        COALESCE(:expiry_hours, 36), "
+                "        :now)"
+            ),
+            {
+                "org_id": org_id,
+                "mention_handles": mention_handles,
+                "topic_queries": topic_queries,
+                "from_set": from_set,
+                "operator_handles": operator_handles,
+                "enabled": enabled,
+                "expiry_hours": expiry_hours,
+                "now": now,
+            },
+        )
+        return
+    conn.execute(
+        text(
+            "UPDATE relay_sweep_config SET "
+            "  mention_handles = COALESCE(:mention_handles, mention_handles), "
+            "  topic_queries = COALESCE(:topic_queries, topic_queries), "
+            "  from_set = COALESCE(:from_set, from_set), "
+            "  operator_handles = COALESCE(:operator_handles, operator_handles), "
+            "  enabled = COALESCE(:enabled, enabled), "
+            "  expiry_hours = COALESCE(:expiry_hours, expiry_hours), "
+            "  updated_at = :now "
+            "WHERE org_id = :org_id"
+        ),
+        {
+            "org_id": org_id,
+            "mention_handles": mention_handles,
+            "topic_queries": topic_queries,
+            "from_set": from_set,
+            "operator_handles": operator_handles,
+            "enabled": enabled,
+            "expiry_hours": expiry_hours,
+            "now": now,
+        },
+    )
+
+
+def mark_sweep_requested(conn: Connection, org_id: str, *, now: str | None = None) -> None:
+    """Stamp ``sweep_requested_at`` = now (the "sweep now" ENQUEUE marker, §4).
+
+    SableWeb's ``POST /api/v1/sweep/run`` calls this and returns 202; the next
+    timer tick consumes the request because the §4 due-check compares
+    ``sweep_requested_at > last_sweep_at`` and completion stamps ``last_sweep_at``
+    (so one request triggers exactly one extra sweep). The caller MUST be inside
+    an ``immediate_txn`` (this writes).
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_sweep_config SET sweep_requested_at = :now "
+            "WHERE org_id = :org_id"
+        ),
+        {"now": now or _utc_now_iso(), "org_id": org_id},
+    )
+
+
+def mark_sweep_completed(conn: Connection, org_id: str, *, now: str | None = None) -> None:
+    """Stamp ``last_sweep_at`` = now at sweep completion (§4).
+
+    Stamping ``last_sweep_at`` AUTO-CONSUMES any pending ``sweep_requested_at``
+    (the due-check is ``sweep_requested_at > last_sweep_at``), so one "sweep now"
+    yields exactly one extra sweep — never a loop. A failed/skipped sweep must NOT
+    call this (so it retries next tick). The caller MUST be inside an
+    ``immediate_txn`` (this writes).
+    """
+    conn.execute(
+        text(
+            "UPDATE relay_sweep_config SET last_sweep_at = :now "
+            "WHERE org_id = :org_id"
+        ),
+        {"now": now or _utc_now_iso(), "org_id": org_id},
+    )
+
+
+def list_due_sweep_orgs(
+    conn: Connection,
+    *,
+    now: str | None = None,
+    heartbeat_within_hours: int = 2,
+) -> list[str]:
+    """Return org_ids due for a sweep this tick — the EXACT §4 selection.
+
+    An org is due iff it is ``enabled`` AND has an operator heartbeat in
+    ``relay_operator_heartbeat`` within ``heartbeat_within_hours`` AND
+        (``last_sweep_at`` IS NULL
+         OR now - last_sweep_at >= 1h
+         OR (``sweep_requested_at`` IS NOT NULL AND sweep_requested_at > last_sweep_at)).
+    Because completion stamps ``last_sweep_at`` (:func:`mark_sweep_completed`),
+    the request clause auto-consumes — one "sweep now" => exactly one extra sweep.
+    Read-only. ISO-8601-Z timestamps sort lexicographically == chronologically,
+    so the string comparisons below are correct.
+    """
+    now_iso = now or _utc_now_iso()
+    hb_cutoff = (
+        datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        - timedelta(hours=int(heartbeat_within_hours))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    one_hour_ago = (
+        datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        - timedelta(hours=1)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        text(
+            "SELECT c.org_id FROM relay_sweep_config c "
+            "WHERE c.enabled = 1 "
+            "  AND EXISTS ( "
+            "      SELECT 1 FROM relay_operator_heartbeat h "
+            "      WHERE h.org_id = c.org_id AND h.last_seen >= :hb_cutoff "
+            "  ) "
+            "  AND ( "
+            "      c.last_sweep_at IS NULL "
+            "      OR c.last_sweep_at <= :one_hour_ago "
+            "      OR (c.sweep_requested_at IS NOT NULL "
+            "          AND c.sweep_requested_at > c.last_sweep_at) "
+            "  ) "
+            "ORDER BY c.org_id"
+        ),
+        {"hb_cutoff": hb_cutoff, "one_hour_ago": one_hour_ago},
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+# ------------------------------------------------------------------
+# relay_tweets read-through cache (engagement_json / lang / author_followers)
+# ------------------------------------------------------------------
+def upsert_relay_tweet(
+    conn: Connection,
+    *,
+    x_id: str,
+    x_author_handle: str,
+    x_author_id: str | None = None,
+    text_body: str | None = None,
+    media_urls_json: str = "[]",
+    is_reply: bool = False,
+    in_reply_to_x_id: str | None = None,
+    conversation_x_id: str | None = None,
+    raw_json: str | None = None,
+    engagement_json: str | None = None,
+    lang: str | None = None,
+    author_followers: int | None = None,
+) -> int:
+    """Write-through upsert of a tweet INCLUDING the 062 cache signals; return id.
+
+    Superset of :func:`upsert_tweet` that also persists ``engagement_json`` /
+    ``lang`` / ``author_followers`` (the heuristic pre-rank inputs, plan §3.7).
+    Idempotent on the ``x_id`` UNIQUE index (a repeat call refreshes the cached
+    fields incl. ``fetched_at``). The caller MUST be inside an ``immediate_txn``.
+    """
+    existing = conn.execute(
+        text("SELECT id FROM relay_tweets WHERE x_id = :x_id"),
+        {"x_id": str(x_id)},
+    ).fetchone()
+    params = {
+        "x_id": str(x_id),
+        "x_author_handle": x_author_handle,
+        "x_author_id": x_author_id,
+        "text": text_body,
+        "media_urls": media_urls_json,
+        "is_reply": 1 if is_reply else 0,
+        "in_reply_to_x_id": in_reply_to_x_id,
+        "conversation_x_id": conversation_x_id,
+        "raw": raw_json,
+        "engagement_json": engagement_json,
+        "lang": lang,
+        "author_followers": (
+            None if author_followers is None else int(author_followers)
+        ),
+    }
+    if existing is not None:
+        conn.execute(
+            text(
+                "UPDATE relay_tweets SET "
+                "  x_author_handle = :x_author_handle, "
+                "  x_author_id = :x_author_id, "
+                "  text = :text, "
+                "  media_urls = :media_urls, "
+                "  is_reply = :is_reply, "
+                "  in_reply_to_x_id = :in_reply_to_x_id, "
+                "  conversation_x_id = :conversation_x_id, "
+                "  fetched_at = :now, "
+                "  raw = :raw, "
+                "  engagement_json = :engagement_json, "
+                "  lang = :lang, "
+                "  author_followers = :author_followers "
+                "WHERE x_id = :x_id"
+            ),
+            {**params, "now": _utc_now_iso()},
+        )
+        return int(existing[0])
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_tweets "
+            "(x_id, x_author_id, x_author_handle, text, media_urls, is_reply, "
+            " in_reply_to_x_id, conversation_x_id, raw, engagement_json, lang, "
+            " author_followers) "
+            "VALUES (:x_id, :x_author_id, :x_author_handle, :text, :media_urls, "
+            "        :is_reply, :in_reply_to_x_id, :conversation_x_id, :raw, "
+            "        :engagement_json, :lang, :author_followers) "
+            "RETURNING id"
+        ),
+        params,
+    ).fetchone()
+    return int(row[0])
+
+
+def get_cached_relay_tweet(
+    conn: Connection, x_id: str, *, ttl_hours: int = _TWEET_CACHE_TTL_HOURS
+) -> dict | None:
+    """Read-through cache lookup: return a tweet ONLY if fetched within ``ttl_hours``.
+
+    Returns the ``relay_tweets`` row (incl. the 062 cache columns) iff it exists
+    AND ``fetched_at`` is within ``ttl_hours`` (default 6h, plan §3.7) — otherwise
+    ``None`` (so the sweep re-fetches a stale entry). Read-only.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, x_id, x_author_id, x_author_handle, text, media_urls, "
+            "       is_reply, in_reply_to_x_id, conversation_x_id, fetched_at, raw, "
+            "       engagement_json, lang, author_followers "
+            "FROM relay_tweets WHERE x_id = :x_id"
+        ),
+        {"x_id": str(x_id)},
+    ).fetchone()
+    if row is None:
+        return None
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=int(ttl_hours))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if row._mapping["fetched_at"] is None or row._mapping["fetched_at"] < cutoff:
+        return None
+    return dict(row._mapping)
+
+
+# ------------------------------------------------------------------
+# relay_operator_heartbeat (logged-in gating)
+# ------------------------------------------------------------------
+def write_operator_heartbeat(
+    conn: Connection, *, org_id: str, operator_handle: str, now: str | None = None
+) -> None:
+    """Upsert the logged-in heartbeat for ``(org_id, operator_handle)`` (§3.6).
+
+    The production writer is SableWeb (on each ``/ops/reply-assist`` load); this
+    Python helper exists for tests + CLI. Idempotent on the composite PK. The
+    caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    ts = now or _utc_now_iso()
+    existing = conn.execute(
+        text(
+            "SELECT 1 FROM relay_operator_heartbeat "
+            "WHERE org_id = :org_id AND operator_handle = :h"
+        ),
+        {"org_id": org_id, "h": operator_handle},
+    ).fetchone()
+    if existing is not None:
+        conn.execute(
+            text(
+                "UPDATE relay_operator_heartbeat SET last_seen = :now "
+                "WHERE org_id = :org_id AND operator_handle = :h"
+            ),
+            {"now": ts, "org_id": org_id, "h": operator_handle},
+        )
+        return
+    conn.execute(
+        text(
+            "INSERT INTO relay_operator_heartbeat (org_id, operator_handle, last_seen) "
+            "VALUES (:org_id, :h, :now)"
+        ),
+        {"org_id": org_id, "h": operator_handle, "now": ts},
+    )
+
+
+def has_recent_heartbeat(
+    conn: Connection, org_id: str, *, within_hours: int = 2, now: str | None = None
+) -> bool:
+    """True iff any operator for ``org_id`` had a heartbeat within ``within_hours`` (§3.6)."""
+    now_iso = now or _utc_now_iso()
+    cutoff = (
+        datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        - timedelta(hours=int(within_hours))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = conn.execute(
+        text(
+            "SELECT 1 FROM relay_operator_heartbeat "
+            "WHERE org_id = :org_id AND last_seen >= :cutoff LIMIT 1"
+        ),
+        {"org_id": org_id, "cutoff": cutoff},
+    ).fetchone()
+    return row is not None
+
+
+# ------------------------------------------------------------------
+# GC (plan §4 step 7 / §3.9 retention) — invoked by the Slopper sweep
+# ------------------------------------------------------------------
+def gc_expired_opportunities(conn: Connection, *, now: str | None = None) -> dict:
+    """GC the reply-opportunity feed (plan §4 step 7 / §3.9). Returns counts.
+
+    Three retention actions, in order:
+      1. EXPIRE: flip ``active`` rows whose ``expires_at`` has passed to
+         ``'expired'``.
+      2. PURGE: delete opportunities 7 days past ``expires_at`` (and their
+         per-operator state, FK-safe) — but KEEP ``relay_opportunity_feedback``
+         for 90 days (the learning corpus), so feedback rows older than 90 days
+         are pruned first and any opportunity still carrying (<90d) feedback is
+         retained until the feedback ages out.
+      3. (feedback >90d pruned in step 2's first phase.)
+    The caller MUST be inside an ``immediate_txn`` (this writes). Returns
+    ``{expired, purged, feedback_pruned}``.
+    """
+    now_iso = now or _utc_now_iso()
+    now_dt = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    purge_cutoff = (now_dt - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    feedback_cutoff = (now_dt - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 1. Expire active rows past their expiry.
+    expired = conn.execute(
+        text(
+            "UPDATE relay_reply_opportunities SET status = 'expired' "
+            "WHERE status = 'active' "
+            "  AND expires_at IS NOT NULL AND expires_at <= :now"
+        ),
+        {"now": now_iso},
+    ).rowcount
+
+    # 2a. Prune feedback older than 90 days (learning-corpus retention).
+    feedback_pruned = conn.execute(
+        text(
+            "DELETE FROM relay_opportunity_feedback "
+            "WHERE created_at IS NOT NULL AND created_at < :cutoff"
+        ),
+        {"cutoff": feedback_cutoff},
+    ).rowcount
+
+    # 2b. Purge opportunities 7d past expiry, but only those carrying NO retained
+    #     (<90d) feedback — FK-safe: drop their per-operator state first.
+    purgeable = [
+        int(r[0])
+        for r in conn.execute(
+            text(
+                "SELECT o.id FROM relay_reply_opportunities o "
+                "WHERE o.expires_at IS NOT NULL AND o.expires_at < :purge_cutoff "
+                "  AND NOT EXISTS ( "
+                "      SELECT 1 FROM relay_opportunity_feedback f "
+                "      WHERE f.opportunity_id = o.id "
+                "  )"
+            ),
+            {"purge_cutoff": purge_cutoff},
+        ).fetchall()
+    ]
+    purged = 0
+    for oid in purgeable:
+        conn.execute(
+            text(
+                "DELETE FROM relay_opportunity_operator_state WHERE opportunity_id = :oid"
+            ),
+            {"oid": oid},
+        )
+        conn.execute(
+            text("DELETE FROM relay_reply_opportunities WHERE id = :oid"),
+            {"oid": oid},
+        )
+        purged += 1
+
+    return {"expired": expired, "purged": purged, "feedback_pruned": feedback_pruned}

@@ -10,7 +10,7 @@ SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a 
 
 ## Current scope
 
-- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 60 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks/media/reply-suggestion/discord-scoring/work-tracking helpers
+- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 62 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks/media/reply-suggestion/discord-scoring/work-tracking helpers
 - **`sable_platform.contracts`** — Lead, ProspectHandoff, DiagnosticRun, Entity, ContentItem, Artifact, SyncRun, WorkflowRun, Task, Outcome, Recommendation, TrackingMetadata
 - **`sable_platform.workflows`** — deterministic `WorkflowRunner`, registry, 9 builtin workflows, 12 alert checks, alert delivery (Telegram/Discord with cooldown)
 - **`sable_platform.adapters`** — subprocess adapters for CultGrader, SableTracking, Slopper, LeadIdentifier, ClientComms (V1 stub). SableKOL integrates as a FastAPI sidecar, not a subprocess adapter.
@@ -102,7 +102,7 @@ When `SABLE_DATABASE_URL` points at PostgreSQL, `sable-platform init` applies Al
 ```
 sable_platform/
 ├── contracts/      Canonical Pydantic models
-├── db/             DB layer + 60 migrations
+├── db/             DB layer + 62 migrations
 ├── workflows/      WorkflowRunner, registry, builtins, alert engine
 ├── adapters/       Subprocess adapters per repo
 ├── media/          Shared media layer (R2 store, registry, URL signing)

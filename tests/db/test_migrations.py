@@ -98,6 +98,13 @@ EXPECTED_TABLES = {
     "autocm_time_saved_baseline",
     # Migration 059: operator work-tracking
     "mod_slot_sessions", "operator_work_events",
+    # Migration 061: coordinated reply campaigns
+    "reply_campaigns", "reply_campaign_assignments",
+    # Migration 062: reply-opportunity feed (5 new tables; the additive columns
+    # on relay_reply_opportunities / relay_tweets / reply_suggestions are
+    # asserted by test_migration_062_*).
+    "relay_opportunity_operator_state", "relay_opportunity_feedback",
+    "relay_sweep_config", "relay_sweep_cursor", "relay_operator_heartbeat",
 }
 
 
@@ -108,11 +115,46 @@ def _make_conn() -> sqlite3.Connection:
     return conn
 
 
+def _apply_migrations_through(conn: sqlite3.Connection, target_version: int) -> None:
+    """Apply the registered SQL migrations up to (and including) ``target_version``.
+
+    Mirrors ``ensure_schema``'s runner (same split-on-``;`` + per-file
+    ``with conn:`` transaction) but stops early so a test can seed a populated
+    table on the PRE-062 schema before applying 062 — the seed-then-upgrade
+    dual-migration parity check the plan requires (not just an empty-DB run).
+    """
+    import importlib.resources
+
+    from sable_platform.db.connection import _MIGRATIONS
+
+    try:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        current = row[0] if row else 0
+    except sqlite3.OperationalError:
+        current = 0
+
+    migrations_pkg = importlib.resources.files("sable_platform.db") / "migrations"
+    for filename, version in _MIGRATIONS:
+        if version > target_version:
+            break
+        if version <= current:
+            continue  # already applied — only roll forward (like ensure_schema)
+        sql = (migrations_pkg / filename).read_text(encoding="utf-8")
+        stmts = [s.strip() for s in sql.split(";") if s.strip()]
+        with conn:
+            for stmt in stmts:
+                conn.execute(stmt)
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                (version,),
+            )
+
+
 def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 61
+    assert row["version"] == 62
 
 
 def test_all_tables_exist():
@@ -131,7 +173,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 61
+    assert row["version"] == 62
 
 
 def test_workflow_tables_columns():
@@ -802,3 +844,197 @@ def test_kol_extract_runs_client_index_exists():
     rows = conn.execute("PRAGMA index_list(kol_extract_runs)").fetchall()
     names = {row[1] for row in rows}
     assert "idx_kol_extract_runs_client" in names
+
+
+# ---------------------------------------------------------------------------
+# Migration 062 — reply-opportunity feed (additive extend + 5 new tables)
+# ---------------------------------------------------------------------------
+
+def test_migration_062_additive_columns_exist():
+    """Migration 062: the 6+3+2 additive columns are present on a fresh DB."""
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    opp_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_reply_opportunities)"
+    ).fetchall()}
+    for expected in ("score", "score_reason", "suggested_angle", "status",
+                     "expires_at", "sweep_source"):
+        assert expected in opp_cols, f"relay_reply_opportunities missing '{expected}'"
+
+    tweet_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_tweets)"
+    ).fetchall()}
+    for expected in ("engagement_json", "lang", "author_followers"):
+        assert expected in tweet_cols, f"relay_tweets missing '{expected}'"
+
+    sugg_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_suggestions)"
+    ).fetchall()}
+    for expected in ("opportunity_id", "source_conversation_id"):
+        assert expected in sugg_cols, f"reply_suggestions missing '{expected}'"
+
+
+def test_migration_062_indexes_exist():
+    """Migration 062: the 3 new non-unique indexes are created."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    opp_idx = {r[1] for r in conn.execute(
+        "PRAGMA index_list(relay_reply_opportunities)"
+    ).fetchall()}
+    assert "ix_relay_opportunities_feed" in opp_idx
+    assert "ix_relay_opportunities_expiry" in opp_idx
+    fb_idx = {r[1] for r in conn.execute(
+        "PRAGMA index_list(relay_opportunity_feedback)"
+    ).fetchall()}
+    assert "ix_relay_opportunity_feedback_opp" in fb_idx
+
+
+def test_migration_062_no_unique_org_tweet_index():
+    """Migration 062 (plan §3.1): dedup is application-level — there must be NO
+    UNIQUE index on (org_id, tweet_id) (it could not build on a populated 057
+    table that already holds duplicate flags)."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    for row in conn.execute("PRAGMA index_list(relay_reply_opportunities)").fetchall():
+        # row = (seq, name, unique, origin, partial)
+        if row[2]:  # unique
+            cols = [
+                c[2]
+                for c in conn.execute(f"PRAGMA index_info({row[1]})").fetchall()
+            ]
+            assert set(cols) != {"org_id", "tweet_id"}, (
+                f"unexpected UNIQUE(org_id,tweet_id) index {row[1]!r}"
+            )
+
+
+def test_migration_062_new_tables_columns():
+    """Migration 062: the 5 new tables have the expected columns."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    expectations = {
+        "relay_opportunity_operator_state": {
+            "opportunity_id", "operator_handle", "state", "snooze_until", "created_at",
+        },
+        "relay_opportunity_feedback": {
+            "id", "opportunity_id", "suggestion_id", "rater_handle",
+            "rater_role", "thumb", "created_at",
+        },
+        "relay_sweep_config": {
+            "org_id", "mention_handles", "topic_queries", "from_set",
+            "operator_handles", "enabled", "expiry_hours", "last_sweep_at",
+            "sweep_requested_at", "updated_at",
+        },
+        "relay_sweep_cursor": {
+            "org_id", "source", "query_hash", "since_id", "updated_at",
+        },
+        "relay_operator_heartbeat": {"org_id", "operator_handle", "last_seen"},
+    }
+    for table, expected in expectations.items():
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        assert expected <= cols, f"{table} missing {expected - cols}"
+
+
+def test_migration_062_sweep_config_defaults():
+    """Migration 062: relay_sweep_config defaults populate JSON/flag columns."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('o62', 'O', 'active')")
+    conn.execute("INSERT INTO relay_clients (org_id) VALUES ('o62')")
+    conn.execute("INSERT INTO relay_sweep_config (org_id) VALUES ('o62')")
+    conn.commit()
+    row = conn.execute(
+        "SELECT mention_handles, topic_queries, from_set, operator_handles, "
+        "       enabled, expiry_hours FROM relay_sweep_config WHERE org_id='o62'"
+    ).fetchone()
+    assert row["mention_handles"] == "[]"
+    assert row["topic_queries"] == "[]"
+    assert row["from_set"] == "[]"
+    assert row["operator_handles"] == "[]"
+    assert row["enabled"] == 0
+    assert row["expiry_hours"] == 36
+
+
+def test_migration_062_dual_migration_seed_then_upgrade():
+    """HARD requirement (plan §3 / §8): a POPULATED relay_reply_opportunities on
+    the PRE-062 schema must survive the 062 upgrade — the additive columns appear,
+    existing data is intact, and status BACKFILLS to 'active'.
+
+    This is the seed-then-upgrade dual-migration parity check (not just an
+    empty-DB run): it proves the migration is genuinely additive (no rebuild) and
+    the NOT NULL status DEFAULT applies to already-present rows.
+    """
+    conn = _make_conn()
+    # 1. Bring the schema up to 061 (the verified single head BEFORE 062).
+    _apply_migrations_through(conn, 61)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 61
+    # The 062 columns must NOT exist yet.
+    pre_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_reply_opportunities)"
+    ).fetchall()}
+    assert "status" not in pre_cols
+    assert "score" not in pre_cols
+
+    # 2. Seed a REAL populated opportunity row (a legacy TG /flag-reply row) with
+    #    a valid flagger_id + tweet_id so the FK chain holds.
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute("INSERT INTO relay_clients (org_id) VALUES ('tig')")
+    conn.execute("INSERT INTO relay_members (display_name) VALUES ('flagger')")
+    flagger_id = conn.execute(
+        "SELECT id FROM relay_members WHERE display_name='flagger'"
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO relay_tweets (x_id, x_author_handle, text) "
+        "VALUES ('999', 'someone', 'legacy flagged tweet')"
+    )
+    tweet_id = conn.execute(
+        "SELECT id FROM relay_tweets WHERE x_id='999'"
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO relay_reply_opportunities "
+        "(org_id, tweet_id, flagger_id, origin, note) "
+        "VALUES ('tig', ?, ?, 'explicit_command', 'pre-062 legacy flag')",
+        (tweet_id, flagger_id),
+    )
+    conn.commit()
+    opp_id = conn.execute(
+        "SELECT id FROM relay_reply_opportunities WHERE note='pre-062 legacy flag'"
+    ).fetchone()["id"]
+
+    # 3. Apply 062 on the POPULATED table.
+    _apply_migrations_through(conn, 62)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 62
+
+    # 4a. Additive columns now exist.
+    post_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(relay_reply_opportunities)"
+    ).fetchall()}
+    for expected in ("score", "score_reason", "suggested_angle", "status",
+                     "expires_at", "sweep_source"):
+        assert expected in post_cols, f"missing additive column '{expected}'"
+
+    # 4b. The pre-existing row survived intact (data not lost — no rebuild).
+    row = conn.execute(
+        "SELECT org_id, tweet_id, flagger_id, origin, note, status, score "
+        "FROM relay_reply_opportunities WHERE id=?",
+        (opp_id,),
+    ).fetchone()
+    assert row is not None, "the seeded row was lost across the 062 upgrade"
+    assert row["org_id"] == "tig"
+    assert row["tweet_id"] == tweet_id
+    assert row["flagger_id"] == flagger_id
+    assert row["origin"] == "explicit_command"
+    assert row["note"] == "pre-062 legacy flag"
+    # 4c. status BACKFILLED to 'active' on the populated row; score still NULL.
+    assert row["status"] == "active", "status must backfill to 'active' on existing rows"
+    assert row["score"] is None
+
+    # 4d. The 5 new tables now exist.
+    tables = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    for t in ("relay_opportunity_operator_state", "relay_opportunity_feedback",
+              "relay_sweep_config", "relay_sweep_cursor", "relay_operator_heartbeat"):
+        assert t in tables, f"new table '{t}' not created by 062"

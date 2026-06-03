@@ -142,6 +142,13 @@ TABLE_LOAD_ORDER: list[str] = [
     "relay_reply_opportunity_targets",   # FK -> relay_reply_opportunities, relay_members (composite PK)
     "relay_reply_notifications",         # FK -> relay_reply_opportunities, relay_members (Integer autoincrement PK)
     "relay_processed_updates",           # no FKs (composite TEXT PK, no sequence)
+    # Migration 062: reply-opportunity feed. FK-safe order — all parents
+    # (relay_reply_opportunities, reply_suggestions, relay_clients) precede these.
+    "relay_opportunity_operator_state",  # FK -> relay_reply_opportunities (composite PK, no sequence)
+    "relay_opportunity_feedback",        # FK -> relay_reply_opportunities, reply_suggestions (Integer autoincrement PK)
+    "relay_sweep_config",                # FK -> relay_clients (TEXT PK org_id, no sequence)
+    "relay_sweep_cursor",                # no FKs (composite PK, no sequence)
+    "relay_operator_heartbeat",          # no FKs (composite PK, no sequence)
     # Migration 058: SableAutoCM (autocm_* family). FK-safe order (children after
     # parents). autocm_clients.org_id FK -> orgs; autocm_drafts source FKs ->
     # relay_messages / relay_chats (the 057 surface); everything else roots off
@@ -225,6 +232,10 @@ SEQUENCE_TABLES: dict[str, str] = {
     "relay_publications": "id",
     "relay_reply_opportunities": "id",
     "relay_reply_notifications": "id",
+    # Migration 062: reply-opportunity feed. Only relay_opportunity_feedback has
+    # an Integer autoincrement PK; operator_state/sweep_config/sweep_cursor/
+    # operator_heartbeat are composite-/TEXT-PK and have no sequence.
+    "relay_opportunity_feedback": "id",
     # Migration 058: SableAutoCM tables with Integer autoincrement PKs.
     # autocm_kb_constants is EXCLUDED (composite TEXT PK (client_id, key), no
     # sequence). The FTS5 companion (autocm_kb_chunks_fts) is SQLite-only and not

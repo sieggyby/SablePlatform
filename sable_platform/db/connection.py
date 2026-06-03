@@ -80,6 +80,7 @@ _MIGRATIONS = [
     ("059_work_tracking.sql", 59),
     ("060_reply_clip_media_kind.sql", 60),
     ("061_reply_campaigns.sql", 61),
+    ("062_reply_opportunity_feed.sql", 62),
 ]
 
 

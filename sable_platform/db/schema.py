@@ -1518,6 +1518,12 @@ reply_suggestions = Table(
     # mig 060 — media kind (image/video/none) the reply attached; backs the
     # prefer-image ranking + per-operator anti-spam image throttle.
     Column("clip_media_kind", Text),
+    # mig 062 — reply-opportunity feed learning join + the cheap LOCAL
+    # depress-already-replied lookup. opportunity_id is INTEGER (matches the
+    # relay_reply_opportunities PK). No SQLite FK (ADD COLUMN can't add one;
+    # the .sql matches).
+    Column("opportunity_id", Integer),
+    Column("source_conversation_id", Text),
     Index("ix_reply_suggestions_match", "operator_handle", "source_tweet_id"),
     Index("ix_reply_suggestions_org", "org_id", "generated_at"),
 )
@@ -1737,6 +1743,10 @@ relay_tweets = Table(
     Column("conversation_x_id", Text),
     Column("fetched_at", Text, nullable=False, server_default=func.now()),
     Column("raw", Text),
+    # Migration 062 — read-through cache signals for the heuristic pre-rank.
+    Column("engagement_json", Text),
+    Column("lang", Text),
+    Column("author_followers", Integer),
     Index("relay_tweets_author", "x_author_id"),
 )
 
@@ -1900,11 +1910,22 @@ relay_reply_opportunities = Table(
     Column("origin", Text, nullable=False),
     Column("note", Text),
     Column("created_at", Text, nullable=False, server_default=func.now()),
+    # Migration 062 — reply-opportunity feed (purely additive, see 062.sql).
+    Column("score", Float),
+    Column("score_reason", Text),
+    Column("suggested_angle", Text),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("expires_at", Text),
+    Column("sweep_source", Text),
     CheckConstraint(
         "origin IN ('explicit_command','reaction','auto_mention')",
         name="ck_relay_reply_opportunities_origin",
     ),
     Index("relay_reply_opportunities_by_org", "org_id", "created_at"),
+    # Migration 062 — non-unique feed/expiry indexes (NO UNIQUE(org_id,tweet_id),
+    # dedup is application-level per plan §3.1).
+    Index("ix_relay_opportunities_feed", "org_id", "status", "score"),
+    Index("ix_relay_opportunities_expiry", "expires_at"),
 )
 
 relay_reply_opportunity_targets = Table(
@@ -1945,6 +1966,88 @@ Index(
     relay_reply_notifications.c.opportunity_id,
     relay_reply_notifications.c.member_id,
     unique=True,
+)
+
+# ------------------------------------------------------------------
+# Migration 062 — reply-opportunity feed (new tables; mirrors 062.sql)
+# ------------------------------------------------------------------
+# Per-operator web-feed state (handle-keyed — distinct from the TG member-keyed
+# relay_reply_notifications). dismiss/snooze personalizes the shared feed view.
+relay_opportunity_operator_state = Table(
+    "relay_opportunity_operator_state",
+    metadata,
+    Column(
+        "opportunity_id",
+        Integer,
+        ForeignKey("relay_reply_opportunities.id"),
+        nullable=False,
+    ),
+    Column("operator_handle", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("snooze_until", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("opportunity_id", "operator_handle"),
+)
+
+# The two thumbs (learning labels). suggestion_id NULL = thumb on the OPPORTUNITY
+# (relevance / ranker). suggestion_id set = thumb on a SUGGESTION (gen quality).
+relay_opportunity_feedback = Table(
+    "relay_opportunity_feedback",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "opportunity_id",
+        Integer,
+        ForeignKey("relay_reply_opportunities.id"),
+        nullable=False,
+    ),
+    Column("suggestion_id", Text, ForeignKey("reply_suggestions.id")),
+    Column("rater_handle", Text, nullable=False),
+    Column("rater_role", Text, nullable=False),
+    Column("thumb", Integer, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_relay_opportunity_feedback_opp", "opportunity_id"),
+)
+
+# Per-client curated query set (managed via the TG bot command). The daily cost
+# cap is NOT here — it lives in relay_clients.config.polling.daily_cost_cap_usd
+# (the existing get_daily_cost_cap resolver).
+relay_sweep_config = Table(
+    "relay_sweep_config",
+    metadata,
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), primary_key=True),
+    Column("mention_handles", Text, nullable=False, server_default="[]"),
+    Column("topic_queries", Text, nullable=False, server_default="[]"),
+    Column("from_set", Text, nullable=False, server_default="[]"),
+    Column("operator_handles", Text, nullable=False, server_default="[]"),
+    Column("enabled", Integer, nullable=False, server_default="0"),
+    Column("expiry_hours", Integer, nullable=False, server_default="36"),
+    Column("last_sweep_at", Text),
+    Column("sweep_requested_at", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+
+# Per-source since_id cursor (do NOT overload relay_clients.last_seen_x_id).
+relay_sweep_cursor = Table(
+    "relay_sweep_cursor",
+    metadata,
+    Column("org_id", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("query_hash", Text, nullable=False),
+    Column("since_id", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("org_id", "source", "query_hash"),
+)
+
+# Logged-in gating: SableWeb stamps this on each /ops/reply-assist load. The
+# sweep only runs for orgs with a recent heartbeat.
+relay_operator_heartbeat = Table(
+    "relay_operator_heartbeat",
+    metadata,
+    Column("org_id", Text, nullable=False),
+    Column("operator_handle", Text, nullable=False),
+    Column("last_seen", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("org_id", "operator_handle"),
 )
 
 relay_processed_updates = Table(
