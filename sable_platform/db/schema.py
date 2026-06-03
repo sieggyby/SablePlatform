@@ -2061,6 +2061,33 @@ relay_operator_heartbeat = Table(
     PrimaryKeyConstraint("org_id", "operator_handle"),
 )
 
+# ------------------------------------------------------------------
+# Migration 064 — trending-story autopilot (new table; mirrors 064.sql)
+# ------------------------------------------------------------------
+# Stage A persists bursting-AND-relevant stories here, Stage B auto-monitors them
+# via decaying relay_sweep_config.topic_queries, and Stage C reads this for the
+# sable.tools "Trending Stories" digest. relevance/momentum/summary are
+# INTERPRETIVE (rendered behind a caveat banner), never measured fact. Dedup is
+# application-level (no UNIQUE constraint). No cost column, ever.
+relay_trending_stories = Table(
+    "relay_trending_stories",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("label", Text, nullable=False),
+    Column("summary", Text),
+    Column("relevance", Float),
+    Column("momentum", Float),
+    Column("member_tweet_ids_json", Text, nullable=False, server_default="[]"),
+    Column("monitor_terms_json", Text, nullable=False, server_default="[]"),
+    Column("status", Text, nullable=False, server_default="emerging"),
+    Column("first_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("last_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("expires_at", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_relay_trending_stories_feed", "org_id", "status"),
+)
+
 relay_processed_updates = Table(
     "relay_processed_updates",
     metadata,

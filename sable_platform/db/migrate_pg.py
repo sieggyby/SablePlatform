@@ -149,6 +149,9 @@ TABLE_LOAD_ORDER: list[str] = [
     "relay_sweep_config",                # FK -> relay_clients (TEXT PK org_id, no sequence)
     "relay_sweep_cursor",                # no FKs (composite PK, no sequence)
     "relay_operator_heartbeat",          # no FKs (composite PK, no sequence)
+    # Migration 064: trending-story autopilot. FK -> relay_clients (the parent
+    # precedes this block). Integer autoincrement PK -> also in SEQUENCE_TABLES.
+    "relay_trending_stories",            # FK -> relay_clients (Integer autoincrement PK)
     # Migration 063: reply-learning. Pure ADD COLUMN on reply_suggestions
     # (tell_score/tell_flags_json) + relay_tweets (embedding_json/embedding_model)
     # -- NO new tables, so no TABLE_LOAD_ORDER/SEQUENCE_TABLES entries. The copy
@@ -241,6 +244,8 @@ SEQUENCE_TABLES: dict[str, str] = {
     # an Integer autoincrement PK; operator_state/sweep_config/sweep_cursor/
     # operator_heartbeat are composite-/TEXT-PK and have no sequence.
     "relay_opportunity_feedback": "id",
+    # Migration 064: trending-story autopilot (Integer autoincrement PK).
+    "relay_trending_stories": "id",
     # Migration 058: SableAutoCM tables with Integer autoincrement PKs.
     # autocm_kb_constants is EXCLUDED (composite TEXT PK (client_id, key), no
     # sequence). The FTS5 companion (autocm_kb_chunks_fts) is SQLite-only and not

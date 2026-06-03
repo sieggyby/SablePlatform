@@ -108,6 +108,8 @@ EXPECTED_TABLES = {
     # Migration 063: reply-learning is purely ADD COLUMN (no new tables) —
     # tell_score/tell_flags_json on reply_suggestions + embedding_json/
     # embedding_model on relay_tweets, asserted by test_migration_063_*.
+    # Migration 064: trending-story autopilot
+    "relay_trending_stories",
 }
 
 
@@ -157,7 +159,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 63
+    assert row["version"] == 64
 
 
 def test_all_tables_exist():
@@ -176,7 +178,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 63
+    assert row["version"] == 64
 
 
 def test_workflow_tables_columns():

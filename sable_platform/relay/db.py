@@ -3559,3 +3559,236 @@ def quality_dashboard_aggregates(conn: Connection, org_id: str) -> dict:
         "pick_rate_by_source": pick_rate_by_source,
         "suggestion_thumbs": {"up": up, "down": down},
     }
+
+
+# ------------------------------------------------------------------
+# Migration 064 — trending-story autopilot CRUD (relay_trending_stories)
+# ------------------------------------------------------------------
+# Stage A (sable.reply.stories) persists bursting-AND-relevant stories here with
+# APP-LEVEL dedup (the same read-then-update philosophy as upsert_sweep_opportunity
+# -- there is NO DB UNIQUE constraint, so a story recurring across sweeps collapses
+# to ONE row whose relevance/momentum/last_seen update and whose member ids +
+# monitor terms merge). Stage B auto-monitors live stories (decaying topic_queries)
+# and decays expired ones to 'archived'. Stage C reads them org-scoped for the
+# digest. relevance/momentum/summary are INTERPRETIVE; there is NO cost column.
+
+# A new story matches an existing live one (=> UPDATE, not INSERT) when it shares
+# the same normalized label, OR >= this many member tweet ids, OR >= this many
+# normalized monitor terms. Tunable; deliberately conservative -- collapse the
+# same story across sweeps without merging genuinely distinct stories.
+_STORY_MEMBER_OVERLAP_MIN = 1
+_STORY_TERM_OVERLAP_MIN = 2
+_STORY_LIVE_STATUSES = ("emerging", "active", "decaying")
+_VALID_STORY_STATUSES = ("emerging", "active", "decaying", "archived")
+
+
+def _normalize_story_label(label: str) -> str:
+    """Lowercase, drop non-alnum, collapse whitespace -- for fuzzy label match."""
+    import re as _re
+
+    return _re.sub(r"\s+", " ", _re.sub(r"[^a-z0-9 ]+", " ", (label or "").lower())).strip()
+
+
+def _normalize_term(term: str) -> str:
+    return " ".join((term or "").lower().split())
+
+
+def _story_matches(
+    existing: dict, *, label_norm: str, member_ids: set, term_norms: set
+) -> bool:
+    """True if ``existing`` (a relay_trending_stories row dict) is the SAME story."""
+    import json as _json
+
+    if label_norm and _normalize_story_label(existing.get("label") or "") == label_norm:
+        return True
+    try:
+        ex_members = {int(x) for x in _json.loads(existing.get("member_tweet_ids_json") or "[]")}
+    except (TypeError, ValueError):
+        ex_members = set()
+    if member_ids and len(ex_members & member_ids) >= _STORY_MEMBER_OVERLAP_MIN:
+        return True
+    try:
+        ex_terms = {
+            _normalize_term(t) for t in _json.loads(existing.get("monitor_terms_json") or "[]")
+        }
+    except (TypeError, ValueError):
+        ex_terms = set()
+    if term_norms and len(ex_terms & term_norms) >= _STORY_TERM_OVERLAP_MIN:
+        return True
+    return False
+
+
+def list_live_trending_stories(conn: Connection, org_id: str) -> list[dict]:
+    """Return the org's non-archived trending stories (newest activity first).
+
+    Read-only. Used by the Stage A dedup pass (find a matching live story to
+    update), by Stage B (auto-monitor the live set), and by the digest read.
+    Returns full rows as dicts; ``member_tweet_ids_json`` / ``monitor_terms_json``
+    are still raw JSON strings (caller json.loads).
+    """
+    rows = conn.execute(
+        text(
+            "SELECT id, org_id, label, summary, relevance, momentum, "
+            "       member_tweet_ids_json, monitor_terms_json, status, "
+            "       first_seen_at, last_seen_at, expires_at, created_at "
+            "FROM relay_trending_stories "
+            "WHERE org_id = :org_id AND status != 'archived' "
+            "ORDER BY last_seen_at DESC, id DESC"
+        ),
+        {"org_id": org_id},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def upsert_trending_story(
+    conn: Connection,
+    *,
+    org_id: str,
+    label: str,
+    summary: str | None = None,
+    relevance: float | None = None,
+    momentum: float | None = None,
+    member_tweet_ids_json: str = "[]",
+    monitor_terms_json: str = "[]",
+    status: str = "emerging",
+    expires_at: str | None = None,
+    now: str | None = None,
+) -> int:
+    """App-level upsert of a detected trending story; return its id.
+
+    Dedup is purely application-level (mirrors :func:`upsert_sweep_opportunity` --
+    NO DB UNIQUE): scan the org's live (non-archived) stories and, if one matches
+    by normalized label / member-id overlap / monitor-term overlap (see
+    :func:`_story_matches`), UPDATE it in place -- MERGE the member ids + monitor
+    terms, refresh relevance/momentum/summary, bump ``last_seen_at``, extend
+    ``expires_at`` to the later of old/new, and lift status emerging->active on a
+    re-sighting (never downgrade a live status). Otherwise INSERT a new row.
+
+    ``member_tweet_ids_json`` / ``monitor_terms_json`` are passed as already-encoded
+    JSON strings (relay/db convention). The caller MUST be inside an
+    ``immediate_txn`` (this writes). label/summary/relevance/momentum/expires_at
+    are interpretive; there is no cost column.
+    """
+    import json as _json
+
+    if status not in _VALID_STORY_STATUSES:
+        raise ValueError(
+            f"unknown story status {status!r}; expected one of {_VALID_STORY_STATUSES}"
+        )
+    now = now or _utc_now_iso()
+    try:
+        member_ids = {int(x) for x in _json.loads(member_tweet_ids_json or "[]")}
+    except (TypeError, ValueError):
+        member_ids = set()
+    try:
+        terms = [str(t) for t in _json.loads(monitor_terms_json or "[]")]
+    except (TypeError, ValueError):
+        terms = []
+    term_norms = {_normalize_term(t) for t in terms if _normalize_term(t)}
+    label_norm = _normalize_story_label(label)
+
+    for existing in list_live_trending_stories(conn, org_id):
+        if not _story_matches(
+            existing, label_norm=label_norm, member_ids=member_ids, term_norms=term_norms
+        ):
+            continue
+        sid = int(existing["id"])
+        # Merge member ids (existing order first, then new).
+        try:
+            merged_members = list(_json.loads(existing.get("member_tweet_ids_json") or "[]"))
+        except (TypeError, ValueError):
+            merged_members = []
+        seen_m = {int(x) for x in merged_members}
+        for m in member_ids:
+            if m not in seen_m:
+                merged_members.append(m)
+                seen_m.add(m)
+        # Merge monitor terms (normalized-dedup, preserve order).
+        try:
+            merged_terms = list(_json.loads(existing.get("monitor_terms_json") or "[]"))
+        except (TypeError, ValueError):
+            merged_terms = []
+        seen_t = {_normalize_term(t) for t in merged_terms}
+        for t in terms:
+            tn = _normalize_term(t)
+            if tn and tn not in seen_t:
+                merged_terms.append(t)
+                seen_t.add(tn)
+        # expires_at = later of existing/new (ISO-Z lexical compare).
+        new_exp = existing.get("expires_at")
+        if expires_at and (not new_exp or expires_at > str(new_exp)):
+            new_exp = expires_at
+        # status: lift emerging->active on re-sighting; never downgrade a live one.
+        new_status = existing.get("status") or "emerging"
+        if new_status == "emerging":
+            new_status = "active"
+        conn.execute(
+            text(
+                "UPDATE relay_trending_stories SET "
+                "  summary = COALESCE(:summary, summary), "
+                "  relevance = COALESCE(:relevance, relevance), "
+                "  momentum = COALESCE(:momentum, momentum), "
+                "  member_tweet_ids_json = :members, "
+                "  monitor_terms_json = :terms, "
+                "  status = :status, "
+                "  last_seen_at = :now, "
+                "  expires_at = :expires_at "
+                "WHERE id = :id"
+            ),
+            {
+                "summary": summary,
+                "relevance": relevance,
+                "momentum": momentum,
+                "members": _json.dumps(merged_members),
+                "terms": _json.dumps(merged_terms),
+                "status": new_status,
+                "now": now,
+                "expires_at": new_exp,
+                "id": sid,
+            },
+        )
+        return sid
+
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_trending_stories "
+            "(org_id, label, summary, relevance, momentum, member_tweet_ids_json, "
+            " monitor_terms_json, status, first_seen_at, last_seen_at, expires_at) "
+            "VALUES (:org_id, :label, :summary, :relevance, :momentum, :members, "
+            "        :terms, :status, :now, :now, :expires_at) "
+            "RETURNING id"
+        ),
+        {
+            "org_id": org_id,
+            "label": label,
+            "summary": summary,
+            "relevance": relevance,
+            "momentum": momentum,
+            "members": member_tweet_ids_json or "[]",
+            "terms": monitor_terms_json or "[]",
+            "status": status,
+            "now": now,
+            "expires_at": expires_at,
+        },
+    ).fetchone()
+    return int(row[0])
+
+
+def decay_trending_stories(conn: Connection, org_id: str, *, now: str | None = None) -> int:
+    """Archive trending stories whose monitoring window has expired; return count.
+
+    A story whose ``expires_at`` has passed (momentum faded -- Stage B stopped
+    extending it) is moved to ``'archived'`` so it drops out of the digest and
+    stops being auto-monitored. Stories with NULL ``expires_at`` are left alone.
+    The caller MUST be inside an ``immediate_txn`` (this writes).
+    """
+    now = now or _utc_now_iso()
+    result = conn.execute(
+        text(
+            "UPDATE relay_trending_stories SET status = 'archived' "
+            "WHERE org_id = :org_id AND status != 'archived' "
+            "  AND expires_at IS NOT NULL AND expires_at <= :now"
+        ),
+        {"org_id": org_id, "now": now},
+    )
+    return result.rowcount if result.rowcount is not None else 0
