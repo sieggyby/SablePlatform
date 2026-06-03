@@ -3127,14 +3127,14 @@ def upsert_relay_tweet(
         text(
             "INSERT INTO relay_tweets "
             "(x_id, x_author_id, x_author_handle, text, media_urls, is_reply, "
-            " in_reply_to_x_id, conversation_x_id, raw, engagement_json, lang, "
-            " author_followers) "
+            " in_reply_to_x_id, conversation_x_id, fetched_at, raw, engagement_json, "
+            " lang, author_followers) "
             "VALUES (:x_id, :x_author_id, :x_author_handle, :text, :media_urls, "
-            "        :is_reply, :in_reply_to_x_id, :conversation_x_id, :raw, "
+            "        :is_reply, :in_reply_to_x_id, :conversation_x_id, :now, :raw, "
             "        :engagement_json, :lang, :author_followers) "
             "RETURNING id"
         ),
-        params,
+        {**params, "now": _utc_now_iso()},
     ).fetchone()
     return int(row[0])
 
