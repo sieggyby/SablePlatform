@@ -2543,6 +2543,7 @@ _SWEEP_SOURCE_TO_ORIGIN = {
     "mention": "auto_mention",
     "topic": "auto_mention",
     "from_set": "auto_mention",
+    "vip": "auto_mention",
 }
 _VALID_SWEEP_SOURCES = tuple(_SWEEP_SOURCE_TO_ORIGIN.keys())
 
@@ -2724,10 +2725,13 @@ def list_feed_opportunities(
 
     ORG-FILTERED server-side (defense-in-depth, not just the UI dropdown). Joins
     :func:`relay_opportunity_operator_state` for ``operator_handle`` and EXCLUDES
-    rows that operator dismissed or has currently snoozed (``snooze_until`` in the
-    future). Orders ``score DESC`` (NULLs last), with ``handled`` depressed to the
-    bottom. NEVER selects any cost column (the cost-never-in-response rule). The
-    target tweet's author/x_id/text are joined for display. Read-only.
+    rows that operator dismissed, has currently snoozed (``snooze_until`` in the
+    future), or has already ``replied`` to (the per-operator coverage signal — the
+    WHERE keeps only a NULL or elapsed-snooze state, so a ``replied`` row drops out
+    of THIS operator's feed while staying active for teammates). Orders ``score
+    DESC`` (NULLs last), with ``handled`` depressed to the bottom. NEVER selects any
+    cost column (the cost-never-in-response rule). The target tweet's
+    author/x_id/text are joined for display. Read-only.
     """
     now = _utc_now_iso()
     rows = conn.execute(
@@ -2768,16 +2772,20 @@ def set_operator_opportunity_state(
     state: str,
     snooze_until: str | None = None,
 ) -> None:
-    """Upsert a per-operator ``dismissed``/``snoozed`` state on an opportunity (§3.2).
+    """Upsert a per-operator ``dismissed``/``snoozed``/``replied`` state (§3.2 / §5).
 
-    ``state`` must be ``'dismissed'`` or ``'snoozed'`` (``snooze_until`` is the
-    ISO-8601-Z wake time for a snooze; ignored for a dismiss). Idempotent on the
-    composite PK ``(opportunity_id, operator_handle)`` — a repeat call overwrites
-    the prior state. The caller MUST be inside an ``immediate_txn`` (this writes).
+    ``state`` is one of ``'dismissed'``, ``'snoozed'`` (``snooze_until`` is the
+    ISO-8601-Z wake time; ignored for the others), or ``'replied'`` (this operator
+    has replied — the feed reader excludes it from THEIR feed only, while the
+    opportunity stays active/banked for teammates; pairs with the VIP exemption in
+    :func:`mark_opportunity_handled`). Idempotent on the composite PK
+    ``(opportunity_id, operator_handle)`` — a repeat call overwrites the prior
+    state. The caller MUST be inside an ``immediate_txn`` (this writes).
     """
-    if state not in ("dismissed", "snoozed"):
+    if state not in ("dismissed", "snoozed", "replied"):
         raise ValueError(
-            f"unknown operator opportunity state {state!r}; expected 'dismissed' or 'snoozed'"
+            f"unknown operator opportunity state {state!r}; "
+            "expected 'dismissed', 'snoozed', or 'replied'"
         )
     existing = conn.execute(
         text(
@@ -2824,11 +2832,19 @@ def mark_opportunity_handled(conn: Connection, opportunity_id: int) -> None:
     ``handled`` so it falls to the bottom of every operator's feed (campaign
     targets are exempt — the caller decides). The caller MUST be inside an
     ``immediate_txn`` (this writes).
+
+    VIP EXEMPTION: a ``vip`` opportunity is NEVER team-depressed here — a VIP
+    principal's tweet stays in the BANK (active + prominent) for every operator
+    until each INDIVIDUALLY replies. The per-operator ``replied`` state (see
+    :func:`set_operator_opportunity_state`) removes it from the replier's OWN feed,
+    not the team's, so one operator replying to a Fletcher tweet must not sink it
+    for the rest. NULL-source (legacy) and every other source depress as before.
     """
     conn.execute(
         text(
             "UPDATE relay_reply_opportunities SET status = 'handled' "
-            "WHERE id = :id AND status = 'active'"
+            "WHERE id = :id AND status = 'active' "
+            "AND (sweep_source IS NULL OR sweep_source <> 'vip')"
         ),
         {"id": int(opportunity_id)},
     )
