@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. Commands operate on `sable
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 64 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init                      # Create sable.db + apply all 68 migrations, or run Alembic on SABLE_DATABASE_URL
 sable-platform init --db-path /alt/path  # Force a specific SQLite file
 sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
 sable-platform db-health --json          # JSON output for Docker/automation
@@ -434,7 +434,7 @@ sable-platform health-server             # Listen on :8765 (default)
 sable-platform health-server --port 9000 # Custom port
 ```
 
-Response body: `{"ok": true, "migration_version": 30, "org_count": 2, "last_alert_eval_age_hours": 1.2, "alert_eval_stale": false, ...}`
+Response body: `{"ok": true, "migration_version": 68, "org_count": 2, "last_alert_eval_age_hours": 1.2, "alert_eval_stale": false, ...}`
 
 Returns HTTP 200 on success, HTTP 404 for any path other than `/health`.
 

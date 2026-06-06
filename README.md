@@ -10,7 +10,7 @@ SablePlatform owns the shared `sable.db` layer, canonical Pydantic contracts, a 
 
 ## Current scope
 
-- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 62 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks/media/reply-suggestion/discord-scoring/work-tracking helpers
+- **`sable_platform.db`** — `get_db()`, `ensure_schema()`, 68 migrations, entity/tag/merge/jobs/cost/stale/alerts/interactions/decay/centrality/prospects/playbook/watchlist/audit/webhooks/media/reply-suggestion/discord-scoring/work-tracking/relay/autocm/reply-opportunity/media-rec/community-audit helpers
 - **`sable_platform.contracts`** — Lead, ProspectHandoff, DiagnosticRun, Entity, ContentItem, Artifact, SyncRun, WorkflowRun, Task, Outcome, Recommendation, TrackingMetadata
 - **`sable_platform.workflows`** — deterministic `WorkflowRunner`, registry, 9 builtin workflows, 12 alert checks, alert delivery (Telegram/Discord with cooldown)
 - **`sable_platform.adapters`** — subprocess adapters for CultGrader, SableTracking, Slopper, LeadIdentifier, ClientComms (V1 stub). SableKOL integrates as a FastAPI sidecar, not a subprocess adapter.
@@ -102,7 +102,7 @@ When `SABLE_DATABASE_URL` points at PostgreSQL, `sable-platform init` applies Al
 ```
 sable_platform/
 ├── contracts/      Canonical Pydantic models
-├── db/             DB layer + 62 migrations
+├── db/             DB layer + 68 migrations
 ├── workflows/      WorkflowRunner, registry, builtins, alert engine
 ├── adapters/       Subprocess adapters per repo
 ├── media/          Shared media layer (R2 store, registry, URL signing)
@@ -122,18 +122,41 @@ docs/
 
 ## Docs
 
-- [Suite Capability Map](docs/SUITE_CAPABILITIES.md) — **BD-facing**: what the whole Sable suite can do for a client, by outcome, with live/roadmap status
-- [Sales & Marketing Kit](docs/marketing/) — outbound pitch deck, service-line one-pagers, messaging + language guardrails
-- [Operator Handbook](docs/OPERATOR_HANDBOOK.md) — **operator-facing**: how to use the website, Telegram tracker, and Discord bot day-to-day (download + give to an LLM)
+Grouped by who's reading. Every doc under `docs/` is linked here.
+
+**Business / BD**
+- [Suite Capability Map](docs/SUITE_CAPABILITIES.md) — what the whole suite does for a client, by outcome, with live/roadmap status
+- [Sales & Marketing Kit](docs/marketing/) — pitch deck, service-line one-pagers, and the messaging/language guardrails
+- [Proof Loop Plan](docs/PROOF_LOOP_PLAN.md) — turning operator work into client-safe proof + renewal/QBR material
+
+**Operator**
+- [Operator Handbook](docs/OPERATOR_HANDBOOK.md) — day-to-day use of the website, Telegram tracker, and Discord bot (download + give to an LLM)
+- [Operations Runbook](docs/OPERATIONS_RUNBOOK.md) — running the SableRelay / NULO ops layer: services, slash-commands, incident flows
+
+**Client**
+- [Client Guide](docs/CLIENT_GUIDE.md) — **client-facing**: what Sable delivers and how to read your portal (measured vs interpreted)
+- [Client Lifecycle](docs/CLIENT_LIFECYCLE.md) — the six lifecycle stages mapped to CLI + portal (operator/engineer view)
+
+**Engineering / maintainer**
 - [Architecture](docs/ARCHITECTURE.md) — module map, DB ownership, engine design
 - [CLI Reference](docs/CLI_REFERENCE.md) — complete command reference
-- [Cross-Repo Integration](docs/CROSS_REPO_INTEGRATION.md) — adapter reference, data flows, direct commands
-- [AutoCM](docs/AUTOCM.md) — SableAutoCM "NULO" engine: architecture, pipeline, what's built vs pending
-- [Relay](docs/RELAY.md) — SableRelay listener substrate: schema, dispatch, what's built vs pending
+- [Cross-Repo Integration](docs/CROSS_REPO_INTEGRATION.md) — adapters + data flows (incl. the reply-opportunity feed)
+- [Schema Contracts](docs/SCHEMA_CONTRACTS.md) — cross-suite data contracts (all table families through migration 068)
+- [Workflows](docs/WORKFLOWS.md) — builtin workflow definitions and state machines
+- [Alert System](docs/ALERT_SYSTEM.md) — alert lifecycle, all 12 checks, delivery channels, dedup/cooldown
+- [Extending](docs/EXTENDING.md) — how to add a workflow, adapter, alert check, or migration
+- [Relay](docs/RELAY.md) — SableRelay substrate + feed + operator flows: schema, what's built vs roadmap
+- [AutoCM](docs/AUTOCM.md) — SableAutoCM "NULO" engine: pipeline, what's built vs pending
 - [End-to-End Workflows](docs/END_TO_END_WORKFLOWS.md) — operational runbooks
 - [Environment Setup](docs/ENVIRONMENT_SETUP.md) — full setup guide
-- [Workflows](docs/WORKFLOWS.md) — builtin workflow definitions and state machines
-- [Schema Contracts](docs/SCHEMA_CONTRACTS.md) — cross-suite data contracts
-- [Alert System](docs/ALERT_SYSTEM.md) — alert lifecycle, all 12 checks, delivery channels, dedup/cooldown reference
-- [Extending](docs/EXTENDING.md) — how to add a workflow, adapter, alert check, or migration
 - [SocialData Best Practices](docs/SOCIALDATA_BEST_PRACTICES.md) — cross-tool API reference
+- [Prompts](docs/PROMPTS.md) — LLM prompt templates + engineering notes
+
+**Ops, safety & recovery**
+- [Alert-Triage API](docs/API_ALERT_TRIAGE_MVP.md) — token-authed HTTP API (private-network MVP)
+- [Disaster Recovery](docs/DISASTER_RECOVERY.md) — backup/restore + failure playbooks
+- [Threat Model](docs/THREAT_MODEL.md) — adversarial surface + mitigations
+- [QA Workflow](docs/QA_WORKFLOW.md) — the default hardening workflow
+
+**Shipped plans (historical, retained for rationale)**
+- [Shared Media Layer](docs/SHARED_MEDIA_LAYER_PLAN_V1.md) · [Shared Media Proxy](docs/SHARED_MEDIA_PROXY_PLAN_V1.md) · [Media Phase-2 VPS Deploy](docs/MEDIA_PHASE2_VPS_DEPLOY.md)

@@ -1,3 +1,5 @@
+> **SUPERSEDED / SHIPPED 2026-05-30 — retained for historical rationale; current state is in the code + SUITE_CAPABILITIES.md.**
+
 # Shared Media Layer — Cross-Repo Plan (rev 2)
 
 **Status:** Phase 1 IMPLEMENTED + green (2026-05-30). **PR-P** (SablePlatform): migration 055 + `sable_platform/media/` lib; full suite passes (1566). **PR-S** (Slopper): R2 config, gated `sable/shared/media.py` helper, `media_url` surfaced through vault sync (both branches) → serve `/search`, idempotent `workspace/card/media_backfill.py`, `[r2]` extra, tests green (vault+shared 124). **Remaining Phase-1 step (gated, needs live bucket):** run `media_backfill.py` once R2 creds exist; auto-upload-on-render in the card/clip tools is an optional follow-up (re-running the idempotent backfill covers new renders). Phase 2 (proxy + Tracking + UI) not started. SablePlatform = owner; SableSlopper + SableTracking = consumers.

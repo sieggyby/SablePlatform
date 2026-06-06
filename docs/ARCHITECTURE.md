@@ -27,7 +27,7 @@ sable_platform/
 ├── db/
 │   ├── connection.py       get_db(), ensure_schema() — importlib.resources migrations
 │   ├── backup.py           SQLite online backup — WAL-safe, atomic, pruning
-│   ├── migrations/         001–030 SQL files
+│   ├── migrations/         001–068 SQL files
 │   ├── entities.py         Entity CRUD + entity_notes
 │   ├── tags.py             Tag management (replace-current vs append semantics)
 │   ├── merge.py            Merge candidates + 9-step atomic merge
@@ -52,12 +52,21 @@ sable_platform/
 │   ├── alert_evaluator.py  evaluate_alerts() — thin orchestrator, per-org isolation
 │   ├── alert_checks.py     12 _check_* condition functions
 │   ├── alert_delivery.py   deliver_alerts_by_ids() + _deliver() + _send_telegram() + _send_discord()
-│   └── builtins/
+│   └── builtins/         (10 builtin workflows registered total)
 │       ├── prospect_diagnostic_sync.py   Workflow 1
 │       ├── weekly_client_loop.py         Workflow 2
 │       ├── alert_check.py                Workflow 3
 │       ├── lead_discovery.py             Workflow 4
-│       └── onboard_client.py             Workflow 5
+│       ├── onboard_client.py             Workflow 5
+│       └── client_checkin_loop.py        Workflow 6
+│   (+ AutoCM registers 4 more: autocm_kb_refresh / autocm_autonomy_sweep /
+│      autocm_weekly_digest / autocm_adversarial_sweep)
+├── relay/                  SableRelay TG/Discord substrate + feed + operator flows (see RELAY.md)
+├── autocm/                 SableAutoCM "NULO" community-manager engine (see AUTOCM.md)
+├── media/                  Shared media layer (R2 store + HMAC-signed expiring URLs)
+├── api/                    Token-authed Alert-Triage HTTP API
+├── checkin/                Weekly client check-in generator
+├── _vendor/                Vendored sable_pulse_core (generated, never edited)
 ├── webhooks/
 │   └── dispatch.py         HMAC-SHA256 webhook dispatch
 ├── http_health.py          Bearer-authenticated /health HTTP server (serve_health())
@@ -85,14 +94,14 @@ sable_platform/
 
 ## DB schema ownership
 
-`sable_platform` owns `get_db()` and all 39 migrations. Runtime DB resolution is `SABLE_DATABASE_URL` first, then SQLite at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses packaged Alembic assets via `importlib.resources`, so the Postgres migration path works from wheels and containers as well as source checkouts. SQLite connections still set `PRAGMA busy_timeout=5000` for concurrent access reliability.
+`sable_platform` owns `get_db()` and all 68 migrations. Runtime DB resolution is `SABLE_DATABASE_URL` first, then SQLite at `~/.sable/sable.db` (or `SABLE_DB_PATH`). Migration path resolution uses packaged Alembic assets via `importlib.resources`, so the Postgres migration path works from wheels and containers as well as source checkouts. SQLite connections still set `PRAGMA busy_timeout=5000` for concurrent access reliability.
 
 **Three separate suite databases exist — only sable.db is owned here:**
 - `~/.sable/sable.db` (SQLite fallback) or `SABLE_DATABASE_URL` (runtime target) — platform cross-tool store (owned by SablePlatform)
 - `pulse.db` / `meta.db` — Slopper-internal, not touched here
 - `sable_cache.db` — Lead Identifier enrichment cache, not touched here
 
-**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 39**.
+**Schema versioning:** `schema_version` table holds a single integer. Migrations are append-only and idempotent. Current schema head: **version 68**.
 
 ## Workflow engine design
 

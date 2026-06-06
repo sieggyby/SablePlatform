@@ -53,12 +53,15 @@ The suite now connects to SablePlatform in **four** distinct shapes — importan
 1. **Subprocess adapters** (`sable_platform.adapters`) — SP shells out to the repo's CLI and reads its output files. Clean boundary, no shared imports in the hot path. Repos: **Cult Grader, Slopper, SableTracking, Lead Identifier**, plus **ClientComms** (a V1 no-op stub holding the adapter seam open). Driven by the workflow engine. Detailed in *Adapter Reference* below.
 2. **FastAPI sidecar** — **SableKOL** runs its own HTTP service in the SableWeb compose network and is called by SableWeb `/ops` routes, not by SP workflows. It imports SP's DB connection factory and writes SP-owned tables (migrations 032-041). See *SableKOL Integration*.
 3. **DB-coupled bot** — **sable-roles** is a standalone Discord bot (its own process/deploy) that imports `sable_platform.db.*` directly to read config and write engagement/audit rows (migrations 043-054). SP does not invoke it; the coupling is the shared schema. See `sable-roles/docs/SABLEPLATFORM_CONTRACT.md`.
-4. **In-process subsystems** — code that lives **inside** SablePlatform and runs in the same process, not as a separate repo:
-   - **`media`** — shared R2 storage + signed-URL layer (migration 055), paired with the external `sable-media-proxy` Worker.
+4. **In-process subsystems** — code that lives **inside** SablePlatform and runs in the same process, not as a separate repo. (Migrations listed are the *introducing* slot — several subsystems span multiple migrations as they matured; see `docs/SCHEMA_CONTRACTS.md` for the per-table breakdown.)
+   - **`media`** — shared R2 storage + signed-URL layer (migrations 055 + 066 media-rec), paired with the external `sable-media-proxy` Worker.
    - **`api`** — token-authed Alert-Triage HTTP API (the only inbound HTTP surface SP itself exposes).
    - **`checkin`** — weekly client check-in generator (migration 031), the first direct-LLM dependency on the platform (TIG trial).
-   - **`autocm`** — the SableAutoCM "NULO" engine (migration 058), reusing the vendored `_vendor/sable_pulse_core`. See [AUTOCM.md](AUTOCM.md).
-   - **`relay`** — the SableRelay listener substrate (migration 057). See [RELAY.md](RELAY.md).
+   - **`autocm`** — the SableAutoCM "NULO" engine (migration 058), reusing the vendored `_vendor/sable_pulse_core`. `autocm_drafts` FKs into the relay substrate (`relay_messages`/`relay_chats`). See [AUTOCM.md](AUTOCM.md).
+   - **`relay`** — the SableRelay substrate + reply-opportunity feed (migrations 057, 062, 064, 065). See [RELAY.md](RELAY.md) and *Data Flow: Reply-Opportunity Feed* below.
+   - **`replies`** — operator reply-assist suggestion/outcome store (migrations 056, 060–063, 066). Slopper-written, SableWeb-read.
+   - **`work_tracking`** — operator work-tracking (migration 059), SableWeb-written.
+   - **`community_audit`** — the sable-audit Discord-bot backing store (migration 067).
 
 > **Why this matters:** only pattern (1) is the classic "no cross-repo imports, subprocess-only" boundary. Patterns (2)–(4) deliberately share the `sable.db` schema, so a schema change can ripple across them — every schema change still needs the dual SQL + Alembic migration (see CLAUDE.md § Dual-migration requirement).
 
@@ -184,6 +187,62 @@ Steps:
 ```
 
 Schedule via cron preset: `sable-platform cron add --preset lead_discovery --org <org>` (Monday 22:00 UTC).
+
+---
+
+## Data Flow: Reply-Opportunity Feed (SableWeb ↔ Slopper ↔ Relay)
+
+The reply-assist surface is a different integration shape from the four workflow adapters: it is **not** workflow-driven and has **no subprocess boundary**. The data flow is entirely through the shared `sable.db` — Slopper (the sweep + reply generation), SableWeb (`/ops/reply-assist`), and the `sable_platform.relay`/`sable_platform.db.replies` helpers all read and write the same `relay_*` / `reply_*` tables. (Full table contract in `docs/SCHEMA_CONTRACTS.md` § Reply-Assist Tables and § SableRelay `relay_*` Tables.)
+
+```
+                          ┌──────────────────────────────────────┐
+                          │  Slopper sweep (3 lanes, hourly-due)  │
+                          │  mention · topic · VIP(from_set)      │
+                          └───────────────┬──────────────────────┘
+                                          │ stamps scored opportunities
+                                          ▼
+   relay_sweep_config (curated queries, last_sweep_at, sweep_requested_at)
+   relay_sweep_cursor (per-source since_id)        relay_tweets (cache + engagement signals)
+                                          │
+                                          ▼
+              relay_reply_opportunities  (score · score_reason · suggested_angle ·
+                                          status='active' · sweep_source · expires_at)
+                                          │
+                  ┌───────────────────────┼─────────────────────────────┐
+                  ▼ reads per-operator feed▼ writes state               ▼ thumbs
+   SableWeb /ops/reply-assist        relay_opportunity_operator_state    relay_opportunity_feedback
+   (heartbeat on each load)          (dismiss / snooze, handle-keyed)    (👍/👎 ranker + gen quality)
+                  │
+                  │ "Generate" → Slopper reply generation
+                  ▼
+   reply_suggestions  (opportunity_id stamped = learning join,
+                       source_conversation_id, clip_media_kind,
+                       tell_score/tell_flags_json)
+                       └─ mark_opportunity_handled() team-wide depresses the feed row to 'handled'
+                  │
+                  │ "Mark posted"
+                  ▼
+   reply_outcomes  (suggestion_id, posted_tweet_id, media_content_id)
+                       └─ counted by work_tracking as "replies delivered" (single source of truth)
+```
+
+**Step by step:**
+
+1. **Sweep (Slopper).** For each org whose `relay_sweep_config.enabled=1` and is hourly-due (`last_sweep_at`) *and* has a recent `relay_operator_heartbeat`, the sweep runs three lanes — **mention** (`mention_handles`), **topic** (`topic_queries`), and **VIP** (`from_set`) — paginating via `relay_sweep_cursor.since_id` per source. Candidate tweets land in the `relay_tweets` read-through cache (with `engagement_json`/`lang`/`author_followers` for the cheap pre-rank, and a cached `embedding_json`/`embedding_model` for the P3 ranker). Surviving candidates are stamped into `relay_reply_opportunities` with `score`, `score_reason`, `suggested_angle`, `status='active'`, `sweep_source`, and `expires_at` (auto-sourced rows reuse an allowed `origin` value + a sentinel `__sweep__` `relay_members` flagger). App-level dedup — no `UNIQUE(org_id, tweet_id)`.
+
+2. **Feed read + heartbeat (SableWeb).** `/ops/reply-assist` reads the per-operator, org-filtered, dismiss/snooze-aware feed (`list_feed_opportunities`) and stamps `relay_operator_heartbeat(org_id, operator_handle)` on each load — this is the gate that keeps the sweep running only for orgs an operator is actively watching.
+
+3. **Per-operator feed state (SableWeb db-write).** Dismiss / snooze write `relay_opportunity_operator_state` (handle-keyed — distinct from the TG member-keyed `relay_reply_notifications`); 👍/👎 write `relay_opportunity_feedback` (`suggestion_id` NULL = thumb on the *opportunity*/ranker, set = thumb on a *suggestion*/gen quality). As of migration 068 a freeform-draft thumb may carry a `suggestion_id` with a NULL `opportunity_id`.
+
+4. **Generate (Slopper).** Reply generation appends a row to `reply_suggestions` and **stamps `opportunity_id`** (the learning join back to the feed row; NULL for a paste-URL generation with no feed origin) + `source_conversation_id`. The cheap local depress-already-replied check (`conversation_already_replied`) reads `reply_suggestions.source_conversation_id` with NO per-candidate SocialData call. Generating (or posting) calls `mark_opportunity_handled()` which **team-wide depresses** the feed row to `status='handled'` (only flips `active` rows — a terminal status is never un-terminaled). A cross-org IDOR guard (`get_opportunity_org`) validates a client-supplied global `opportunity_id` against its owning `org_id`.
+
+5. **Mark posted (SableWeb → outcome).** "Mark posted" writes `reply_outcomes` (`suggestion_id`, `posted_tweet_id`) and, when a media slate rode along, `media_content_id` (mig 066) so assisted-vs-organic lift can be sliced by media. `reply_outcomes` is the **single source of truth for replies delivered** — `work_tracking.get_work_summary` counts from it via `replies.count_replies_delivered`, never a mirror.
+
+**Media recommendation (mig 066).** When the reply-assist offers a media slate, each offer is logged to `media_rec_events` (source of truth); the forward-only Elo rollup `media_quality` and the per-asset `media_embeddings` cache are derived from it by `apply_pending_media_events`. The chosen asset is stamped on `reply_outcomes.media_content_id`.
+
+**Sweep-now proxy (SableWeb ↔ Slopper).** SableWeb's "sweep now" button does not run the sweep itself — it stamps `relay_sweep_config.sweep_requested_at` (the enqueue marker), which the Slopper sweeper consumes on its next pass (auto-cleared when `last_sweep_at` is stamped at completion). Sweep config edits (the three lanes) are managed via the Relay TG bot command, not SableWeb. The daily cost cap is **not** on `relay_sweep_config` — it lives in `relay_clients.config.polling.daily_cost_cap_usd`.
+
+> **Why this matters for integration:** there is no adapter and no workflow step here. A schema change to any `relay_reply_opportunities` / `reply_suggestions` / `reply_outcomes` column ripples directly across Slopper (writer), SableWeb (reader/db-writer), and the `relay`/`replies` helpers — every change still needs the dual SQL + Alembic migration.
 
 ---
 
@@ -436,5 +495,5 @@ This pattern (used by Lead Identifier) lets the downstream repo function without
 - **Lead Identifier:** Conditional import of contracts for sync validation
 - **sable-roles:** Imports `sable_platform.db.*` directly (Discord bot config + engagement/audit writes; migrations 043-054)
 - **SableKOL:** Imports `sable_platform.db.connection.get_db()` via `sable_kol.db.open_db()` (writes KOL-owned tables, migrations 032-041)
-- **SableWeb:** reads the shared DB directly (TS dual-driver, not a Python import) and, as of SW-TASKING Phase 1, **writes** `mod_slot_sessions` / `operator_work_events` (migration 059) from its `/ops` work-tracking routes. The reply count it rolls up comes from `reply_outcomes` (mig 056). The work-tracking rollup logic is mirrored in TS (`SableWeb/src/lib/db.ts`) — the canonical Python implementation is `sable_platform.db.work_tracking.get_work_summary`.
+- **SableWeb:** reads the shared DB directly (TS dual-driver, not a Python import) and, as of SW-TASKING Phase 1, **writes** `mod_slot_sessions` / `operator_work_events` (migration 059) from its `/ops` work-tracking routes. The reply count it rolls up comes from `reply_outcomes` (mig 056). The work-tracking rollup logic is mirrored in TS (`SableWeb/src/lib/db.ts`) — the canonical Python implementation is `sable_platform.db.work_tracking.get_work_summary`. SableWeb is also the **reader of the reply-opportunity feed** (`relay_reply_opportunities` + per-operator state) and **writer** of `relay_operator_heartbeat`, `relay_opportunity_operator_state`, `relay_opportunity_feedback`, and `reply_outcomes` (migrations 056, 062, 066, 068) from `/ops/reply-assist` — see *Data Flow: Reply-Opportunity Feed* above.
 - **SableTracking:** Does not import from `sable_platform` yet (TRACK-5 pending)

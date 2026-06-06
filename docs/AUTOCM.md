@@ -2,7 +2,7 @@
 
 The bimodal-NULO LLM **community manager**, built as an in-process SablePlatform product layer on top of the SableRelay substrate ([RELAY.md](RELAY.md)) and SP's foundational layer (audit / cost / member identity / workflow engine / alerts). Its tables (the `autocm_*` family, **migration 058**) live in the shared `sable.db`. The product spec is `SableAutoCM/` (README, PLAN, DESIGN, `docs/`); this doc describes the in-tree build.
 
-> **Status (2026-05-31): under active development — not deployed.** Most of the pipeline is implemented with tests (32 test files under `tests/autocm/`); the **live publish step is stubbed** (gated on the SableRelay outbox), and **no client is running**. It is 🔵 ROADMAP for BD purposes — do not present as available. Gated on a voice-viability spike, client sign-off on real outputs, and the SableRelay outbox landing.
+> **Status (2026-06-06): pipeline built end-to-end — ships dormant, no client live yet.** The full pipeline is implemented with tests (41 test files under `tests/autocm/`), **including the live publish step** — `publisher/tg.py` enqueues to the now-built SableRelay outbox (it is no longer stubbed). RobotMoney is onboarded as a **dormant** SP tenant (`enabled=0`, paused) pending a voice-viability spike pass + operator sign-off on real outputs. For BD purposes treat NULO as **IN-DEVELOPMENT / not-yet-live** — do not present as a running service — but the "it's only stubbed" framing is out of date.
 
 ## The reuse rule (read this first)
 
@@ -26,15 +26,16 @@ A message flows: **classifier** (engage-check → tier → category) → **KB** 
 | Escalation | `escalation/` (`tier3`, `incident`) — ~2,000 LOC | ✅ Implemented + tested (tier-3 dual-routes to founder **and** on-call) |
 | Operator commands | `operator/commands.py` | ✅ Implemented |
 | Digest | `digest/` (`weekly`, `analytics`) — ~1,800 LOC | ✅ Implemented (not wired into a live schedule — no deployment) |
-| Adversarial harness | `adversarial/regression.py` | 🟡 Partial |
-| **Publisher (live send)** | `publisher/tg.py` | ❌ **Stubbed** — `raise NotImplementedError`, gated on the Relay outbox |
-| **Publisher (X replies)** | `publisher/x_reply.py` | ❌ Stubbed — **v2, feature-flagged off** per client |
+| Adversarial harness | `adversarial/regression.py` | ✅ Implemented (the `autocm_adversarial_sweep` workflow) |
+| Voice-viability spike | `spike/` (`messages`, `provider`, `runner`, `scorer`) | ✅ Built — voice-spike harness with a hard **≥75% exit gate** |
+| **Publisher (live send)** | `publisher/tg.py` | ✅ Built — `publish_approved_draft()` enqueues exactly one `relay_publication_jobs` row via the Relay outbox (`enqueue_publication_job`); it never direct-sends, and a retained `NotImplementedTgPublisher` guard proves the direct path is unused |
+| **Publisher (X replies)** | `publisher/x_reply.py` | 🔵 v2 — feature-flagged off per client |
 | LLM seam | `llm.py` (`LLMProvider` adapter) | ✅ Built (seam) |
 | Loaders / manifest | `loaders.py` (`ClientConfig`/`PersonaSpec`), `manifest.py` (deployment manifest) | ✅ Built |
 
-Builtin workflows already registered: `autocm_kb_refresh`, `autocm_autonomy_sweep`, `autocm_weekly_digest`.
+Builtin workflows already registered: `autocm_kb_refresh`, `autocm_autonomy_sweep`, `autocm_weekly_digest`, `autocm_adversarial_sweep`.
 
-**Why it can't run end-to-end yet:** (1) the publisher raises `NotImplementedError` until the Relay outbox exists; (2) the Relay listener feed isn't built ([RELAY.md](RELAY.md)); (3) no client is configured/deployed.
+**What remains before a live client run:** the pipeline (incl. the publisher → Relay outbox) and the Relay feed are now built ([RELAY.md](RELAY.md)). The remaining gate is **going live with a real client**: RobotMoney is onboarded as a **dormant** SP tenant (`enabled=0`, paused) pending a voice-viability spike pass and operator sign-off on real outputs. Until a client is enabled, NULO ships dormant by design — this is intentional disclosure-staging, not a missing capability.
 
 ## The product model (per spec)
 
