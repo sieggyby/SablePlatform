@@ -201,6 +201,13 @@ def _trigger_cult_grader_for_tier1(ctx) -> StepResult:
     leads = ctx.input_data.get("leads", [])
     tier1 = [l for l in leads if l.get("composite_score", 0) >= PURSUE_THRESHOLD]
 
+    # Entitlement gate (ONBOARDING_PHASE2_PLAN.md P2) — dormant + fail-open: with
+    # ENTITLEMENT_ENFORCEMENT off (default) or an un-onboarded org this is a no-op.
+    from sable_platform.db.entitlements import has_entitlement
+
+    if not has_entitlement(ctx.db, ctx.org_id, "cult_grader"):
+        return StepResult("completed", {"triggered": 0, "reason": "not_entitled"})
+
     triggered = 0
     failed = 0
     skipped_budget = 0

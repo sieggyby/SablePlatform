@@ -14,6 +14,10 @@ See CLAUDE.md for project architecture, key files, and working conventions.
 
 ## Open Items
 
+### Proof loop — suite-level commercial spine
+
+The canonical plan is [docs/PROOF_LOOP_PLAN.md](docs/PROOF_LOOP_PLAN.md). Treat this as the organizing principle for work-tracking, reply outcomes, campaign outcomes, playbook outcomes, QBR/export work, and revenue feedback. Near-term priority: close the posted-reply capture + fixed-age snapshot loop, then ship a weekly proof-packet assembly path before adding speculative analytics surfaces.
+
 ### API — next slices after the thin alert-triage MVP
 
 The alert-triage MVP shipped 2026-05-12 (see AUDIT_HISTORY § SP-API-MVP). The token + rate-limit + ownership-check spine is reusable. Next-priority additions in order, per [TODO_API.md](TODO_API.md):
@@ -54,3 +58,16 @@ Memory: `project_solstitch_fitcheck` already tracks the build context. Add bot-s
 2. **`diagnostic_deltas` replay.** Currently excluded because `run_id_before/after` are local INTEGER FKs. Either remap via `cult_run_id` lookup on the target, or accept that deltas are recomputed on prod from synced diagnostic_runs.
 3. **Reverse direction.** "Pull prod state down to laptop for replay/debug." Not urgent — `migrate to-postgres` covers the one-shot first-cut, and there's no current need for the reverse.
 4. **Multi-process safety on target.** Today each sync runs a sequence of per-table transactions. If two operators run sync concurrently against the same prod target, cursors race. Add a target-side advisory lock (Postgres `pg_advisory_lock` or a `platform_meta` token) before adopting any automated cadence.
+
+---
+## [Cult Grader cross-repo] 2026-06-01 — bridge-node backfill after lateral fix
+Source: Sable_Cult_Grader/docs/MEGA_IMPLEMENTATION_PLAN.md §5/§6. Cult Grader is fixing a latent bug where `compute_twitter_metrics` passed the project DISPLAY NAME instead of the handle to the reply-graph edge builders, so the project's own account was never excluded as a graph node. Since reply_threads come from the project's own posts, the project became a dominant HUB node that captured bridge-node (articulation-point) detection. (There are NO self-edges — `a!=b` is enforced; density direction is ambiguous.) `platform_sync._seed_bridge_nodes` (~line 719) seeded `sable.db` bridge-node entities from that corrupted graph.
+- ACTION: after Cult Grader WS-1d ships, re-sync / backfill bridge-node entities for affected orgs (bridge handle sets will CHANGE (arbitrarily — not necessarily shrink)). Consider a one-time `backfill_run_summary.py`-style pass.
+- NOTE: `_sync_interaction_edges` (~line 1029) already uses reply_threads-only (honest) — unaffected.
+
+---
+## [Cult Grader cross-repo] 2026-06-02 (night) — persist tool_mode / coverage / v2 axes + validation-label surface
+Source: Sable_Cult_Grader CHANGELOG (four gated features shipped). `run_summary_json` now carries `meta.tool_mode`, `meta.coverage`, `scores.thesis_kol_*`, and a `health_v2` block (two axes + a GATED blend).
+- ACTION: persist `tool_mode`, `coverage`, the two v2 axes (scale/quality) + the gated-blend status into `sable.db` (additive column/blob; `run_summary_json.schema_version` unchanged). Do NOT persist the blend as a score while `status == "gated_directional"`.
+- ACTION (optional, for v2 un-gating): a small operator UI to record ground-truth health judgments that write to Cult Grader's `diagnostics/_health_validation.jsonl` (or a table its `analysis/health_validation.evaluate_v2_validation` can read). Needs ≥12 labels before the v2 blend can un-gate. NEVER feeds back into v2 weights (lesson #13 — validation, not tuning).
+- CONSTRAINT: KOL/v2 fields are descriptive — they do NOT feed `sable_fit_score` and must not be treated as the gating score.

@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. Commands operate on `sable
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 68 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init                      # Create sable.db + apply all 75 migrations, or run Alembic on SABLE_DATABASE_URL
 sable-platform init --db-path /alt/path  # Force a specific SQLite file
 sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
 sable-platform db-health --json          # JSON output for Docker/automation
@@ -121,6 +121,91 @@ sable-platform org config list --json
 **Valid stages:** `pre_launch`, `launch`, `growth`, `mature`, `declining`
 
 Numeric threshold keys are coerced to `float` and validated against min/max bounds. Out-of-range values are rejected. See `docs/ALERT_SYSTEM.md` § Per-Org Threshold Overrides for the full list of supported threshold keys and their ranges.
+
+---
+
+## onboard — Client Onboarding
+
+CLI-driven client onboarding (`docs/CLIENT_ONBOARDING_PLAN.md`). A structured intake manifest is the
+single source of truth; entitlements drive which inputs `status` flags as missing. Requires
+`SABLE_OPERATOR_ID` (every mutation is audit-stamped). The intake tables (mig 073) are **OPS-ONLY** —
+never exposed on `/client`.
+
+```bash
+# Start a draft manifest: creates a DRAFT org (status=inactive) + intake row + scaffolds
+# ~/.sable/orgs/<org>/ (brief.md, guardrails.yaml, bios.md, voice/). --from-prospect carries over a
+# sable-audit prospect's twitter/discord handles into the registry.
+sable-platform onboard init <ORG_ID> --name "Display Name" [--from-prospect]
+
+# Set a manifest field. Intake fields (primary_contact_email/telegram/name, website_url, notes) land
+# in client_intake; sector/stage/max_ai_usd_per_org_per_week/client_telegram_chat_id/checkin_enabled
+# go to config_json (validated). For a value starting with '-', use `--`:
+sable-platform onboard set <ORG_ID> primary_contact_email ceo@acme.io
+sable-platform onboard set <ORG_ID> client_telegram_chat_id -- -5050566880
+
+# The handle registry (the future SSOT for twitter/discord/telegram handles)
+sable-platform onboard account add <ORG_ID> --platform twitter --handle @Acme --role official
+sable-platform onboard account add <ORG_ID> --platform twitter --handle @founder --role founder --controlled
+sable-platform onboard account list <ORG_ID> [--json]
+sable-platform onboard account rm <ORG_ID> --platform twitter --handle @founder
+
+# Explainer/bio/voice doc pointers
+sable-platform onboard doc add <ORG_ID> --kind explainer --label "Litepaper" --location https://...
+sable-platform onboard doc list <ORG_ID>
+
+# Entitlements — what services the client gets (drives the required-input checklist)
+sable-platform onboard service catalog                       # the SKU catalog + what each needs
+sable-platform onboard service add <ORG_ID> reply_assist [--tier standard] [--status trial|active]
+sable-platform onboard service list <ORG_ID>
+
+# THE CORE UX: the readiness report. Exits non-zero while blocking inputs remain.
+sable-platform onboard status <ORG_ID> [--json]
+
+# Go-live: activate the org + project canonical handles + derive checkin + scaffold + emit the
+# cross-repo checklist. Refuses on blocking inputs unless --force; --dry-run writes nothing.
+sable-platform onboard apply <ORG_ID> [--dry-run] [--force]
+sable-platform onboard activate <ORG_ID>                     # just the status='active' flip
+```
+
+**SKUs (`service catalog`):** `client_portal`, `reply_assist`, `compose`, `tracking`, `cult_grader`,
+`checkin`, `kol`, `audit`, `engage_bot`, `cm`, `pulse`, `pairwise`. Each maps to a Suite module or is a
+standalone product/surface; `status` only flags an input MISSING when an ACTIVE service requires it.
+
+**`apply` is reconcile-SP-only:** it writes inside SablePlatform (org activation, `config_json`, the
+`~/.sable/orgs/<org>/` scaffold) and PRINTS a copy-paste checklist for the cross-repo bits that need a
+redeploy (SableWeb `allowlist.json`/`composeAccounts.ts`, SableTracking `.env` routing). It never edits
+other repos.
+
+---
+
+## allowlist — DB-backed SableWeb access (Phase-2 P1)
+
+Manage SableWeb portal access from the DB (no redeploy). Migration 075. SableWeb merges these rows
+**UNDER** `ALLOWLIST_JSON`/file — additive only: a row here can ADD a user but can never escalate above
+or lock out an env/file user. AUTH data — OPS-ONLY. Requires `SABLE_OPERATOR_ID` (audit-stamped).
+
+```bash
+sable-platform allowlist add ops@x.io --role operator --operator-id op_x [--assigned-orgs tig,solstitch]
+sable-platform allowlist add ceo@client.io --role client --org tig
+sable-platform allowlist add bharat@client.io --role client_ops --org tig --operator-id client_bharat
+sable-platform allowlist list [--json] [--enabled-only]
+sable-platform allowlist disable <email>     # stops NEW logins within the cache TTL (NOT a live-session kill)
+sable-platform allowlist enable  <email>
+sable-platform allowlist rm      <email>
+```
+Roles: `admin`/`operator` need `--operator-id`; `client`/`client_ops` need `--org`. Email is lowercased.
+
+## entitlements — enforcement preflight (Phase-2 P2)
+
+Entitlement enforcement (the `org_entitlements` gate) is **DORMANT by default** — gated by the process-env
+`ENTITLEMENT_ENFORCEMENT` flag (never `config_json`). Flipping it on can't break an un-onboarded org
+(0 active rows → allowed). **Run `preflight` BEFORE ever flipping the flag.**
+
+```bash
+sable-platform entitlements preflight [--json]   # which active orgs USE a service but lack its entitlement
+```
+Reports the orgs that would be denied a service they're using if the flag flipped. Fix each with
+`sable-platform onboard service add <org> <service_key>`, then re-run until "No coverage gaps."
 
 ---
 

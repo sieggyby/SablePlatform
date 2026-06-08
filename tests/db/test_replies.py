@@ -267,6 +267,38 @@ def test_record_outcome_is_idempotent(conn):
     assert count == 1
 
 
+def test_record_outcome_stamps_detected_via_on_insert_only(conn):
+    """detected_via (mig 069) is stamped on INSERT and NOT overwritten by the
+    re-reconciliation UPDATE path — the first writer's provenance wins."""
+    import json as _json
+
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="123", variants=[{"text": "x"}],
+    )
+    conn.commit()
+    # First write (the auto-detect job) stamps provenance.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="999", detected_via="auto")
+    conn.commit()
+    row = conn.execute(
+        "SELECT detected_via FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "999"),
+    ).fetchone()
+    assert row[0] == "auto"
+
+    # A re-run (engagement-refresh UPDATE path) must NOT overwrite provenance.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="999",
+                   detected_via="operator", engagement={"total": 7})
+    conn.commit()
+    row = conn.execute(
+        "SELECT detected_via, engagement_json FROM reply_outcomes "
+        "WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "999"),
+    ).fetchone()
+    assert row[0] == "auto"                       # unchanged — first-writer-wins
+    assert _json.loads(row[1]).get("total") == 7  # but engagement DID refresh
+
+
 # ---- reconciliation helpers (lift) ---------------------------------------
 
 def test_find_suggestion_returns_latest(conn):

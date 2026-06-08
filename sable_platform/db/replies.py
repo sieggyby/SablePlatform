@@ -276,6 +276,7 @@ def record_outcome(
     chosen_variant_idx: int | None = None,
     was_edited: bool = False,
     engagement: dict[str, Any] | None = None,
+    detected_via: str | None = None,
     now: datetime | None = None,
 ) -> bool:
     """Idempotently map an actual posted reply to a suggestion (lift tracking).
@@ -283,6 +284,11 @@ def record_outcome(
     Idempotent on (suggestion_id, posted_tweet_id) via the unique index, so the
     reconciliation job may re-run safely. Returns True if a new row was written,
     False if it already existed. Caller commits.
+
+    ``detected_via`` (mig 069, e.g. 'auto'|'operator') records how the post was
+    captured. It is stamped on INSERT only — the re-reconciliation UPDATE path leaves
+    it untouched, so the FIRST writer's provenance wins (an auto-detected row stays
+    'auto' even if a later manual reconcile updates its engagement).
     """
     stamp = (now or _utc_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
     existing = conn.execute(
@@ -310,8 +316,8 @@ def record_outcome(
         text(
             "INSERT INTO reply_outcomes"
             " (id, suggestion_id, posted_tweet_id, posted_at, chosen_variant_idx,"
-            "  was_edited, engagement_json, recorded_at)"
-            " VALUES (:id, :sid, :ptid, :pat, :idx, :edited, :ej, :now)"
+            "  was_edited, engagement_json, recorded_at, detected_via)"
+            " VALUES (:id, :sid, :ptid, :pat, :idx, :edited, :ej, :now, :dv)"
             " ON CONFLICT(suggestion_id, posted_tweet_id) DO NOTHING"
         ),
         {
@@ -323,6 +329,7 @@ def record_outcome(
             "edited": 1 if was_edited else 0,
             "ej": json.dumps(engagement or {}),
             "now": stamp,
+            "dv": detected_via,
         },
     )
     return True

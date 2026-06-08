@@ -15,6 +15,7 @@ positional index against an explicit column tuple.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -177,3 +178,87 @@ def list_angles_taken(conn: Connection, campaign_id: str, *, exclude_operator: s
         if angle and str(angle) not in out:
             out.append(str(angle))
     return out
+
+
+# --- objective-aware outcomes (Phase 4) ------------------------------------
+
+
+def get_campaign_outcomes(conn: Connection, campaign_id: str) -> dict | None:
+    """Objective-aware outcome rollup for a campaign. Returns None if unknown.
+
+    Surfaces the campaign's OBJECTIVE alongside hard, attributable numbers rolled
+    up from the assignment→suggestion→outcome chain. The engagement figure is the
+    FIXED-AGE reading the posted-reply snapshot job backfills
+    (:mod:`sable.quality.reply_outcomes` → ``reply_outcomes.engagement_json`` at
+    24h), NOT raw cumulative impressions — and it is averaged ONLY over replies that
+    have actually matured to a real reading (a still-maturing ``'{}'`` row is never
+    counted as zero, which would understate a young campaign). Reports:
+
+    * ``post_rate`` — coordination follow-through (posted / assigned);
+    * ``avg_engagement`` — mean 24h hard-engagement (likes+RT+replies) of MATURED
+      replies, or ``None`` when none have matured yet (``measured_count`` says how
+      many);
+    * ``adoption_rate`` — operators who posted a variant UNEDITED / outcomes (a proxy
+      for draft trust).
+
+    Read-only; never returns cost (internal-only per the repo convention). The join
+    skips the reply_suggestions hop — ``reply_outcomes.suggestion_id`` equals the
+    assignment's ``suggestion_id`` (both are the suggestion PK).
+    """
+    camp = get_campaign(conn, campaign_id)
+    if camp is None:
+        return None
+
+    assigns = conn.execute(
+        text(
+            "SELECT posted_tweet_id, status FROM reply_campaign_assignments"
+            " WHERE campaign_id = :cid"
+        ),
+        {"cid": campaign_id},
+    ).fetchall()
+    total_assignments = len(assigns)
+    # Posted = an assignment that carries a posted tweet id OR is marked posted.
+    total_posted = sum(1 for r in assigns if (r[0] or r[1] == "posted"))
+
+    out_rows = conn.execute(
+        text(
+            "SELECT ro.engagement_json, ro.was_edited, ro.chosen_variant_idx"
+            " FROM reply_campaign_assignments a"
+            " JOIN reply_outcomes ro ON ro.suggestion_id = a.suggestion_id"
+            " WHERE a.campaign_id = :cid AND a.suggestion_id IS NOT NULL"
+        ),
+        {"cid": campaign_id},
+    ).fetchall()
+
+    outcomes_count = len(out_rows)
+    measured = 0          # outcomes that have a real engagement reading (not '{}')
+    eng_sum = 0
+    adopted = 0           # posted a variant unedited
+    for r in out_rows:
+        ej_raw, was_edited, chosen_idx = r[0], r[1], r[2]
+        try:
+            ej = json.loads(ej_raw) if ej_raw else {}
+        except (TypeError, ValueError):
+            ej = {}
+        total = ej.get("total")
+        if isinstance(total, (int, float)) and not isinstance(total, bool):
+            measured += 1
+            eng_sum += int(total)
+        if (not was_edited) and chosen_idx is not None:
+            adopted += 1
+
+    return {
+        "campaign_id": campaign_id,
+        "objective": camp["objective"],
+        "status": camp["status"],
+        "target_tweet_id": camp["target_tweet_id"],
+        "target_url": camp["target_url"],
+        "target_author": camp["target_author"],
+        "total_assignments": total_assignments,
+        "total_posted": total_posted,
+        "post_rate": (total_posted / total_assignments) if total_assignments else None,
+        "outcomes_count": outcomes_count,
+        "measured_count": measured,
+        "avg_engagement": (eng_sum / measured) if measured else None,
+        "adoption_rate": (adopted / outcomes_count) if outcomes_count else None,
+    }

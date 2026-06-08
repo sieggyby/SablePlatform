@@ -152,6 +152,22 @@ TABLE_LOAD_ORDER: list[str] = [
     # Migration 064: trending-story autopilot. FK -> relay_clients (the parent
     # precedes this block). Integer autoincrement PK -> also in SEQUENCE_TABLES.
     "relay_trending_stories",            # FK -> relay_clients (Integer autoincrement PK)
+    # Migration 065: tweet-quality corpus. 3 new tables with NO FKs to each
+    # other (or anything) -- any order among them is fine. Only
+    # relay_tweet_snapshots has an Integer autoincrement PK (-> SEQUENCE_TABLES)
+    # the other two are TEXT-PK (handle / tweet_x_id).
+    "relay_quality_accounts",            # no FKs (TEXT PK handle, no sequence)
+    "relay_quality_tweets",              # no FKs (TEXT PK tweet_x_id, no sequence)
+    "relay_tweet_snapshots",             # no FKs (Integer autoincrement PK)
+    # Migration 066: media recommendation center. 3 new tables with NO FKs to
+    # each other (or anything) -- any order among them is fine. Only
+    # media_rec_events has an Integer autoincrement PK (-> SEQUENCE_TABLES); the
+    # other two are composite TEXT-PK (org_id, content_id). The reply_outcomes
+    # ADD COLUMN media_content_id rides along automatically (the copy enumerates
+    # columns dynamically via SELECT * + list(rows[0].keys())).
+    "media_rec_events",                  # no FKs (Integer autoincrement PK)
+    "media_quality",                     # no FKs (composite TEXT PK, no sequence)
+    "media_embeddings",                  # no FKs (composite TEXT PK, no sequence)
     # Migration 063: reply-learning. Pure ADD COLUMN on reply_suggestions
     # (tell_score/tell_flags_json) + relay_tweets (embedding_json/embedding_model)
     # -- NO new tables, so no TABLE_LOAD_ORDER/SEQUENCE_TABLES entries. The copy
@@ -174,6 +190,42 @@ TABLE_LOAD_ORDER: list[str] = [
     "autocm_adversarial_runs",           # FK -> autocm_clients (Integer autoincrement PK)
     "autocm_digest_interactions",        # FK -> autocm_clients (Integer autoincrement PK)
     "autocm_time_saved_baseline",        # FK -> autocm_clients (Integer autoincrement PK)
+    # Migration 067: community audit (community_audit_* family). FK-safe order --
+    # community_audit_guilds (FK -> orgs, nullable) is the parent; runs FK -> guilds;
+    # findings/security_checks/settings_snapshot FK -> runs; ledger/member_scores/
+    # member_activity/identity_links FK -> guilds; rate_limits/benchmark have no FK.
+    # Integer autoincrement PKs (-> SEQUENCE_TABLES): runs, findings, security_checks,
+    # settings_snapshot. The rest are TEXT/composite PK (no sequence).
+    "community_audit_guilds",             # FK -> orgs (TEXT PK guild_id, no sequence)
+    "community_audit_runs",               # FK -> community_audit_guilds (Integer autoincrement PK)
+    "community_audit_findings",           # FK -> community_audit_runs (Integer autoincrement PK)
+    "community_audit_security_checks",    # FK -> community_audit_runs (Integer autoincrement PK)
+    "community_audit_settings_snapshot",  # FK -> community_audit_runs (Integer autoincrement PK)
+    "community_audit_reaction_ledger",    # FK -> community_audit_guilds (composite TEXT PK, no sequence)
+    "community_audit_member_scores",      # FK -> community_audit_guilds (composite TEXT PK, no sequence)
+    "community_audit_member_activity",    # FK -> community_audit_guilds (composite TEXT PK, no sequence)
+    "community_audit_rate_limits",        # no FKs (composite TEXT PK, no sequence)
+    "community_audit_benchmark",          # no FKs (composite TEXT PK, no sequence)
+    "community_audit_identity_links",     # FK -> community_audit_guilds (composite TEXT PK, no sequence)
+    # Migration 070: community-audit lead capture (no FK, Integer autoincrement PK -> SEQUENCE_TABLES).
+    "community_audit_leads",
+    # Migration 071: Tweet Assist compose topic-suggestion cache. FK -> relay_clients
+    # (the parent precedes this block). Integer autoincrement PK -> SEQUENCE_TABLES.
+    "relay_topic_suggestions",           # FK -> relay_clients (Integer autoincrement PK)
+    # Migration 072: Tweet Assist compose topic-pick feedback log. FK -> relay_clients.
+    # Integer autoincrement PK -> SEQUENCE_TABLES.
+    "relay_topic_picks",                 # FK -> relay_clients (Integer autoincrement PK)
+    # Migration 073: client & operator onboarding (intake SSOT + entitlements). All FK -> orgs
+    # (which precedes this block). client_intake is a TEXT PK (NOT-NULL FK -> no _TEXT_PK_COLUMNS);
+    # the other 3 are Integer autoincrement PK -> SEQUENCE_TABLES.
+    "client_intake",                     # FK -> orgs (TEXT PK)
+    "client_accounts",                   # FK -> orgs (Integer autoincrement PK)
+    "client_docs",                       # FK -> orgs (Integer autoincrement PK)
+    "org_entitlements",                  # FK -> orgs (Integer autoincrement PK)
+    # Migration 074: Tweet Assist tweetbank. FK -> orgs. Integer autoincrement PK.
+    "tweetbank_entries",                 # FK -> orgs (Integer autoincrement PK)
+    # Migration 075: DB-backed allowlist. No FK (auth table). TEXT PK (NOT-NULL -> no _TEXT_PK_COLUMNS).
+    "allowlist_entries",                 # no FK (TEXT PK)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -246,6 +298,14 @@ SEQUENCE_TABLES: dict[str, str] = {
     "relay_opportunity_feedback": "id",
     # Migration 064: trending-story autopilot (Integer autoincrement PK).
     "relay_trending_stories": "id",
+    # Migration 065: tweet-quality corpus. Only relay_tweet_snapshots has an
+    # Integer autoincrement PK -- relay_quality_accounts (TEXT PK handle) and
+    # relay_quality_tweets (TEXT PK tweet_x_id) have no sequence.
+    "relay_tweet_snapshots": "id",
+    # Migration 066: media recommendation center. Only media_rec_events has an
+    # Integer autoincrement PK -- media_quality and media_embeddings are
+    # composite TEXT-PK (org_id, content_id) and have no sequence.
+    "media_rec_events": "id",
     # Migration 058: SableAutoCM tables with Integer autoincrement PKs.
     # autocm_kb_constants is EXCLUDED (composite TEXT PK (client_id, key), no
     # sequence). The FTS5 companion (autocm_kb_chunks_fts) is SQLite-only and not
@@ -262,6 +322,25 @@ SEQUENCE_TABLES: dict[str, str] = {
     "autocm_adversarial_runs": "id",
     "autocm_digest_interactions": "id",
     "autocm_time_saved_baseline": "id",
+    # Migration 067: community audit. Integer autoincrement PKs only --
+    # community_audit_guilds (TEXT PK) and the ledger/member/rate/benchmark/identity
+    # tables (composite TEXT PK) are excluded.
+    "community_audit_runs": "id",
+    "community_audit_findings": "id",
+    "community_audit_security_checks": "id",
+    "community_audit_settings_snapshot": "id",
+    # Migration 070: community-audit leads.
+    "community_audit_leads": "id",
+    # Migration 071: Tweet Assist compose topic-suggestion cache.
+    "relay_topic_suggestions": "id",
+    # Migration 072: Tweet Assist compose topic-pick feedback log.
+    "relay_topic_picks": "id",
+    # Migration 073: client onboarding (client_intake is a TEXT PK -> no sequence).
+    "client_accounts": "id",
+    "client_docs": "id",
+    "org_entitlements": "id",
+    # Migration 074: Tweet Assist tweetbank.
+    "tweetbank_entries": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

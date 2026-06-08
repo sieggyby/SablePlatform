@@ -241,6 +241,26 @@ def test_notify_skipped_when_checkin_not_enabled(wf_db, base_config):
     assert output["reason"] == "checkin_disabled"
 
 
+def test_notify_skipped_when_not_entitled(wf_db, base_config, monkeypatch):
+    """P2: enforcement ON + org onboarded but NOT entitled to checkin → notify early-returns
+    'not_entitled' (before the checkin_enabled/chat checks). Dormant when the flag is off."""
+    from sable_platform.db import onboarding as ob
+
+    monkeypatch.setenv("ENTITLEMENT_ENFORCEMENT", "true")
+    ob.set_entitlement(wf_db, ORG_ID, "reply_assist", status="active")  # onboarded, but not checkin
+    with patch(
+        "sable_platform.workflows.builtins.client_checkin_loop.synthesize_call",
+        return_value=_stub_synth(),
+    ):
+        runner = WorkflowRunner(CLIENT_CHECKIN_LOOP)
+        run_id = runner.run(ORG_ID, base_config, conn=wf_db)
+    notify_step = next(
+        s for s in get_workflow_steps(wf_db, run_id) if s["step_name"] == "notify_and_send"
+    )
+    output = json.loads(notify_step["output_json"])
+    assert output["sent"] is False and output["reason"] == "not_entitled"
+
+
 def test_notify_skipped_when_no_chat_id(wf_db, base_config):
     """checkin_enabled=True but no client_telegram_chat_id."""
     wf_db.execute(

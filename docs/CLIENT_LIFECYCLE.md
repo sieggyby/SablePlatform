@@ -2,6 +2,11 @@
 
 Each Sable client passes through six stages. This document maps each stage to the CLI commands that drive it and the SableWeb views that surface it.
 
+> **Onboarding (stages 3–4, Outreach → Active) is now driven by the `onboard` CLI.** For the executable
+> step-by-step (intake manifest, the entitlement-driven `onboard status` readiness report, `onboard
+> apply` + the cross-repo checklist, and new-operator setup), see **`docs/ONBOARDING_RUNBOOK.md`** and the
+> design in `docs/CLIENT_ONBOARDING_PLAN.md`. The stages below remain the high-level map.
+
 ## Stages
 
 ### 1. Discovered

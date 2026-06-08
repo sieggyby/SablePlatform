@@ -445,6 +445,29 @@ def test_due_orgs_one_click_one_sweep(sa_conn):
     assert relay_db.list_due_sweep_orgs(sa_conn, now=now) == []
 
 
+def test_due_orgs_entitlement_gate(sa_conn, monkeypatch):
+    """P2 (ONBOARDING_PHASE2_PLAN.md): the entitlement post-filter on list_due_sweep_orgs.
+    Flag OFF → verbatim (behavior-neutral). Flag ON → an onboarded-but-unentitled org is
+    dropped while an un-onboarded (0-row) org is KEPT (fail-safe, can't break a live client)."""
+    now = _now_iso()
+    for o in ("orgEnt", "orgRaw", "orgUnent"):
+        _seed(sa_conn, org_id=o)
+    sa_conn.commit()
+    with immediate_txn(sa_conn):
+        for o in ("orgEnt", "orgRaw", "orgUnent"):
+            relay_db.upsert_sweep_config(sa_conn, org_id=o, enabled=1)
+            relay_db.write_operator_heartbeat(sa_conn, org_id=o, operator_handle="@op", now=now)
+        # orgEnt: entitled to reply_assist; orgUnent: onboarded but NOT reply_assist; orgRaw: 0 rows
+        sa_conn.execute(text("INSERT INTO org_entitlements (org_id, service_key, status) VALUES ('orgEnt','reply_assist','active')"))
+        sa_conn.execute(text("INSERT INTO org_entitlements (org_id, service_key, status) VALUES ('orgUnent','tracking','active')"))
+
+    monkeypatch.delenv("ENTITLEMENT_ENFORCEMENT", raising=False)
+    assert relay_db.list_due_sweep_orgs(sa_conn, now=now) == ["orgEnt", "orgRaw", "orgUnent"]  # verbatim
+
+    monkeypatch.setenv("ENTITLEMENT_ENFORCEMENT", "true")
+    assert relay_db.list_due_sweep_orgs(sa_conn, now=now) == ["orgEnt", "orgRaw"]  # orgUnent dropped
+
+
 def test_due_orgs_hourly_cadence(sa_conn):
     _seed(sa_conn, org_id="orgHourly")
     sa_conn.commit()

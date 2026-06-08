@@ -1545,6 +1545,12 @@ reply_outcomes = Table(
     Column("was_edited", Integer, nullable=False, server_default="0"),
     Column("engagement_json", Text, nullable=False, server_default="{}"),
     Column("recorded_at", Text, nullable=False, server_default=func.now()),
+    # Migration 066: the media asset (if any) that rode along with this posted
+    # reply, so assisted-vs-organic lift can be sliced by attached media.
+    Column("media_content_id", Text),
+    # Migration 069: provenance — 'auto' (the scheduled persona-timeline detection
+    # job) vs 'operator' (manual Mark-posted). NULL on rows written before mig 069.
+    Column("detected_via", Text),
 )
 
 # Named unique index (NOT a UniqueConstraint — must match the SQL migration's
@@ -2010,8 +2016,7 @@ relay_opportunity_feedback = Table(
         "opportunity_id",
         Integer,
         ForeignKey("relay_reply_opportunities.id"),
-        nullable=False,
-    ),
+    ),  # mig 068: NULLABLE — freeform-draft variant thumbs have a suggestion_id but no opportunity
     Column("suggestion_id", Text, ForeignKey("reply_suggestions.id")),
     Column("rater_handle", Text, nullable=False),
     Column("rater_role", Text, nullable=False),
@@ -2086,6 +2091,166 @@ relay_trending_stories = Table(
     Column("expires_at", Text),
     Column("created_at", Text, nullable=False, server_default=func.now()),
     Index("ix_relay_trending_stories_feed", "org_id", "status"),
+)
+
+# Tweet Assist Compose -- topic-suggestion engine cache (mig 071). The weekly
+# refresh job synthesizes ranked "suggested topics + angles" per org from
+# deterministic signals via ONE batched Claude pass and caches the result here, so
+# the compose UI reads topics at near-zero per-view cost. topics_json is INTERPRETIVE
+# (LLM synthesis, rendered behind a caveat). NO cost column, ever (cost lives only in
+# cost_events, tag relay_compose.topics). One current row per org -- the refresh does
+# an app-level delete-then-insert (relay/db), so no UNIQUE constraint.
+relay_topic_suggestions = Table(
+    "relay_topic_suggestions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("topics_json", Text, nullable=False, server_default="[]"),
+    Column("model", Text),
+    Column("refreshed_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_relay_topic_suggestions_org", "org_id", "refreshed_at"),
+)
+
+# Tweet Assist Compose -- topic-suggestion FEEDBACK LOOP (mig 072). An append-only log
+# of suggested-topic chip picks (SableWeb writes on click). The weekly synthesis reads
+# recent picks as a steering signal (favor themes operators act on). A pick is a USAGE
+# SIGNAL, not measured fact. NO cost column, ever. No UNIQUE constraint (append-only;
+# a repeat pick is itself signal).
+relay_topic_picks = Table(
+    "relay_topic_picks",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
+    Column("topic", Text, nullable=False),
+    Column("register_band", Text),
+    Column("operator_handle", Text),
+    Column("picked_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_relay_topic_picks_org", "org_id", "picked_at"),
+)
+
+# Tweet Assist Compose -- the TWEETBANK (mig 074, P3 human-fed + P4 AI-suggested). A
+# curated store of ready-to-post original tweets, per managed account + a shared per-org
+# global pool (account_handle NULL). Humans submit -> 'approved'; the P4 AI suggester
+# writes source='ai' status='pending'. CONTENT, not a cost surface -- NO cost column.
+# The 'used' status is an advisory soft-claim (mark-used on Compose). FK -> orgs.
+tweetbank_entries = Table(
+    "tweetbank_entries",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("client_org", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("account_handle", Text),
+    Column("text", Text, nullable=False),
+    Column("register_band", Text),
+    Column("topic_tags", Text, nullable=False, server_default="[]"),
+    Column("author", Text),
+    Column("source", Text, nullable=False, server_default="human"),
+    Column("status", Text, nullable=False, server_default="approved"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("used_at", Text),
+    Column("used_by", Text),
+    CheckConstraint("source IN ('human', 'ai')", name="ck_tweetbank_source"),
+    CheckConstraint("status IN ('approved', 'pending', 'used', 'rejected')", name="ck_tweetbank_status"),
+    Index("ix_tweetbank_entries_org", "client_org", "status", "account_handle"),
+)
+
+# ------------------------------------------------------------------
+# Migration 065 — tweet-quality corpus (new tables; mirrors 065.sql)
+# ------------------------------------------------------------------
+# A curated/stratified bank of CT accounts (relay_quality_accounts, keyed by
+# handle) + the tweets sampled from them (relay_quality_tweets, keyed by X id) +
+# a longitudinal engagement-decay log per tweet (relay_tweet_snapshots, repeated
+# at target ages). band/kol_strength/archetype_json are INTERPRETIVE (carried
+# from kol_candidates); snapshot metrics ARE measured. No cost column, ever.
+relay_quality_accounts = Table(
+    "relay_quality_accounts",
+    metadata,
+    Column("handle", Text, primary_key=True),
+    Column("band", Text),
+    Column("kol_strength", Float),
+    Column("archetype_json", Text, nullable=False, server_default="[]"),
+    Column("source", Text),
+    Column("followers_snapshot", Integer),
+    Column("active", Integer, nullable=False, server_default="1"),
+    Column("added_at", Text, nullable=False, server_default=func.now()),
+)
+
+relay_quality_tweets = Table(
+    "relay_quality_tweets",
+    metadata,
+    Column("tweet_x_id", Text, primary_key=True),
+    Column("author_handle", Text),
+    Column("posted_at", Text),
+    Column("text", Text),
+    Column("band", Text),
+    Column("first_seen_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_relay_quality_tweets_posted", "posted_at"),
+)
+
+relay_tweet_snapshots = Table(
+    "relay_tweet_snapshots",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("tweet_x_id", Text, nullable=False),
+    Column("target_age_hours", Integer, nullable=False),
+    Column("taken_at", Text, nullable=False, server_default=func.now()),
+    Column("age_hours", Float),
+    Column("likes", Integer),
+    Column("retweets", Integer),
+    Column("replies", Integer),
+    Column("quotes", Integer),
+    Column("bookmarks", Integer),
+    Column("views", Integer),
+    Column("author_followers", Integer),
+    Column("status", Text, nullable=False, server_default="ok"),
+    Index("ix_relay_tweet_snapshots_tweet", "tweet_x_id"),
+)
+
+# ------------------------------------------------------------------
+# Migration 066 — media recommendation center (new tables; mirrors 066.sql)
+# ------------------------------------------------------------------
+# media_rec_events logs each media slate offered to an operator for a reply (the
+# source of truth). media_quality is the forward-only Elo rollup recomputed from
+# that choice log (elo/n_offered/n_chosen DERIVED, not measured-external).
+# media_embeddings caches a per-asset semantic vector (embedding_json + producing
+# model). All three are keyed/scoped by org_id. No cost column, ever. (The
+# reply_outcomes.media_content_id ADD COLUMN lives on the reply_outcomes Table
+# above.)
+media_rec_events = Table(
+    "media_rec_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, nullable=False),
+    Column("operator_handle", Text),
+    Column("tweet_ref", Text),
+    Column("slate_json", Text, nullable=False, server_default="[]"),
+    Column("chosen_content_id", Text),
+    Column("applied", Integer, nullable=False, server_default="0"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("ix_media_rec_events_unapplied", "org_id", "applied"),
+)
+
+media_quality = Table(
+    "media_quality",
+    metadata,
+    Column("org_id", Text, nullable=False),
+    Column("content_id", Text, nullable=False),
+    Column("elo", Float, nullable=False, server_default="1500"),
+    Column("n_offered", Integer, nullable=False, server_default="0"),
+    Column("n_chosen", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("org_id", "content_id"),
+)
+
+media_embeddings = Table(
+    "media_embeddings",
+    metadata,
+    Column("org_id", Text, nullable=False),
+    Column("content_id", Text, nullable=False),
+    Column("embedding_json", Text),
+    Column("embedding_model", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("org_id", "content_id"),
 )
 
 relay_processed_updates = Table(
@@ -2425,4 +2590,285 @@ operator_work_events = Table(
     Column("ref_json", Text),
     Column("created_at", Text, nullable=False, server_default=func.now()),
     Index("ix_operator_work_events_org", "org_id", "occurred_at"),
+)
+
+# ------------------------------------------------------------------
+# Migration 067 — community audit (community_audit_* family; mirrors 067.sql)
+# Parents before children: guilds (FK -> orgs) -> runs -> findings/checks/snapshot.
+# ------------------------------------------------------------------
+community_audit_guilds = Table(
+    "community_audit_guilds",
+    metadata,
+    Column("guild_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id")),
+    Column("invited_by", Text),
+    Column("plan_tier", Text, nullable=False, server_default="free"),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("consent_at", Text),
+    Column("joined_at", Text, nullable=False, server_default=func.now()),
+    Column("last_audit_at", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+
+community_audit_runs = Table(
+    "community_audit_runs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, ForeignKey("community_audit_guilds.guild_id"), nullable=False),
+    Column("tier", Text, nullable=False, server_default="free"),
+    Column("kind", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="running"),
+    Column("messages_analyzed", Integer, nullable=False, server_default="0"),
+    Column("channels_active", Integer, nullable=False, server_default="0"),
+    Column("channels_dead", Integer, nullable=False, server_default="0"),
+    Column("span_start", Text),
+    Column("overall_grade", Text),
+    Column("category_grades_json", Text, nullable=False, server_default="{}"),
+    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("finished_at", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint("kind IN ('metadata','deep')", name="ck_community_audit_runs_kind"),
+    CheckConstraint(
+        "status IN ('running','ok','aborted','partial')",
+        name="ck_community_audit_runs_status",
+    ),
+    Index("community_audit_runs_by_guild", "guild_id", "started_at"),
+)
+
+community_audit_findings = Table(
+    "community_audit_findings",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_id", Integer, ForeignKey("community_audit_runs.id"), nullable=False),
+    Column("category", Text, nullable=False),
+    Column("severity", Text, nullable=False, server_default="info"),
+    Column("type", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("plain_detail", Text),
+    Column("message_ref", Text),
+    Column("confidence", Float),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("community_audit_findings_by_run", "run_id", "category"),
+)
+
+community_audit_security_checks = Table(
+    "community_audit_security_checks",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_id", Integer, ForeignKey("community_audit_runs.id"), nullable=False),
+    Column("check_key", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("detail", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('pass','warn','fail')",
+        name="ck_community_audit_security_checks_status",
+    ),
+    Index("community_audit_security_checks_by_run", "run_id"),
+)
+
+community_audit_settings_snapshot = Table(
+    "community_audit_settings_snapshot",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("run_id", Integer, ForeignKey("community_audit_runs.id"), nullable=False),
+    Column("boost_level", Integer, nullable=False, server_default="0"),
+    Column("boost_count", Integer, nullable=False, server_default="0"),
+    Column("custom_emoji_count", Integer, nullable=False, server_default="0"),
+    Column("soundboard_count", Integer, nullable=False, server_default="0"),
+    Column("vanity_url", Text),
+    Column("has_banner", Integer, nullable=False, server_default="0"),
+    Column("has_icon", Integer, nullable=False, server_default="0"),
+    Column("verification_level", Text),
+    Column("description", Text),
+    Column("raw_json", Text, nullable=False, server_default="{}"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index(
+        "community_audit_settings_snapshot_by_run",
+        "run_id",
+        unique=True,
+    ),
+)
+
+community_audit_reaction_ledger = Table(
+    "community_audit_reaction_ledger",
+    metadata,
+    Column("guild_id", Text, ForeignKey("community_audit_guilds.guild_id"), nullable=False),
+    Column("post_id", Text, nullable=False),
+    Column("reactor_id", Text, nullable=False),
+    Column("emoji", Text, nullable=False),
+    Column("author_id", Text, nullable=False),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("guild_id", "post_id", "reactor_id", "emoji"),
+    Index("community_audit_reaction_ledger_by_author", "guild_id", "author_id"),
+)
+
+community_audit_member_scores = Table(
+    "community_audit_member_scores",
+    metadata,
+    Column("guild_id", Text, ForeignKey("community_audit_guilds.guild_id"), nullable=False),
+    Column("member_id", Text, nullable=False),
+    Column("contribution_score", Float, nullable=False, server_default="0"),
+    Column("components_json", Text, nullable=False, server_default="{}"),
+    Column("last_active_at", Text),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("guild_id", "member_id"),
+    Index("community_audit_member_scores_rank", "guild_id", "contribution_score"),
+)
+
+community_audit_member_activity = Table(
+    "community_audit_member_activity",
+    metadata,
+    Column("guild_id", Text, ForeignKey("community_audit_guilds.guild_id"), nullable=False),
+    Column("member_id", Text, nullable=False),
+    Column("period", Text, nullable=False),
+    Column("message_count", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("guild_id", "member_id", "period"),
+)
+
+community_audit_rate_limits = Table(
+    "community_audit_rate_limits",
+    metadata,
+    Column("scope", Text, nullable=False),
+    Column("key", Text, nullable=False),
+    Column("window_start", Text, nullable=False),
+    Column("count", Integer, nullable=False, server_default="0"),
+    Column("ai_usd", Float, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "scope IN ('guild','inviter','global')",
+        name="ck_community_audit_rate_limits_scope",
+    ),
+    PrimaryKeyConstraint("scope", "key", "window_start"),
+)
+
+community_audit_benchmark = Table(
+    "community_audit_benchmark",
+    metadata,
+    Column("category", Text, nullable=False),
+    Column("metric_key", Text, nullable=False),
+    Column("distribution_json", Text, nullable=False, server_default="{}"),
+    Column("sample_size", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("category", "metric_key"),
+)
+
+community_audit_identity_links = Table(
+    "community_audit_identity_links",
+    metadata,
+    Column("guild_id", Text, ForeignKey("community_audit_guilds.guild_id"), nullable=False),
+    Column("discord_member_id", Text, nullable=False),
+    Column("twitter_handle", Text, nullable=False),
+    Column("confidence", Float),
+    Column("source", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("guild_id", "discord_member_id"),
+)
+
+# Migration 070 — community-audit lead capture (non-privileged marketing list).
+community_audit_leads = Table(
+    "community_audit_leads",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("email", Text, nullable=False),
+    Column("guild_id", Text),
+    Column("source", Text, nullable=False, server_default="audit_page"),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("community_audit_leads_by_email", "email"),
+)
+
+# --- Migration 073: client & operator onboarding (intake SSOT + entitlements) -------
+# OPS-ONLY tables (client PII + commercial state) -- never cross the SableWeb /client
+# wall. See docs/CLIENT_ONBOARDING_PLAN.md.
+client_intake = Table(
+    "client_intake",
+    metadata,
+    Column("org_id", Text, ForeignKey("orgs.org_id"), primary_key=True),
+    Column("manifest_status", Text, nullable=False, server_default="draft"),
+    Column("primary_contact_name", Text),
+    Column("primary_contact_email", Text),
+    Column("primary_contact_telegram", Text),
+    Column("website_url", Text),
+    Column("notes", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "manifest_status IN ('draft','ready','applied')",
+        name="ck_client_intake_status",
+    ),
+)
+
+client_accounts = Table(
+    "client_accounts",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("handle", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("controlled", Integer, nullable=False, server_default="0"),
+    Column("display_name", Text),
+    Column("bio", Text),
+    Column("notes", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    UniqueConstraint("org_id", "platform", "handle", name="uq_client_accounts_handle"),
+    Index("client_accounts_by_org", "org_id"),
+)
+
+client_docs = Table(
+    "client_docs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("label", Text, nullable=False),
+    Column("location", Text, nullable=False),
+    Column("notes", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Index("client_docs_by_org", "org_id"),
+)
+
+org_entitlements = Table(
+    "org_entitlements",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("service_key", Text, nullable=False),
+    Column("tier", Text),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("started_at", Text),
+    Column("ended_at", Text),
+    Column("config_json", Text, nullable=False, server_default="{}"),
+    Column("notes", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "status IN ('trial','active','paused','ended')",
+        name="ck_org_entitlements_status",
+    ),
+    UniqueConstraint("org_id", "service_key", name="uq_org_entitlements_service"),
+    Index("org_entitlements_by_org", "org_id"),
+)
+
+# --- Migration 075: DB-backed SableWeb allowlist (ONBOARDING_PHASE2_PLAN.md P1) ----
+# AUTH table -- OPS-ONLY, never on /client. `email` is the lowercased PK.
+allowlist_entries = Table(
+    "allowlist_entries",
+    metadata,
+    Column("email", Text, primary_key=True),
+    Column("role", Text, nullable=False),
+    Column("operator_id", Text),
+    Column("org", Text),
+    Column("assigned_orgs", Text),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("notes", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "role IN ('admin','operator','client','client_ops')",
+        name="ck_allowlist_entries_role",
+    ),
+    CheckConstraint("email = lower(email)", name="ck_allowlist_entries_email_lower"),
 )

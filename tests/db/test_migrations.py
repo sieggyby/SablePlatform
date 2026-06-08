@@ -110,6 +110,11 @@ EXPECTED_TABLES = {
     # embedding_model on relay_tweets, asserted by test_migration_063_*.
     # Migration 064: trending-story autopilot
     "relay_trending_stories",
+    # Migration 065: tweet-quality corpus
+    "relay_quality_accounts", "relay_quality_tweets", "relay_tweet_snapshots",
+    # Migration 066: media recommendation center (3 new tables; the additive
+    # reply_outcomes.media_content_id column is asserted by test_migration_066_*).
+    "media_rec_events", "media_quality", "media_embeddings",
 }
 
 
@@ -159,7 +164,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 64
+    assert row["version"] == 75
 
 
 def test_all_tables_exist():
@@ -178,7 +183,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 64
+    assert row["version"] == 75
 
 
 def test_workflow_tables_columns():
@@ -1171,3 +1176,340 @@ def test_migration_063_dual_migration_seed_then_upgrade():
     assert trow["author_followers"] == 42
     assert trow["embedding_json"] is None
     assert trow["embedding_model"] is None
+
+
+def test_migration_066_additive_column_exists():
+    """Migration 066: reply_outcomes gains media_content_id on a fresh DB."""
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_outcomes)"
+    ).fetchall()}
+    assert "media_content_id" in cols, "reply_outcomes missing 'media_content_id'"
+
+
+def test_migration_066_new_tables_columns():
+    """Migration 066: the 3 new tables exist with the contracted columns/PKs."""
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    ev_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(media_rec_events)"
+    ).fetchall()}
+    assert {
+        "id", "org_id", "operator_handle", "tweet_ref", "slate_json",
+        "chosen_content_id", "applied", "created_at",
+    } <= ev_cols
+
+    # media_quality composite (org_id, content_id) PK
+    q_info = conn.execute("PRAGMA table_info(media_quality)").fetchall()
+    q_cols = {r[1] for r in q_info}
+    assert {"org_id", "content_id", "elo", "n_offered", "n_chosen", "updated_at"} <= q_cols
+    q_pk = {r[1] for r in q_info if r[5]}  # r[5] = pk position (non-zero => part of PK)
+    assert q_pk == {"org_id", "content_id"}, f"media_quality PK should be composite, got {q_pk}"
+
+    # media_embeddings composite (org_id, content_id) PK
+    e_info = conn.execute("PRAGMA table_info(media_embeddings)").fetchall()
+    e_cols = {r[1] for r in e_info}
+    assert {"org_id", "content_id", "embedding_json", "embedding_model", "updated_at"} <= e_cols
+    e_pk = {r[1] for r in e_info if r[5]}
+    assert e_pk == {"org_id", "content_id"}, f"media_embeddings PK should be composite, got {e_pk}"
+
+
+def test_migration_066_unapplied_index_exists():
+    """Migration 066: the partial-scan index for the Elo sweep is present."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    idx = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index'"
+        ).fetchall()
+    }
+    assert "ix_media_rec_events_unapplied" in idx
+
+
+def test_migration_066_dual_migration_seed_then_upgrade():
+    """HARD requirement: a POPULATED reply_outcomes row on the PRE-066 schema must
+    survive the 066 upgrade — media_content_id appears (NULL on the seeded row),
+    the seeded data is intact, and the old columns are untouched (additive, no
+    table rebuild). reply_outcomes FK -> reply_suggestions, so a parent suggestion
+    is seeded first.
+    """
+    conn = _make_conn()
+    # 1. Bring the schema up to 065 (the verified single head BEFORE 066).
+    _apply_migrations_through(conn, 65)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 65
+    pre_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_outcomes)"
+    ).fetchall()}
+    assert "media_content_id" not in pre_cols
+
+    # 2. Seed REAL populated rows on the pre-066 schema (suggestion -> outcome).
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute(
+        "INSERT INTO reply_suggestions "
+        "(id, operator_handle, org_id, source_tweet_id, variants_json) "
+        "VALUES ('sug-pre66', '@arf', 'tig', '777', '[{\"text\":\"hi\"}]')"
+    )
+    conn.execute(
+        "INSERT INTO reply_outcomes "
+        "(id, suggestion_id, posted_tweet_id, posted_at, chosen_variant_idx, "
+        " was_edited, engagement_json) "
+        "VALUES ('out-pre66', 'sug-pre66', '888', '2026-06-06T00:00:00Z', 0, 0, "
+        "        '{\"total\":5}')"
+    )
+    conn.commit()
+
+    # 3. Apply 066 on the POPULATED table.
+    _apply_migrations_through(conn, 66)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 66
+
+    # 4a. The additive column now exists.
+    post_cols = {r[1] for r in conn.execute(
+        "PRAGMA table_info(reply_outcomes)"
+    ).fetchall()}
+    assert "media_content_id" in post_cols
+
+    # 4b. The seeded outcome row survived intact; the new column is NULL.
+    orow = conn.execute(
+        "SELECT suggestion_id, posted_tweet_id, posted_at, chosen_variant_idx, "
+        "       was_edited, engagement_json, media_content_id "
+        "FROM reply_outcomes WHERE id = 'out-pre66'"
+    ).fetchone()
+    assert orow is not None, "seeded outcome lost across the 066 upgrade"
+    assert orow["suggestion_id"] == "sug-pre66"
+    assert orow["posted_tweet_id"] == "888"
+    assert orow["posted_at"] == "2026-06-06T00:00:00Z"
+    assert orow["engagement_json"] == '{"total":5}'
+    assert orow["media_content_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Migration 068 — make relay_opportunity_feedback.opportunity_id NULLABLE
+# (per-variant gen-quality thumbs on freeform drafts: a suggestion_id but no
+#  feed-sourced opportunity). Leaf-table rebuild.
+# ---------------------------------------------------------------------------
+
+def test_migration_068_opportunity_id_nullable_on_fresh_db():
+    """Migration 068: on a fresh DB, relay_opportunity_feedback.opportunity_id is
+    NULLABLE (the whole point — freeform-draft variant thumbs have no opportunity).
+    """
+    conn = _make_conn()
+    ensure_schema(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 75
+
+    # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
+    cols = {
+        r[1]: r for r in conn.execute(
+            "PRAGMA table_info(relay_opportunity_feedback)"
+        ).fetchall()
+    }
+    assert cols["opportunity_id"][3] == 0, (
+        "opportunity_id must be NULLABLE (notnull flag must be 0) after migration 068"
+    )
+    # The index survived the leaf rebuild.
+    fb_idx = {r[1] for r in conn.execute(
+        "PRAGMA index_list(relay_opportunity_feedback)"
+    ).fetchall()}
+    assert "ix_relay_opportunity_feedback_opp" in fb_idx
+
+
+def test_migration_068_null_opportunity_insert_succeeds():
+    """THE POINT (mig 068): a freeform-draft variant thumb — opportunity_id NULL but
+    a suggestion_id SET — must INSERT successfully on the post-068 schema. The
+    suggestion_id FK to reply_suggestions is still enforced (foreign_keys=ON).
+    """
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    # Parent suggestion (freeform draft — no opportunity row exists for it).
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute(
+        "INSERT INTO reply_suggestions "
+        "(id, operator_handle, org_id, source_tweet_id, variants_json) "
+        "VALUES ('sug-freeform-68', '@arf', 'tig', '999', '[{\"text\":\"gm\"}]')"
+    )
+    conn.commit()
+
+    # opportunity_id NULL + suggestion_id SET — this is the freeform-draft thumb.
+    conn.execute(
+        "INSERT INTO relay_opportunity_feedback "
+        "(opportunity_id, suggestion_id, rater_handle, rater_role, thumb) "
+        "VALUES (NULL, 'sug-freeform-68', '@arf', 'operator', 1)"
+    )
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT opportunity_id, suggestion_id, rater_handle, rater_role, thumb "
+        "FROM relay_opportunity_feedback WHERE suggestion_id = 'sug-freeform-68'"
+    ).fetchone()
+    assert row is not None, "freeform-draft thumb (NULL opportunity_id) failed to insert"
+    assert row["opportunity_id"] is None
+    assert row["suggestion_id"] == "sug-freeform-68"
+    assert row["thumb"] == 1
+
+    # The suggestion_id FK is still live: a thumb pointing at a non-existent
+    # suggestion (and NULL opportunity_id) must be rejected.
+    import pytest
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO relay_opportunity_feedback "
+            "(opportunity_id, suggestion_id, rater_handle, rater_role, thumb) "
+            "VALUES (NULL, 'sug-does-not-exist', '@arf', 'operator', -1)"
+        )
+
+
+def test_migration_068_dual_migration_seed_then_upgrade():
+    """HARD requirement: a POPULATED relay_opportunity_feedback row on the PRE-068
+    schema (opportunity_id NOT NULL there) must survive the leaf-table rebuild that
+    068 performs — data intact, opportunity_id flips to NULLABLE, and a NULL insert
+    that the pre-068 NOT-NULL constraint REJECTED now succeeds.
+    """
+    conn = _make_conn()
+    # 1. Bring the schema up to 067 (the verified single head BEFORE 068).
+    _apply_migrations_through(conn, 67)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 67
+
+    # Pre-068, opportunity_id is NOT NULL.
+    pre = {
+        r[1]: r for r in conn.execute(
+            "PRAGMA table_info(relay_opportunity_feedback)"
+        ).fetchall()
+    }
+    assert pre["opportunity_id"][3] == 1, "pre-068 opportunity_id must be NOT NULL"
+
+    # 2. Seed a REAL populated feed-sourced thumb (the full FK chain to an
+    #    opportunity row + a suggestion row).
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute("INSERT INTO relay_clients (org_id) VALUES ('tig')")
+    conn.execute("INSERT INTO relay_members (display_name) VALUES ('flagger')")
+    flagger_id = conn.execute(
+        "SELECT id FROM relay_members WHERE display_name='flagger'"
+    ).fetchone()["id"]
+    # relay_reply_opportunities.tweet_id FK -> relay_tweets.id (integer PK), NOT NULL.
+    conn.execute(
+        "INSERT INTO relay_tweets (x_id, x_author_handle, text) "
+        "VALUES ('111', 'someone', 'feed-sourced tweet')"
+    )
+    tweet_id = conn.execute(
+        "SELECT id FROM relay_tweets WHERE x_id='111'"
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO relay_reply_opportunities (org_id, tweet_id, flagger_id, origin) "
+        "VALUES ('tig', ?, ?, 'explicit_command')",
+        (tweet_id, flagger_id),
+    )
+    opp_id = conn.execute(
+        "SELECT id FROM relay_reply_opportunities WHERE tweet_id=?",
+        (tweet_id,),
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO reply_suggestions "
+        "(id, operator_handle, org_id, source_tweet_id, variants_json) "
+        "VALUES ('sug-pre68', '@arf', 'tig', '111', '[{\"text\":\"hi\"}]')"
+    )
+    conn.execute(
+        "INSERT INTO relay_opportunity_feedback "
+        "(opportunity_id, suggestion_id, rater_handle, rater_role, thumb) "
+        "VALUES (?, 'sug-pre68', '@arf', 'operator', 1)",
+        (opp_id,),
+    )
+    conn.commit()
+
+    # Pre-068, a NULL opportunity_id insert is REJECTED by the NOT NULL constraint.
+    import pytest
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO relay_opportunity_feedback "
+            "(opportunity_id, suggestion_id, rater_handle, rater_role, thumb) "
+            "VALUES (NULL, 'sug-pre68', '@arf', 'operator', -1)"
+        )
+    conn.rollback()  # discard the failed-insert txn before applying 068
+
+    # 3. Apply 068 (the leaf-table rebuild) on the POPULATED table.
+    _apply_migrations_through(conn, 68)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 68
+
+    # 4a. opportunity_id is now NULLABLE.
+    post = {
+        r[1]: r for r in conn.execute(
+            "PRAGMA table_info(relay_opportunity_feedback)"
+        ).fetchall()
+    }
+    assert post["opportunity_id"][3] == 0, "068 must flip opportunity_id to NULLABLE"
+
+    # 4b. The seeded feed-sourced thumb survived the rebuild intact.
+    seeded = conn.execute(
+        "SELECT opportunity_id, suggestion_id, rater_handle, rater_role, thumb "
+        "FROM relay_opportunity_feedback WHERE suggestion_id = 'sug-pre68'"
+    ).fetchone()
+    assert seeded is not None, "the seeded feedback row was lost across the 068 rebuild"
+    assert seeded["opportunity_id"] == opp_id
+    assert seeded["rater_role"] == "operator"
+    assert seeded["thumb"] == 1
+
+    # 4c. The previously-rejected NULL-opportunity insert now SUCCEEDS.
+    conn.execute(
+        "INSERT INTO relay_opportunity_feedback "
+        "(opportunity_id, suggestion_id, rater_handle, rater_role, thumb) "
+        "VALUES (NULL, 'sug-pre68', '@arf', 'operator', -1)"
+    )
+    conn.commit()
+    assert conn.execute(
+        "SELECT COUNT(*) AS n FROM relay_opportunity_feedback "
+        "WHERE opportunity_id IS NULL"
+    ).fetchone()["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Migration 069 — reply_outcomes.detected_via (auto-detect vs operator Mark-posted
+# provenance). Additive ADD COLUMN, nullable; legacy rows stay NULL.
+# ---------------------------------------------------------------------------
+
+def test_migration_069_detected_via_on_fresh_db():
+    """Migration 069: reply_outcomes gains a NULLABLE detected_via column; a posted
+    reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 75
+
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
+    assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
+    assert cols["detected_via"][3] == 0, "detected_via must be NULLABLE (notnull flag 0)"
+
+    # Parent suggestion (FK target) + an auto-detected outcome + a legacy outcome.
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute(
+        "INSERT INTO reply_suggestions "
+        "(id, operator_handle, org_id, source_tweet_id, variants_json) "
+        "VALUES ('sug-69', '@CahitArf11', 'tig', '777', '[{\"text\":\"gm\"}]')"
+    )
+    conn.execute(
+        "INSERT INTO reply_outcomes (id, suggestion_id, posted_tweet_id, detected_via) "
+        "VALUES ('out-69a', 'sug-69', '888', 'auto')"
+    )
+    conn.execute(
+        "INSERT INTO reply_outcomes (id, suggestion_id, posted_tweet_id) "
+        "VALUES ('out-69b', 'sug-69', '889')"
+    )
+    conn.commit()
+
+    rows = {
+        r[0]: r[1] for r in conn.execute(
+            "SELECT posted_tweet_id, detected_via FROM reply_outcomes WHERE suggestion_id='sug-69'"
+        ).fetchall()
+    }
+    assert rows["888"] == "auto"
+    assert rows["889"] is None  # legacy / un-stamped
+
+
+def test_migration_069_partial_apply_reaches_69():
+    """Applying through 069 lands at version 69 with the column present."""
+    conn = _make_conn()
+    _apply_migrations_through(conn, 69)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 69
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
+    assert "detected_via" in cols

@@ -355,6 +355,13 @@ def _notify_and_send(ctx) -> StepResult:
     if ctx.config.get("dry_run"):
         return StepResult("completed", {"sent": False, "reason": "dry_run"})
 
+    # Entitlement gate (ONBOARDING_PHASE2_PLAN.md P2) — dormant + fail-open: with
+    # ENTITLEMENT_ENFORCEMENT off (default) or an un-onboarded org this is a no-op.
+    from sable_platform.db.entitlements import has_entitlement
+
+    if not has_entitlement(ctx.db, ctx.org_id, "checkin"):
+        return StepResult("completed", {"sent": False, "reason": "not_entitled"})
+
     enabled, chat_id = _read_org_checkin_config(ctx)
     if not enabled:
         return StepResult("completed", {"sent": False, "reason": "checkin_disabled"})

@@ -83,6 +83,17 @@ _MIGRATIONS = [
     ("062_reply_opportunity_feed.sql", 62),
     ("063_reply_learning.sql", 63),
     ("064_relay_trending_stories.sql", 64),
+    ("065_relay_quality_corpus.sql", 65),
+    ("066_media_rec_center.sql", 66),
+    ("067_community_audit.sql", 67),
+    ("068_make_opportunity_feedback_optional.sql", 68),
+    ("069_reply_outcomes_detected_via.sql", 69),
+    ("070_community_audit_leads.sql", 70),
+    ("071_relay_topic_suggestions.sql", 71),
+    ("072_relay_topic_picks.sql", 72),
+    ("073_client_onboarding.sql", 73),
+    ("074_tweetbank.sql", 74),
+    ("075_allowlist_entries.sql", 75),
 ]
 
 

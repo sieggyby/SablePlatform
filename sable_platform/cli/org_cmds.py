@@ -103,10 +103,6 @@ def org_reject(prospect_project_id: str, reason: str | None) -> None:
         conn.close()
 
 
-_VALID_SECTORS = {"DeFi", "DeSci", "Gaming", "Infrastructure", "L1/L2", "Social", "DAO", "NFT", "AI", "Other"}
-_VALID_STAGES = {"pre_launch", "launch", "growth", "mature", "declining"}
-
-
 @org.group("config")
 def org_config() -> None:
     """Read and write per-org configuration (sector, stage, thresholds)."""
@@ -119,67 +115,25 @@ def org_config() -> None:
 def org_config_set(org_id: str, key: str, value: str) -> None:
     """Set a config key for an org.
 
-    Merges KEY=VALUE into config_json. Validates sector and stage values.
+    Merges KEY=VALUE into config_json. Validates sector/stage enums + numeric ranges via
+    the SHARED validator (`sable_platform.db.orgs.set_org_config`) — the same one
+    `onboard apply` uses, so the two never drift.
 
     Examples:
       sable-platform org config set tig sector DeFi
       sable-platform org config set tig stage growth
       sable-platform org config set tig max_ai_usd_per_org_per_week 10.0
     """
-    if key == "sector" and value not in _VALID_SECTORS:
-        click.echo(f"Invalid sector '{value}'. Valid: {', '.join(sorted(_VALID_SECTORS))}", err=True)
-        sys.exit(1)
-    if key == "stage" and value not in _VALID_STAGES:
-        click.echo(f"Invalid stage '{value}'. Valid: {', '.join(sorted(_VALID_STAGES))}", err=True)
-        sys.exit(1)
-
-    # Coerce numeric strings to float for known numeric keys
-    _NUMERIC_KEYS = {"max_ai_usd_per_org_per_week", "tracking_stale_days",
-                     "discord_pulse_stale_days", "stuck_run_threshold_hours",
-                     "decay_warning_threshold", "decay_critical_threshold",
-                     "bridge_centrality_threshold", "bridge_decay_threshold",
-                     "discord_pulse_regression_threshold"}
-    _NUMERIC_RANGES: dict[str, tuple[float, float]] = {
-        "tracking_stale_days": (1, 365),
-        "discord_pulse_stale_days": (1, 365),
-        "stuck_run_threshold_hours": (0.5, 168),
-        "decay_warning_threshold": (0.0, 1.0),
-        "decay_critical_threshold": (0.0, 1.0),
-        "bridge_centrality_threshold": (0.0, 1.0),
-        "bridge_decay_threshold": (0.0, 1.0),
-        "discord_pulse_regression_threshold": (0.0, 1.0),
-        "max_ai_usd_per_org_per_week": (0.0, 10000.0),
-    }
-    parsed_value: str | float = value
-    if key in _NUMERIC_KEYS:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.echo(f"Key '{key}' expects a numeric value.", err=True)
-            sys.exit(1)
-        if key in _NUMERIC_RANGES:
-            lo, hi = _NUMERIC_RANGES[key]
-            if not (lo <= parsed_value <= hi):
-                click.echo(
-                    f"Value {parsed_value} out of range for '{key}' "
-                    f"(must be {lo}–{hi}).", err=True,
-                )
-                sys.exit(1)
+    from sable_platform.db.orgs import set_org_config
 
     conn = get_db()
     try:
-        row = conn.execute("SELECT config_json FROM orgs WHERE org_id=?", (org_id,)).fetchone()
-        if not row:
-            click.echo(f"Org '{org_id}' not found.", err=True)
-            sys.exit(1)
-        cfg: dict = json.loads(row["config_json"]) if row["config_json"] else {}
-        cfg[key] = parsed_value
-        conn.execute(
-            "UPDATE orgs SET config_json=? WHERE org_id=?",
-            (json.dumps(cfg), org_id),
-        )
-        conn.commit()
+        parsed_value = set_org_config(conn, org_id, key, value)
         click.echo(f"Set {org_id}.{key} = {parsed_value!r}")
+    except ValueError as e:
+        # validation failure OR org-not-found (both raised by set_org_config)
+        click.echo(f"{e}", err=True)
+        sys.exit(1)
     except SableError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

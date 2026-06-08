@@ -3069,7 +3069,13 @@ def list_due_sweep_orgs(
         ),
         {"hb_cutoff": hb_cutoff, "one_hour_ago": one_hour_ago},
     ).fetchall()
-    return [r[0] for r in rows]
+    # Entitlement gate (ONBOARDING_PHASE2_PLAN.md P2) — a PURE post-filter over the already-
+    # selected orgs (the SQL above is untouched). With ENTITLEMENT_ENFORCEMENT off (default)
+    # this returns the list verbatim, so the default result set is unchanged. Covers BOTH
+    # Slopper sweep callers transitively. Fail-open per has_entitlement.
+    from sable_platform.db.entitlements import filter_entitled
+
+    return filter_entitled(conn, [r[0] for r in rows], "reply_assist")
 
 
 # ------------------------------------------------------------------
@@ -3808,3 +3814,127 @@ def decay_trending_stories(conn: Connection, org_id: str, *, now: str | None = N
         {"org_id": org_id, "now": now},
     )
     return result.rowcount if result.rowcount is not None else 0
+
+
+# ---------------------------------------------------------------------------
+# Tweet Assist Compose -- topic-suggestion cache (mig 071)
+# ---------------------------------------------------------------------------
+
+def get_topic_suggestions(conn: Connection, org_id: str) -> dict | None:
+    """Return the org's CURRENT cached compose topic suggestions row, or None.
+
+    Read-only. Served to the compose UI via GET /compose/topics and read by the
+    refresh job to check cadence. ``topics_json`` is a raw JSON string the caller
+    json.loads -- a list of ``{topic, angle, register_band, why, sources}``. There
+    is NO cost column. One current row per org (the refresh delete-then-inserts), so
+    this returns the most-recent by ``refreshed_at``.
+    """
+    row = conn.execute(
+        text(
+            "SELECT id, org_id, topics_json, model, refreshed_at, created_at "
+            "FROM relay_topic_suggestions "
+            "WHERE org_id = :org_id "
+            "ORDER BY refreshed_at DESC, id DESC LIMIT 1"
+        ),
+        {"org_id": org_id},
+    ).fetchone()
+    return dict(row._mapping) if row is not None else None
+
+
+def replace_topic_suggestions(
+    conn: Connection,
+    *,
+    org_id: str,
+    topics_json: str,
+    model: str | None = None,
+    now: str | None = None,
+) -> int:
+    """Replace the org's cached topic suggestions with a fresh synthesis; return id.
+
+    ONE current row per org: DELETE any existing rows for the org then INSERT the new
+    one (app-level upsert, no DB UNIQUE -- mirrors the relay-cache convention).
+    ``topics_json`` is an already-encoded JSON string (a list of
+    ``{topic, angle, register_band, why, sources}``). The caller MUST be inside an
+    ``immediate_txn`` (this writes). NO cost is stored here (cost lives only in
+    cost_events, tag relay_compose.topics).
+    """
+    now = now or _utc_now_iso()
+    conn.execute(
+        text("DELETE FROM relay_topic_suggestions WHERE org_id = :org_id"),
+        {"org_id": org_id},
+    )
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_topic_suggestions "
+            "  (org_id, topics_json, model, refreshed_at, created_at) "
+            "VALUES (:org_id, :topics_json, :model, :now, :now) "
+            "RETURNING id"
+        ),
+        {"org_id": org_id, "topics_json": topics_json, "model": model, "now": now},
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def record_topic_pick(
+    conn: Connection,
+    *,
+    org_id: str,
+    topic: str,
+    register_band: str | None = None,
+    operator_handle: str | None = None,
+    now: str | None = None,
+) -> int:
+    """Append a suggested-topic chip pick to the feedback log (mig 072); return the id.
+
+    A USAGE SIGNAL — which themes operators actually compose from — read by the weekly
+    topic synthesis (:func:`recent_topic_picks`) to steer the next batch. Append-only:
+    NO dedup (a repeat pick is itself signal). The caller MUST be inside an
+    ``immediate_txn`` (this writes). NO cost is stored here. (SableWeb writes this table
+    directly via its own db-write layer on a chip click; this helper is the SP-side
+    writer used by Slopper/SP callers + tests, mirroring the media-rec-event pattern.)
+    """
+    now = now or _utc_now_iso()
+    row = conn.execute(
+        text(
+            "INSERT INTO relay_topic_picks "
+            "  (org_id, topic, register_band, operator_handle, picked_at) "
+            "VALUES (:org_id, :topic, :register_band, :operator_handle, :now) "
+            "RETURNING id"
+        ),
+        {
+            "org_id": org_id,
+            "topic": topic,
+            "register_band": register_band,
+            "operator_handle": operator_handle,
+            "now": now,
+        },
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def recent_topic_picks(
+    conn: Connection, org_id: str, *, days: int = 30, limit: int = 20
+) -> list[dict]:
+    """Recent suggested-topic picks for an org — the synthesis STEERING signal (mig 072).
+
+    Read-only, ORG-SCOPED, transaction-free. Returns the most-recent picks
+    (``{topic, register_band, picked_at}``) within ``days``, newest first, capped at
+    ``limit``. NO cost column. The weekly topic synthesis folds these into its prompt so
+    it favors themes operators actually act on (it does NOT trigger a refresh on its own —
+    picks steer, they are not a fresh content signal).
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=max(0, int(days)))
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        text(
+            "SELECT topic, register_band, picked_at "
+            "FROM relay_topic_picks "
+            "WHERE org_id = :org_id "
+            "  AND picked_at >= :cutoff "
+            "ORDER BY picked_at DESC, id DESC "
+            "LIMIT :limit"
+        ),
+        {"org_id": org_id, "cutoff": cutoff, "limit": int(limit)},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
