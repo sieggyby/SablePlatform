@@ -40,6 +40,13 @@ def has_entitlement(conn, org_id: str, service_key: str) -> bool:
             return True  # un-/de-onboarded org (0 active rows) → allow (can't break a live client)
         return any(r["service_key"] == service_key for r in active)
     except Exception:
+        # Fail-open AND clear a poisoned transaction (T2-3): on Postgres a failed SELECT
+        # leaves `conn` in InFailedSqlTransaction, which would cascade to every later query
+        # on the same conn (e.g. the rest of a sweep). Roll back best-effort before allowing.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         log.exception(
             "has_entitlement check failed for org=%r sku=%r; allowing (fail-open)", org_id, service_key
         )

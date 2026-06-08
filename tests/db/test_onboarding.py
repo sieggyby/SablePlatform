@@ -53,6 +53,20 @@ def test_upsert_client_org_activate_and_coalesce_handles(in_memory_db):
     assert row2[0] == "active" and row2[1] == "@acme"
 
 
+def test_upsert_client_org_never_overwrites_an_existing_handle(in_memory_db):
+    # audit T1-A: the registry projection FILLS a null handle but must NEVER overwrite a
+    # handle a live org already has (e.g. apply must not flip RobotMoneyAgent -> @RobotMoneyAgent).
+    upsert_client_org(in_memory_db, org_id="rm", display_name="RM", status="active",
+                      twitter_handle="RobotMoneyAgent")  # live handle, no discord
+    upsert_client_org(in_memory_db, org_id="rm", display_name="RM", status="active",
+                      twitter_handle="@RobotMoneyAgent", discord_server_id="999")  # apply projects different
+    row = in_memory_db.execute(
+        text("SELECT twitter_handle, discord_server_id FROM orgs WHERE org_id = 'rm'")
+    ).fetchone()
+    assert row[0] == "RobotMoneyAgent"  # existing handle PRESERVED, not clobbered
+    assert row[1] == "999"  # but a NULL handle still gets filled
+
+
 def test_upsert_client_org_flips_existing_prospect_to_client(in_memory_db):
     upsert_prospect_org(in_memory_db, org_id="p1", display_name="P1")  # prospect + $0.50 cap
     upsert_client_org(in_memory_db, org_id="p1", display_name="P1", status="active")

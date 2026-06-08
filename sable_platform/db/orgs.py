@@ -183,9 +183,11 @@ def upsert_client_org(
         the operator-set status) — so ``apply`` passes ``'active'`` to go live, while a
         re-run of ``init`` (status=None) never deactivates an already-live org.
 
-    ``twitter_handle``/``discord_server_id`` are COALESCE'd (only overwrite when
-    non-NULL — projected from the canonical ``client_accounts`` rows by ``apply``).
-    Commits.
+    ``twitter_handle``/``discord_server_id`` are FILL-ONLY on an existing row
+    (``COALESCE(existing, :new)``) — the registry projection FILLS a NULL handle but
+    NEVER overwrites a handle a live org already has (audit T1-A: prevents ``apply`` from
+    silently flipping e.g. ``RobotMoneyAgent`` -> ``@RobotMoneyAgent``). To deliberately
+    change a set handle, use ``onboard set``/``org`` explicitly. Commits.
     """
     row = conn.execute(
         text("SELECT config_json FROM orgs WHERE org_id = :org_id"),
@@ -236,8 +238,9 @@ def upsert_client_org(
             "UPDATE orgs SET "
             "  display_name = :display_name, "
             "  status = COALESCE(:status, status), "
-            "  twitter_handle = COALESCE(:twitter_handle, twitter_handle), "
-            "  discord_server_id = COALESCE(:discord_server_id, discord_server_id), "
+            # FILL-ONLY: keep an existing non-NULL handle; only fill a NULL one (audit T1-A).
+            "  twitter_handle = COALESCE(twitter_handle, :twitter_handle), "
+            "  discord_server_id = COALESCE(discord_server_id, :discord_server_id), "
             "  config_json = :config_json, "
             "  updated_at = CURRENT_TIMESTAMP "
             "WHERE org_id = :org_id"

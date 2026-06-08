@@ -14,6 +14,22 @@ cross-repo bits that need a redeploy.
 
 ---
 
+## ⚠️ Onboarding an EXISTING live client (e.g. TIG, RobotMoney) — populate-only
+
+For an org that is ALREADY active and serving (not a fresh prospect), use the **populate-only**
+path and do NOT run `apply`/`init`/`activate`:
+- ✅ SAFE (writes only the new mig-073 tables, never the live `orgs` row): `scripts/backfill_intake.py`,
+  `onboard service add`, `onboard account add`, `onboard doc add`, `onboard set <intake-field>`,
+  `onboard status`.
+- ⛔ AVOID on a live org: `onboard apply` (writes the live `orgs` row — projects handles, can flip
+  `checkin_enabled`, stamps `org_type:'client'`, sets `manifest_status='applied'`), `onboard init`
+  (intended for a NEW org; would re-stamp `display_name`), `onboard activate` (no-op on an active org).
+  Handles are now FILL-ONLY (apply can't overwrite a set handle — audit T1-A), but the other writes
+  still mutate shared live config. If you must reconcile, run `onboard apply --dry-run` first and diff.
+- **Entitlement caveat:** adding `org_entitlements` rows is inert today (`ENTITLEMENT_ENFORCEMENT`
+  unset) but it REMOVES the "0-rows → always allow" airbag for that org — so before EVER flipping the
+  flag, declare the COMPLETE in-use service set per org and run `entitlements preflight` to "no gaps."
+
 ## A. New client go-live
 
 ```bash
