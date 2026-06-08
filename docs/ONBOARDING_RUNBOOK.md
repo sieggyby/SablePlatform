@@ -20,7 +20,9 @@ For an org that is ALREADY active and serving (not a fresh prospect), use the **
 path and do NOT run `apply`/`init`/`activate`:
 - ✅ SAFE (writes only the new mig-073 tables, never the live `orgs` row): `scripts/backfill_intake.py`,
   `onboard service add`, `onboard account add`, `onboard doc add`, `onboard set <intake-field>`,
-  `onboard status`.
+  `onboard status`. ⚠️ NB: `onboard set` is dual-purpose — `set <intake-field>` (email/telegram/
+  website/notes) is safe, but `set <config-field>` (sector/stage/cost-cap/checkin_enabled) writes
+  the live `orgs.config_json` (validated merge, additive — but it IS a live-row write).
 - ⛔ AVOID on a live org: `onboard apply` (writes the live `orgs` row — projects handles, can flip
   `checkin_enabled`, stamps `org_type:'client'`, sets `manifest_status='applied'`), `onboard init`
   (intended for a NEW org; would re-stamp `display_name`), `onboard activate` (no-op on an active org).
