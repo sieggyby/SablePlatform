@@ -94,6 +94,7 @@ _MIGRATIONS = [
     ("073_client_onboarding.sql", 73),
     ("074_tweetbank.sql", 74),
     ("075_allowlist_entries.sql", 75),
+    ("076_content_deck.sql", 76),
 ]
 
 

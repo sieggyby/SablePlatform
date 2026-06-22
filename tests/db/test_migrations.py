@@ -115,6 +115,8 @@ EXPECTED_TABLES = {
     # Migration 066: media recommendation center (3 new tables; the additive
     # reply_outcomes.media_content_id column is asserted by test_migration_066_*).
     "media_rec_events", "media_quality", "media_embeddings",
+    # Migration 076: Content Deck candidate substrate
+    "content_candidates", "content_deck_decisions", "content_deck_operator_state",
 }
 
 
@@ -164,7 +166,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 75
+    assert row["version"] == 76
 
 
 def test_all_tables_exist():
@@ -183,7 +185,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 75
+    assert row["version"] == 76
 
 
 def test_workflow_tables_columns():
@@ -1297,7 +1299,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 75
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 76
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1474,7 +1476,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 75
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 76
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"

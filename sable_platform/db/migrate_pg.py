@@ -226,6 +226,13 @@ TABLE_LOAD_ORDER: list[str] = [
     "tweetbank_entries",                 # FK -> orgs (Integer autoincrement PK)
     # Migration 075: DB-backed allowlist. No FK (auth table). TEXT PK (NOT-NULL -> no _TEXT_PK_COLUMNS).
     "allowlist_entries",                 # no FK (TEXT PK)
+    # Migration 076: Content Deck candidate substrate. The PARENT (content_candidates) must
+    # precede BOTH children: content_deck_operator_state has a hard FK -> content_candidates;
+    # content_deck_decisions has NO FK to candidates (no-FK learning-join so Elo survives purge)
+    # but stays after the parent by convention. All org_id FKs -> orgs (precedes this block).
+    "content_candidates",                # FK -> orgs (Integer autoincrement PK)
+    "content_deck_decisions",            # FK -> orgs (Integer autoincrement PK; no FK to candidates)
+    "content_deck_operator_state",       # FK -> content_candidates (composite PK, no sequence)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -341,6 +348,11 @@ SEQUENCE_TABLES: dict[str, str] = {
     "org_entitlements": "id",
     # Migration 074: Tweet Assist tweetbank.
     "tweetbank_entries": "id",
+    # Migration 076: Content Deck. content_candidates + content_deck_decisions have Integer
+    # autoincrement id PKs; content_deck_operator_state is composite-PK (candidate_id,
+    # operator_handle) and has NO sequence.
+    "content_candidates": "id",
+    "content_deck_decisions": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

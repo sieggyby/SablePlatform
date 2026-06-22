@@ -2872,3 +2872,82 @@ allowlist_entries = Table(
     ),
     CheckConstraint("email = lower(email)", name="ck_allowlist_entries_email_lower"),
 )
+
+# ------------------------------------------------------------------
+# Migration 076 — Content Deck candidate substrate (mirrors 076_content_deck.sql)
+# ------------------------------------------------------------------
+# The durable home for the ambient generate->swipe->schedule loop. org_id is the scope wall
+# (FK -> orgs, NOT relay_clients -- producers work for any org). content_deck_decisions is a
+# NO-FK learning-join on candidate_id so the Elo/keep signal survives a candidate soft-expiry/
+# purge; content_deck_operator_state cascades on a candidate hard-delete. No cost column, ever.
+content_candidates = Table(
+    "content_candidates",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("target_handle", Text),
+    Column("payload_json", Text, nullable=False),
+    Column("media_content_id", Text),
+    Column("source", Text, nullable=False),
+    Column("score", Float),
+    Column("score_reason", Text),
+    Column("tell_score", Float),
+    Column("dedupe_key", Text),
+    Column("expires_at", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "kind IN ('clip','tweet','thread','quote_card','meme','copypasta')",
+        name="ck_content_candidates_kind",
+    ),
+    CheckConstraint(
+        "status IN ('pending','kept','scheduled','posted','rejected','expired')",
+        name="ck_content_candidates_status",
+    ),
+    Index("content_candidates_by_org_status", "org_id", "status", "score"),
+    Index("content_candidates_by_dedupe", "org_id", "dedupe_key"),
+)
+
+content_deck_decisions = Table(
+    "content_deck_decisions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("candidate_id", Integer, nullable=False),  # no-FK learning-join (survives candidate purge)
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("actor", Text, nullable=False),
+    Column("actor_kind", Text, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("surface", Text, nullable=False),
+    Column("pair_loser_id", Integer),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "actor_kind IN ('operator','community')", name="ck_content_deck_decisions_actor_kind"
+    ),
+    CheckConstraint(
+        "decision IN ('keep','reject','skip','schedule','post')",
+        name="ck_content_deck_decisions_decision",
+    ),
+    CheckConstraint("surface IN ('web','discord')", name="ck_content_deck_decisions_surface"),
+    Index("content_deck_decisions_by_candidate", "org_id", "candidate_id"),
+    Index("content_deck_decisions_by_actor", "org_id", "actor", "created_at"),
+)
+
+content_deck_operator_state = Table(
+    "content_deck_operator_state",
+    metadata,
+    Column(
+        "candidate_id",
+        Integer,
+        ForeignKey("content_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("operator_handle", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("snooze_until", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("candidate_id", "operator_handle"),
+    CheckConstraint(
+        "state IN ('dismissed','snoozed')", name="ck_content_deck_operator_state_state"
+    ),
+)
