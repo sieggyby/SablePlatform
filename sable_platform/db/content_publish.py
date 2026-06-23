@@ -56,6 +56,18 @@ def get_publish_job(conn: Connection, job_id: int) -> dict | None:
     return dict(row._mapping) if row is not None else None
 
 
+def _candidate_status(conn: Connection, candidate_id: int, org_id: str) -> str | None:
+    """The candidate's CURRENT status (org-scoped), or None. The post-claim liveness gate: a
+    candidate rejected AFTER its job was claimed is no longer 'scheduled' (the claim-due cancel
+    only covers the still-'scheduled' window), so hand-off/post must re-check it to avoid a
+    job=posted / candidate=rejected status split (review M1)."""
+    row = conn.execute(
+        _sa_text("SELECT status FROM content_candidates WHERE id = :id AND org_id = :org"),
+        {"id": int(candidate_id), "org": org_id},
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
 def schedule_candidate(
     conn: Connection,
     *,
@@ -91,7 +103,11 @@ def schedule_candidate(
         ),
         {"cid": int(candidate_id), "org": org_id, "th": target_handle, "pa": publish_at, "now": now},
     ).fetchone()
-    return int(row[0]) if row is not None else None
+    if row is None:
+        # INSERT...RETURNING must yield a row; a None here would commit an orphaned 'scheduled'
+        # candidate (no job, un-reschedulable, un-cancelable). Fail hard so the txn rolls back (L2).
+        raise RuntimeError("schedule_candidate: INSERT ... RETURNING id yielded no row")
+    return int(row[0])
 
 
 def claim_due_jobs(conn: Connection, *, now: str | None = None, limit: int = 50) -> list[dict]:
@@ -141,7 +157,14 @@ def claim_due_jobs(conn: Connection, *, now: str | None = None, limit: int = 50)
 
 def mark_handed_off(conn: Connection, *, job_id: int, org_id: str, now: str | None = None) -> bool:
     """Operator opened the composeUrl hand-off: release_state 'due' -> 'handed_off'. Org-scoped +
-    conditional (only its own 'due' state). Returns whether a row changed. Caller in immediate_txn."""
+    conditional (only its own 'due' state). REFUSES if the candidate is no longer 'scheduled' (e.g.
+    rejected after the job was claimed -- review M1: never hand off a killed candidate). Returns
+    whether a row changed. Caller in immediate_txn."""
+    job = get_publish_job(conn, job_id)
+    if job is None or job["org_id"] != org_id:
+        return False
+    if _candidate_status(conn, int(job["candidate_id"]), org_id) != "scheduled":
+        return False
     now = now or _utc_now_iso()
     res = conn.execute(
         _sa_text(
@@ -166,6 +189,10 @@ def mark_posted(
     job = get_publish_job(conn, job_id)
     if job is None or job["org_id"] != org_id:
         return False
+    # Fail closed if the candidate is no longer 'scheduled' (e.g. rejected after the job was claimed)
+    # -- never post into a job whose candidate was killed (review M1: avoid a posted/rejected split).
+    if _candidate_status(conn, int(job["candidate_id"]), org_id) != "scheduled":
+        return False
     now = now or _utc_now_iso()
     res = conn.execute(
         _sa_text(
@@ -177,6 +204,8 @@ def mark_posted(
     )
     if (res.rowcount or 0) == 0:
         return False
+    # The candidate was verified 'scheduled' above and we are in the caller's serialized
+    # immediate_txn, so this conditional flip is guaranteed to land (no silent divergence).
     set_candidate_status(
         conn, candidate_id=int(job["candidate_id"]), org_id=org_id,
         status="posted", expected_status="scheduled",
