@@ -155,17 +155,22 @@ def list_deck_candidates(
 
 
 def set_candidate_status(
-    conn: Connection, *, candidate_id: int, org_id: str, status: str
+    conn: Connection, *, candidate_id: int, org_id: str, status: str,
+    expected_status: str | None = None,
 ) -> bool:
     """Org-scoped status flip (kept/scheduled/posted/rejected). Returns whether a row changed.
     Org-scoped in the WHERE so a wrong-org id is a no-op (the caller still pre-checks via
-    get_candidate_org for a hard 403). The caller MUST be in an immediate_txn."""
+    get_candidate_org for a hard 403). When ``expected_status`` is given the flip is CONDITIONAL
+    (``AND status = :expected``) — e.g. the keep-render revert passes ``expected_status='kept'``
+    so it only ever undoes ITS OWN claim and can't clobber a concurrent legitimate transition.
+    The caller MUST be in an immediate_txn."""
+    where = "WHERE id = :id AND org_id = :org"
+    params: dict = {"status": status, "id": int(candidate_id), "org": org_id}
+    if expected_status is not None:
+        where += " AND status = :expected"
+        params["expected"] = expected_status
     result = conn.execute(
-        _sa_text(
-            "UPDATE content_candidates SET status = :status "
-            "WHERE id = :id AND org_id = :org"
-        ),
-        {"status": status, "id": int(candidate_id), "org": org_id},
+        _sa_text(f"UPDATE content_candidates SET status = :status {where}"), params,
     )
     return (result.rowcount or 0) > 0
 
@@ -186,6 +191,23 @@ def set_candidate_media(
     result = conn.execute(
         _sa_text(f"UPDATE content_candidates SET {sets} WHERE id = :id AND org_id = :org"),
         params,
+    )
+    return (result.rowcount or 0) > 0
+
+
+def claim_pending_candidate(conn: Connection, *, candidate_id: int, org_id: str,
+                            claimed_status: str = "kept") -> bool:
+    """Single-flight CLAIM for keep-time render: atomically move a candidate from 'pending' to
+    ``claimed_status`` ('kept'). Only the FIRST concurrent request wins — a second sees a
+    non-'pending' status and gets rowcount 0. Org-scoped (wrong-org id is a no-op). Returns
+    whether THIS call won the claim. The keep handler reverts to 'pending' if the (paid) render
+    then fails, so a lost render is retryable. Caller MUST be in an immediate_txn."""
+    result = conn.execute(
+        _sa_text(
+            "UPDATE content_candidates SET status = :claimed "
+            "WHERE id = :id AND org_id = :org AND status = 'pending'"
+        ),
+        {"claimed": claimed_status, "id": int(candidate_id), "org": org_id},
     )
     return (result.rowcount or 0) > 0
 

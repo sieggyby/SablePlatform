@@ -76,6 +76,45 @@ def test_set_candidate_media_is_org_scoped(sa_conn):
     assert row["media_content_id"] is None and row["status"] == "pending"  # untouched
 
 
+def test_claim_pending_candidate_single_flight(sa_conn):
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, kind="meme")
+    # first claim WINS (pending -> kept)
+    with immediate_txn(sa_conn):
+        assert cd.claim_pending_candidate(sa_conn, candidate_id=cid, org_id="orgA") is True
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"
+    # second claim LOSES (no longer pending)
+    with immediate_txn(sa_conn):
+        assert cd.claim_pending_candidate(sa_conn, candidate_id=cid, org_id="orgA") is False
+
+
+def test_claim_pending_candidate_is_org_scoped(sa_conn):
+    _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, org="orgA", kind="meme")
+    with immediate_txn(sa_conn):
+        assert cd.claim_pending_candidate(sa_conn, candidate_id=cid, org_id="orgB") is False
+    assert cd.get_candidate(sa_conn, cid)["status"] == "pending"  # wrong-org no-op
+
+
+def test_set_candidate_status_expected_status_guard(sa_conn):
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, kind="meme")
+        cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA", status="kept")
+    # guarded revert undoes ONLY when currently 'kept' (the keep-render revert)
+    with immediate_txn(sa_conn):
+        assert cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
+                                       status="pending", expected_status="kept") is True
+    assert cd.get_candidate(sa_conn, cid)["status"] == "pending"
+    # a guarded flip when NOT in the expected status is a no-op (can't clobber a concurrent move)
+    with immediate_txn(sa_conn):
+        assert cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
+                                       status="pending", expected_status="kept") is False
+    assert cd.get_candidate(sa_conn, cid)["status"] == "pending"
+
+
 # --- app-level dedup --------------------------------------------------------
 def test_dedup_pending_returns_same_id(sa_conn):
     _seed(sa_conn); sa_conn.commit()
