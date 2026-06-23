@@ -233,6 +233,9 @@ TABLE_LOAD_ORDER: list[str] = [
     "content_candidates",                # FK -> orgs (Integer autoincrement PK)
     "content_deck_decisions",            # FK -> orgs (Integer autoincrement PK; no FK to candidates)
     "content_deck_operator_state",       # FK -> content_candidates (composite PK, no sequence)
+    # Migration 077: Content Deck Phase 4 release substrate. FK -> content_candidates (ON DELETE
+    # CASCADE) + orgs, both precede this. Integer autoincrement PK -> also in SEQUENCE_TABLES.
+    "content_publish_jobs",              # FK -> content_candidates + orgs (Integer autoincrement PK)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -353,6 +356,8 @@ SEQUENCE_TABLES: dict[str, str] = {
     # operator_handle) and has NO sequence.
     "content_candidates": "id",
     "content_deck_decisions": "id",
+    # Migration 077: Content Deck Phase 4 release substrate (Integer autoincrement id PK).
+    "content_publish_jobs": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

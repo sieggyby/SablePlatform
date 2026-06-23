@@ -436,7 +436,7 @@ def test_sql_path_cascade_and_survive():
 
 def test_sql_path_reaches_version_76():
     raw = _sql_conn()
-    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 76
+    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 77
     raw.close()
 
 

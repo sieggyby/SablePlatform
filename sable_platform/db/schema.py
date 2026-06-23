@@ -2951,3 +2951,37 @@ content_deck_operator_state = Table(
         "state IN ('dismissed','snoozed')", name="ck_content_deck_operator_state_state"
     ),
 )
+
+# Migration 077: Content Deck Phase 4 release substrate. A kept candidate is scheduled into a
+# publish job; a claim-due worker flips it to 'due' at publish_at for OPERATOR hand-off (no
+# auto-send v1). release_state holds the worker lifecycle (the candidate status CHECK is not
+# overloaded). FK -> content_candidates ON DELETE CASCADE + orgs. No cost column.
+content_publish_jobs = Table(
+    "content_publish_jobs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "candidate_id",
+        Integer,
+        ForeignKey("content_candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("target_handle", Text, nullable=False),
+    Column("release_state", Text, nullable=False, server_default="scheduled"),
+    Column("publish_at", Text, nullable=False),
+    Column("next_attempt_at", Text),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("claimed_at", Text),
+    Column("handed_off_at", Text),
+    Column("posted_ref", Text),
+    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "release_state IN ('scheduled','due','claimed','handed_off','posted','canceled')",
+        name="ck_content_publish_jobs_release_state",
+    ),
+    Index("content_publish_jobs_by_org_state", "org_id", "release_state", "publish_at"),
+    Index("content_publish_jobs_due", "release_state", "publish_at"),
+    Index("content_publish_jobs_by_candidate", "candidate_id"),
+)

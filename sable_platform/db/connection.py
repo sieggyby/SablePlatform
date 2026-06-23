@@ -95,6 +95,7 @@ _MIGRATIONS = [
     ("074_tweetbank.sql", 74),
     ("075_allowlist_entries.sql", 75),
     ("076_content_deck.sql", 76),
+    ("077_content_publish_jobs.sql", 77),
 ]
 
 
