@@ -116,3 +116,67 @@ def check_budget(conn: Connection, org_id: str) -> tuple[float, float]:
             f"Org '{org_id}' weekly AI spend ${spend:.2f} exceeds cap ${cap:.2f}",
         )
     return spend, cap
+
+
+def get_daily_spend(
+    conn: Connection,
+    org_id: str,
+    *,
+    call_type: str | None = None,
+    now: datetime.datetime | None = None,
+) -> float:
+    """Total ``cost_usd`` for ``org_id`` in the current UTC calendar day, optionally filtered
+    to one ``call_type`` (e.g. ``'meme_image'``). ``now`` is injectable for tests. The finer,
+    same-day companion to ``get_weekly_spend`` — closes the "weekly-only" image-cap gap."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if now.tzinfo is None:  # treat a naive `now` as already-UTC (don't let astimezone() assume local)
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    day_start = now.astimezone(datetime.timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    day_end = day_start + datetime.timedelta(days=1)
+    fmt = "%Y-%m-%d %H:%M:%S"
+    sql = (
+        "SELECT COALESCE(SUM(cost_usd), 0.0) AS total"
+        " FROM cost_events"
+        " WHERE org_id = :org_id"
+        "   AND created_at >= :start"
+        "   AND created_at <  :end"
+    )
+    params = {"org_id": org_id, "start": day_start.strftime(fmt), "end": day_end.strftime(fmt)}
+    if call_type is not None:
+        sql += "   AND call_type = :ct"
+        params["ct"] = call_type
+    row = conn.execute(text(sql), params).fetchone()
+    return float(row[0])
+
+
+def get_org_image_daily_cap(conn: Connection, org_id: str) -> float:
+    """Per-org DAILY image-spend cap (``meme_image``). Resolution order mirrors
+    ``get_org_cost_cap``: ``orgs.config_json.max_image_usd_per_org_per_day`` >
+    platform ``cost_caps.max_image_usd_per_org_per_day`` > $2.00 default.
+
+    The default is deliberately BELOW the weekly AI-cap default ($5.00/week) so it actually
+    BINDS: daily image spend is a subset of weekly AI spend, so a day cap >= the weekly cap
+    would be a strict no-op (the weekly reserve would always refuse first). At $2/day a same-day
+    render loop is stopped at ~$2 instead of consuming the whole week's budget in one day. (The
+    ≤$20 A/B experiment is unaffected — it passes a per-instance override, not this default.)"""
+    row = conn.execute(
+        text("SELECT config_json FROM orgs WHERE org_id=:org_id"),
+        {"org_id": org_id},
+    ).fetchone()
+    if row:
+        try:
+            cfg = json.loads(row["config_json"] or "{}")
+            cap = cfg.get("max_image_usd_per_org_per_day")
+            if cap is not None:
+                return float(cap)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    platform_cfg = _read_platform_config()
+    return float(
+        platform_cfg.get("platform", {})
+        .get("cost_caps", {})
+        .get("max_image_usd_per_org_per_day", 2.00)
+    )
