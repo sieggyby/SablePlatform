@@ -170,6 +170,26 @@ def set_candidate_status(
     return (result.rowcount or 0) > 0
 
 
+def set_candidate_media(
+    conn: Connection, *, candidate_id: int, org_id: str,
+    media_content_id: str | None, status: str | None = None,
+) -> bool:
+    """Org-scoped: stamp the rendered media ref (the R2 ref) on a candidate, optionally flipping
+    ``status`` in the same write (e.g. 'kept'). Returns whether a row changed. Org-scoped in the
+    WHERE so a wrong-org id is a no-op (the caller still pre-checks via get_candidate_org for a
+    hard 403). The keep-time render handler is the writer. Caller MUST be in an immediate_txn."""
+    sets = "media_content_id = :media"
+    params: dict = {"media": media_content_id, "id": int(candidate_id), "org": org_id}
+    if status is not None:
+        sets += ", status = :status"
+        params["status"] = status
+    result = conn.execute(
+        _sa_text(f"UPDATE content_candidates SET {sets} WHERE id = :id AND org_id = :org"),
+        params,
+    )
+    return (result.rowcount or 0) > 0
+
+
 def expire_due_candidates(conn: Connection, *, org_id: str, now: str | None = None) -> int:
     """Soft-expire DUE candidates: flip ONLY status='pending' rows whose expires_at has
     passed to status='expired'. NEVER touches kept/scheduled/posted/rejected (round-3

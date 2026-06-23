@@ -51,6 +51,31 @@ def test_upsert_get_and_org(sa_conn):
     assert cd.get_candidate_org(sa_conn, 999999) is None  # fail-closed primitive
 
 
+def test_set_candidate_media_stamps_ref_and_status(sa_conn):
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, kind="meme", payload='{"template_id":"drake"}')
+    assert cd.get_candidate(sa_conn, cid)["media_content_id"] is None
+    with immediate_txn(sa_conn):
+        changed = cd.set_candidate_media(sa_conn, candidate_id=cid, org_id="orgA",
+                                         media_content_id="sable-orgA/m.png", status="kept")
+    assert changed is True
+    row = cd.get_candidate(sa_conn, cid)
+    assert row["media_content_id"] == "sable-orgA/m.png" and row["status"] == "kept"
+
+
+def test_set_candidate_media_is_org_scoped(sa_conn):
+    _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, org="orgA", kind="meme")
+    with immediate_txn(sa_conn):
+        changed = cd.set_candidate_media(sa_conn, candidate_id=cid, org_id="orgB",
+                                         media_content_id="x", status="kept")
+    assert changed is False  # wrong-org id is a no-op (the org wall)
+    row = cd.get_candidate(sa_conn, cid)
+    assert row["media_content_id"] is None and row["status"] == "pending"  # untouched
+
+
 # --- app-level dedup --------------------------------------------------------
 def test_dedup_pending_returns_same_id(sa_conn):
     _seed(sa_conn); sa_conn.commit()
