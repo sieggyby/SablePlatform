@@ -438,3 +438,90 @@ def test_sql_path_reaches_version_76():
     raw = _sql_conn()
     assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 76
     raw.close()
+
+
+# === list_deck_decisions (keep-rate readout) ================================
+def _decide(conn, cid, *, org="orgA", decision="keep", surface="web", now=None):
+    return cd.record_deck_decision(
+        conn, candidate_id=cid, org_id=org, actor="op", actor_kind="operator",
+        decision=decision, surface=surface, now=now,
+    )
+
+
+def test_list_deck_decisions_joins_payload_kind_score(sa_conn):
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, kind="meme", payload='{"template_id":"drake"}', score=7.0)
+        _decide(sa_conn, cid, decision="keep")
+    rows = cd.list_deck_decisions(sa_conn, "orgA")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["decision"] == "keep" and r["kind"] == "meme"
+    assert r["payload_json"] == '{"template_id":"drake"}' and r["score"] == 7.0
+    assert r["candidate_id"] == cid
+
+
+def test_list_deck_decisions_is_org_scoped(sa_conn):
+    _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        a = _mk(sa_conn, org="orgA", kind="meme")
+        b = _mk(sa_conn, org="orgB", kind="meme")
+        _decide(sa_conn, a, org="orgA")
+        _decide(sa_conn, b, org="orgB")
+    rows = cd.list_deck_decisions(sa_conn, "orgA")
+    assert len(rows) == 1 and rows[0]["candidate_id"] == a
+
+
+def test_list_deck_decisions_kind_filter(sa_conn):
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        m = _mk(sa_conn, kind="meme")
+        t = _mk(sa_conn, kind="tweet")
+        _decide(sa_conn, m); _decide(sa_conn, t)
+    rows = cd.list_deck_decisions(sa_conn, "orgA", kind="meme")
+    assert [r["candidate_id"] for r in rows] == [m]
+
+
+def test_list_deck_decisions_since_filter_and_order(sa_conn):
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _mk(sa_conn, kind="meme")
+        _decide(sa_conn, cid, decision="reject", now="2026-06-01T00:00:00Z")
+        _decide(sa_conn, cid, decision="keep", now="2026-06-20T00:00:00Z")
+    # since drops the June-1 row; newest-first puts the June-20 keep first
+    rows = cd.list_deck_decisions(sa_conn, "orgA", since="2026-06-10T00:00:00Z")
+    assert [r["decision"] for r in rows] == ["keep"]
+    allrows = cd.list_deck_decisions(sa_conn, "orgA")
+    assert [r["decision"] for r in allrows] == ["keep", "reject"]  # DESC by created_at
+
+
+def test_list_deck_decisions_surfaces_pair_loser_id(sa_conn):
+    # A duel win is decision='keep' + a non-null pair_loser_id; the reader must be able to tell
+    # it apart from an operator single-card keep (else community duels inflate keep-rate).
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        winner = _mk(sa_conn, kind="meme")
+        loser = _mk(sa_conn, kind="meme")
+        cd.record_deck_decision(
+            sa_conn, candidate_id=winner, org_id="orgA", actor="discord:u:1",
+            actor_kind="community", decision="keep", surface="discord", pair_loser_id=loser,
+        )
+    row = next(r for r in cd.list_deck_decisions(sa_conn, "orgA") if r["candidate_id"] == winner)
+    assert row["pair_loser_id"] == loser  # duel is distinguishable from an operator swipe
+
+
+def test_list_deck_decisions_org_pins_both_sides(sa_conn):
+    # Defense-in-depth (K-2): even a corrupt row whose d.org_id != its candidate's org_id must
+    # not leak under either org. Raw-insert bypasses record_deck_decision's write-time guard.
+    _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cand_b = _mk(sa_conn, org="orgB", kind="meme")
+    sa_conn.execute(
+        text("INSERT INTO content_deck_decisions "
+             "(candidate_id, org_id, actor, actor_kind, decision, surface) "
+             "VALUES (:c, 'orgA', 'op', 'operator', 'keep', 'web')"),
+        {"c": cand_b},
+    )
+    sa_conn.commit()
+    assert cd.list_deck_decisions(sa_conn, "orgA") == []  # d.org_id=A but c.org_id=B -> excluded
+    assert cd.list_deck_decisions(sa_conn, "orgB") == []  # c.org_id=B but d.org_id=A -> excluded

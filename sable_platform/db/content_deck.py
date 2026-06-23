@@ -281,6 +281,56 @@ def record_deck_decision(
     return int(row[0]) if row is not None else 0
 
 
+def list_deck_decisions(
+    conn: Connection,
+    org_id: str,
+    *,
+    kind: str | None = None,
+    since: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    """Org-scoped read of swipe decisions JOINed to their candidate, for the keep-rate /
+    ideation-quality readout (read-only, NO cost, NEVER mutates).
+
+    Returns each decision with the candidate's ``kind``, ``payload_json`` (where
+    ``template_id`` / ``register_band`` live) and producer ``score``. Optional ``kind``
+    filter (e.g. ``'meme'``) and ``since`` (an ISO-8601 inclusive lower bound on
+    ``created_at``). Newest first.
+
+    INNER JOIN: candidates soft-expire (never physically deleted -- masterplan DI-NEW-2), so
+    every real decision still resolves to its candidate. A decision whose candidate was
+    physically GC'd would be dropped from this readout (acceptable -- it carries no
+    template/register to aggregate). Both sides are org-pinned (``d.org_id`` AND ``c.org_id``):
+    the d==c org invariant is only enforced in Python at write time (``record_deck_decision``),
+    so the second predicate is defense-in-depth against a future direct writer / backfill.
+
+    ``pair_loser_id`` is returned so the caller can tell a **community pairwise duel**
+    (``pair_loser_id`` IS NOT NULL -- the decision enum is keep/reject/skip/schedule/post, so a
+    duel win is recorded as ``decision='keep'`` and is NOT distinguishable by the decision value
+    alone) from an operator single-card swipe. The caller decides what to count.
+    """
+    sql = (
+        "SELECT d.id AS decision_id, d.candidate_id, d.decision, d.surface, d.actor, "
+        "  d.actor_kind, d.pair_loser_id, d.created_at, c.kind, c.payload_json, c.score "
+        "FROM content_deck_decisions d "
+        "JOIN content_candidates c ON c.id = d.candidate_id "
+        "WHERE d.org_id = :org AND c.org_id = :org"
+    )
+    params: dict = {"org": org_id}
+    if kind is not None:
+        sql += " AND c.kind = :kind"
+        params["kind"] = kind
+    if since is not None:
+        sql += " AND d.created_at >= :since"
+        params["since"] = since
+    sql += " ORDER BY d.created_at DESC, d.id DESC"
+    if limit is not None:
+        sql += " LIMIT :limit"
+        params["limit"] = int(limit)
+    rows = conn.execute(_sa_text(sql), params).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # content_deck_operator_state
 # ---------------------------------------------------------------------------
