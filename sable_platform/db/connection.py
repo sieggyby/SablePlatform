@@ -96,6 +96,7 @@ _MIGRATIONS = [
     ("075_allowlist_entries.sql", 75),
     ("076_content_deck.sql", 76),
     ("077_content_publish_jobs.sql", 77),
+    ("078_operator_meme_budget.sql", 78),
 ]
 
 

@@ -52,6 +52,7 @@ TABLE_LOAD_ORDER: list[str] = [
     "reply_campaign_assignments",  # FK -> reply_campaigns (mig 061) - must follow it
     "mod_slot_sessions",     # FK -> orgs (mig 059) - TEXT PK, no sequence
     "operator_work_events",  # FK -> orgs (mig 059) - TEXT PK, no sequence
+    "operator_meme_budget",  # no FKs (mig 078) - composite TEXT PK (operator_handle, org_id, week_iso)
     "alert_configs",
     "entity_interactions",
     "entity_decay_scores",

@@ -1502,6 +1502,20 @@ operator_reply_quota = Table(
     Column("updated_at", Text, nullable=False, server_default=func.now()),
 )
 
+# Per-(operator, org, ISO-week) dollar budget for on-demand meme production (mig 078).
+# Reserve-then-reconcile accumulator; cap default $5/operator/client/week (orgs.config_json
+# override). Output bank (content_candidates) is org-shared; the budget here is per-operator.
+operator_meme_budget = Table(
+    "operator_meme_budget",
+    metadata,
+    Column("operator_handle", Text, primary_key=True),
+    Column("org_id", Text, primary_key=True),
+    Column("week_iso", Text, primary_key=True),
+    Column("spend_usd", Float, nullable=False, server_default="0"),
+    Column("runs", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+)
+
 reply_suggestions = Table(
     "reply_suggestions",
     metadata,
