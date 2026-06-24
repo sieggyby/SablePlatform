@@ -237,6 +237,9 @@ TABLE_LOAD_ORDER: list[str] = [
     # Migration 077: Content Deck Phase 4 release substrate. FK -> content_candidates (ON DELETE
     # CASCADE) + orgs, both precede this. Integer autoincrement PK -> also in SEQUENCE_TABLES.
     "content_publish_jobs",              # FK -> content_candidates + orgs (Integer autoincrement PK)
+    # Migration 079: single-use deck/produce assertion store (Codex Tier-1 replay defense). No FKs,
+    # TEXT primary key (sig) -> NOT in SEQUENCE_TABLES.
+    "deck_consumed_assertions",          # no FKs (TEXT PK = sig)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.

@@ -19,6 +19,14 @@
 --   * STALE GUARD (accessor-enforced, asserted in tests): a SCHEDULED candidate past its ORIGINAL
 --     expires_at STILL releases at publish_at (expire_due_candidates is pending-only) -- the release
 --     path skips a since-REJECTED candidate.
+--   * publish_at STRICT-UTC FORMAT (DB backstop, Codex Tier-2): the claim-due worker compares
+--     publish_at LEXICALLY against the second-precision Z form, so an offset (+02:00), naive (no
+--     zone), space-separated, compact, or fractional value would release early or never release.
+--     The Slopper route + schedule_candidate() already validate this, but a DIRECT writer/backfill
+--     could store a malformed value -- the CHECK below rejects any non-canonical shape at the DB.
+--     It enforces SHAPE (YYYY-MM-DDTHH:MM:SSZ via GLOB digit-classes), NOT calendar validity: a
+--     shaped-but-impossible month/day (2099-13-01T...) still passes the GLOB and is caught by the
+--     accessor's strptime (kept there per the Tier-2 finding -- SQLite GLOB cannot range-check).
 -- Comment hygiene: NO semicolons inside double-dash comment lines (the runner splits on the char).
 
 CREATE TABLE content_publish_jobs (
@@ -35,7 +43,10 @@ CREATE TABLE content_publish_jobs (
   posted_ref      TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-  CHECK (release_state IN ('scheduled', 'due', 'claimed', 'handed_off', 'posted', 'canceled'))
+  CHECK (release_state IN ('scheduled', 'due', 'claimed', 'handed_off', 'posted', 'canceled')),
+  CONSTRAINT ck_content_publish_jobs_publish_at_utc CHECK (
+    publish_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'
+  )
 );
 
 CREATE INDEX content_publish_jobs_by_org_state ON content_publish_jobs (org_id, release_state, publish_at);

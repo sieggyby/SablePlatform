@@ -93,6 +93,88 @@ def test_schedule_requires_target_handle(sa_conn):
                                   target_handle="  ", publish_at=FUTURE)
 
 
+@pytest.mark.parametrize("bad_pa", [
+    "2099-01-01T14:00:00+02:00",   # offset zone (not UTC)
+    "2099-01-01T14:00:00",          # naive (no zone)
+    "2099-01-01T14:00:00.123Z",     # sub-second precision (lexical compare skew)
+    "2099-01-01 14:00:00Z",         # space separator, not 'T'
+    "not-a-date",                   # junk
+])
+def test_schedule_rejects_non_strict_utc_publish_at(sa_conn, bad_pa):
+    """Defense-in-depth: ``schedule_candidate`` re-validates the strict-UTC publish_at shape before
+    the store (the claim-due worker compares it lexically) -- a non-Z/naive/sub-second/junk value is
+    rejected with a ValueError and no job is created."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn)
+        with pytest.raises(ValueError, match="publish_at"):
+            cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                  target_handle="@tigfoundation", publish_at=bad_pa)
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"  # not flipped to scheduled
+    assert cp.list_publish_jobs(sa_conn, "orgA") == []
+
+
+@pytest.mark.parametrize("bad_pa", [
+    "2099-00-01T00:00:00Z",   # month 00 -> sorts BEFORE a real 'now' lexically -> EARLY-RELEASE
+    "2099-01-00T00:00:00Z",   # day 00 -> same early-release direction
+    "2099-13-01T00:00:00Z",   # impossible month 13
+    "2099-01-32T00:00:00Z",   # impossible day 32
+    "2099-01-01T25:00:00Z",   # impossible hour 25
+])
+def test_schedule_rejects_calendar_impossible_publish_at(sa_conn, bad_pa):
+    """The strict-UTC regex validates SHAPE only: a calendar-impossible value with a zero/low month
+    or day (e.g. ``2099-00-01T00:00:00Z``) PASSES the regex yet, compared LEXICALLY by the claim-due
+    worker, sorts BEFORE a real ``now`` and would EARLY-RELEASE -- the exact failure the guard claims
+    to prevent. ``schedule_candidate`` strptime-validates the instant after the regex, so such a
+    value is rejected with a ValueError and NO job is created (locks the early-release direction)."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn)
+        with pytest.raises(ValueError, match="publish_at"):
+            cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                  target_handle="@tigfoundation", publish_at=bad_pa)
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"  # not flipped to scheduled
+    assert cp.list_publish_jobs(sa_conn, "orgA") == []
+
+
+@pytest.mark.parametrize("bad_pa", [
+    " 2099-01-01T00:00:00Z",    # LEADING space -> sorts BEFORE a real 'now' lexically -> early-release
+    "2099-01-01T00:00:00Z ",    # trailing space
+    "\t2099-01-01T00:00:00Z",   # leading tab
+    "2099-01-01T00:00:00Z\n",   # trailing newline
+])
+def test_schedule_rejects_surrounding_whitespace_publish_at(sa_conn, bad_pa):
+    """The boundary must FAIL CLOSED on the RAW value, not a stripped copy: validating the stripped
+    publish_at while STORING the raw value would let a leading-space ``" 2099-...Z"`` pass (its
+    stripped form is strict-UTC) yet, once stored, sort LEXICALLY BEFORE a real ISO-Z ``now`` (0x20
+    < '2') so the claim-due worker EARLY-RELEASES it. ``schedule_candidate`` rejects any surrounding
+    whitespace with a ValueError and creates no job."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn)
+        with pytest.raises(ValueError, match="publish_at"):
+            cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                  target_handle="@tigfoundation", publish_at=bad_pa)
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"  # not flipped to scheduled
+    assert cp.list_publish_jobs(sa_conn, "orgA") == []
+
+
+def test_schedule_stores_canonical_publish_at_for_lexical_compare(sa_conn):
+    """The stored ``publish_at`` is the canonical strict-Z string the worker compares lexically. A
+    PAST canonical value releases on the next claim; a surrounding-whitespace variant is rejected
+    outright (never stored raw to early-release), so the worker only ever compares well-formed Z
+    strings -- regression-pinning the bind of the validated value, not the raw param."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn)
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@tigfoundation", publish_at=PAST)
+    assert cp.get_publish_job(sa_conn, jid)["publish_at"] == PAST  # exact canonical value stored
+    with immediate_txn(sa_conn):
+        claimed = cp.claim_due_jobs(sa_conn, now=NOW)
+    assert [j["id"] for j in claimed] == [jid]  # a real past instant releases, as expected
+
+
 def test_schedule_rejects_unbound_candidate(sa_conn):
     """SEC-3 / Phase 4: a candidate whose STORED target_handle is NULL is an unbound full-ops-only
     draft that cannot graduate to publish -- supplying a non-empty handle param must NOT let it be
@@ -254,7 +336,34 @@ def test_cancel_returns_candidate_to_kept(sa_conn):
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=FUTURE)
     with immediate_txn(sa_conn):
-        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA")
+        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a")
+    assert cp.get_publish_job(sa_conn, jid)["release_state"] == "canceled"
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"     # re-schedulable
+
+
+def test_cancel_fails_closed_on_unauthorized_handle(sa_conn):
+    """Phase-4 per-account re-check on CANCEL (parity with hand-off/post): even in the RIGHT org, a
+    cancel must carry the job's OWN bound target_handle. A caller authorizing a DIFFERENT handle (or
+    None) is refused -- it cannot revert another operator's scheduled job (candidate->kept,
+    re-deck'd) with just job_id + org_id. The correctly-authorized handle still cancels."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn, target="@a")
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@a", publish_at=FUTURE)
+    with immediate_txn(sa_conn):
+        # wrong authorized handle -> fail closed (job untouched, candidate stays scheduled)
+        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA",
+                                     authorized_target_handle="@other") is False
+        # a None authorized handle is likewise refused
+        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA",
+                                     authorized_target_handle=None) is False
+    assert cp.get_publish_job(sa_conn, jid)["release_state"] == "scheduled"  # not canceled
+    assert cd.get_candidate(sa_conn, cid)["status"] == "scheduled"           # not reverted to kept
+    # the correctly-authorized handle still drives the cancel (matched, case-insensitive)
+    with immediate_txn(sa_conn):
+        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA",
+                                     authorized_target_handle="A") is True
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "canceled"
     assert cd.get_candidate(sa_conn, cid)["status"] == "kept"     # re-schedulable
 
@@ -270,7 +379,7 @@ def test_state_flips_are_org_scoped(sa_conn):
         # orgB cannot touch orgA's job (org check fail-closes before the handle check)
         assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgB", authorized_target_handle="@a") is False
         assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgB", authorized_target_handle="@a") is False
-        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgB") is False
+        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgB", authorized_target_handle="@a") is False
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "due"  # untouched
 
 
@@ -415,7 +524,8 @@ def test_cancel_of_posted_job_refused_and_candidate_unchanged(sa_conn):
         cp.claim_due_jobs(sa_conn, now=NOW)
         cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a")
     with immediate_txn(sa_conn):
-        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA") is False  # can't cancel posted
+        assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA",
+                                     authorized_target_handle="@a") is False  # can't cancel posted
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "posted"
     assert cd.get_candidate(sa_conn, cid)["status"] == "posted"   # NOT reverted to kept
 

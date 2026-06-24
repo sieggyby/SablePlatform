@@ -2999,7 +2999,38 @@ content_publish_jobs = Table(
         "release_state IN ('scheduled','due','claimed','handed_off','posted','canceled')",
         name="ck_content_publish_jobs_release_state",
     ),
+    # publish_at STRICT-UTC FORMAT backstop (Codex Tier-2). The claim-due worker compares publish_at
+    # LEXICALLY, so a non-canonical value (offset/naive/space/compact/fractional) would release early
+    # or never release. The Slopper route + schedule_candidate() validate it, but the DB CHECK stops a
+    # direct writer/backfill from storing a malformed instant. SHAPE only (digit-classes) -- calendar
+    # validity stays in the accessor's strptime (a GLOB/regex cannot range-check month/day). Dialect-
+    # split so create_all() stays valid on BOTH backends: SQLite GLOB, Postgres POSIX-regex (~).
+    CheckConstraint(
+        "publish_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z'",
+        name="ck_content_publish_jobs_publish_at_utc",
+    ).ddl_if(dialect="sqlite"),
+    CheckConstraint(
+        r"publish_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'",
+        name="ck_content_publish_jobs_publish_at_utc",
+    ).ddl_if(dialect="postgresql"),
     Index("content_publish_jobs_by_org_state", "org_id", "release_state", "publish_at"),
     Index("content_publish_jobs_due", "release_state", "publish_at"),
     Index("content_publish_jobs_by_candidate", "candidate_id"),
+)
+
+# Migration 079: single-use store for deck/produce authorization assertions (Codex Tier-1 replay
+# defense). Slopper consumes the SableWeb-signed assertion SIGNATURE (HMAC hex) exactly once
+# (PRIMARY KEY(sig)) BEFORE any budget reserve / state change, so a captured-but-valid assertion
+# cannot be replayed within its TTL (even with tampered unsigned request fields). No FKs, no cost
+# column. exp (unix seconds) is stored only so expired rows can be GC'd. See sable/serve/deck_authz.py.
+deck_consumed_assertions = Table(
+    "deck_consumed_assertions",
+    metadata,
+    Column("sig", Text, primary_key=True, nullable=False),
+    Column("action", Text, nullable=False),
+    Column("org_id", Text, nullable=False),
+    Column("actor", Text, nullable=False),
+    Column("exp", Integer, nullable=False),
+    Column("consumed_at", Text, nullable=False, server_default=func.now()),
+    Index("deck_consumed_assertions_by_exp", "exp"),
 )

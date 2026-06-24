@@ -48,6 +48,16 @@ def upgrade() -> None:
             "release_state IN ('scheduled','due','claimed','handed_off','posted','canceled')",
             name="ck_content_publish_jobs_release_state",
         ),
+        # publish_at STRICT-UTC FORMAT backstop (Codex Tier-2). The claim-due worker compares
+        # publish_at LEXICALLY, so an offset/naive/space/compact/fractional value would release
+        # early or never release. The Slopper route + schedule_candidate() validate this, but a
+        # direct writer/backfill must not be able to store a malformed value. Postgres POSIX-regex
+        # (~) enforces SHAPE (the SQLite migration uses an equivalent GLOB); calendar validity stays
+        # in the accessor's strptime per the finding (a regex cannot range-check month/day).
+        sa.CheckConstraint(
+            r"publish_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'",
+            name="ck_content_publish_jobs_publish_at_utc",
+        ),
     )
     op.create_index(
         "content_publish_jobs_by_org_state",

@@ -11,9 +11,10 @@ authorization (which handle is ALLOWED for an org) lives in the CALLER (SableWeb
 composeAccountsFor/composePersonasFor) -- this layer is org-scoped DATA access only. BUT the
 state-changing primitives here now FAIL CLOSED on a handle the caller did not authorize: the
 caller passes the SPECIFIC handle it validated, and ``schedule_candidate`` /``mark_handed_off``/
-``mark_posted`` reject it unless it matches the candidate/job's stored ``target_handle`` binding
-(normalized). So a caller can never authorize one account but act on a job bound to another
-(Phase 4 per-account re-check), even though the allow-list itself still lives in the caller.
+``mark_posted``/``cancel_publish_job`` reject it unless it matches the candidate/job's stored
+``target_handle`` binding (normalized). So a caller can never authorize one account but act on a job
+bound to another (Phase 4 per-account re-check), even though the allow-list itself still lives in
+the caller.
 
 LOAD-BEARING SAFETY:
   * FAIL-CLOSED IDOR -- ``schedule_candidate`` rejects a candidate that does not resolve to the
@@ -29,6 +30,9 @@ LOAD-BEARING SAFETY:
 """
 from __future__ import annotations
 
+import re
+from datetime import datetime
+
 from sqlalchemy import text as _sa_text
 from sqlalchemy.engine import Connection
 
@@ -38,6 +42,19 @@ from sable_platform.db.content_deck import (
     get_candidate_org,
     set_candidate_status,
 )
+
+# Defense-in-depth: ``publish_at`` MUST be strict UTC ``YYYY-MM-DDTHH:MM:SSZ`` before it is stored.
+# The claim-due worker compares it LEXICALLY against the same second-precision Z form, so an offset
+# (`+02:00`), a naive (no zone), or a sub-second/junk value would release early or never release.
+# The Slopper deck route already normalizes to this shape, but ANY caller of ``schedule_candidate``
+# (incl. future ones) is re-validated here so a bad instant can never reach the store.
+#
+# The regex validates SHAPE only -- a calendar-IMPOSSIBLE but well-shaped value (e.g. a zero/low
+# month or day like ``2099-00-01T00:00:00Z``) would PASS the regex yet, compared lexically by the
+# worker, sort BEFORE a real ``now`` and EARLY-RELEASE -- exactly the failure this guard prevents.
+# So ``schedule_candidate`` ALSO ``strptime``-validates the instant (mirroring Slopper's
+# ``_normalize_publish_at``) and rejects an out-of-range month/day/time.
+_STRICT_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 _JOB_COLS = (
     "id, candidate_id, org_id, target_handle, release_state, publish_at, next_attempt_at, "
@@ -112,6 +129,28 @@ def schedule_candidate(
         raise ValueError(
             "schedule_candidate: target_handle is required (a null-target candidate cannot be scheduled)"
         )
+    # Defense-in-depth: re-validate the strict-UTC publish_at shape before the store (the worker
+    # compares it lexically; an offset/naive/sub-second/junk value would release wrong). FAIL CLOSED
+    # on the RAW value -- surrounding whitespace is REJECTED, never silently stripped: validating a
+    # stripped copy while storing the raw value would let a leading space (`" 2099-...Z"`) pass (its
+    # stripped form is valid) yet sort LEXICALLY BEFORE a real ISO-Z ``now`` once stored, early-
+    # releasing the post. We validate -- and below, STORE -- the exact canonical string ``_pa``.
+    _pa = publish_at or ""
+    if _pa != _pa.strip() or not _STRICT_UTC_RE.match(_pa):
+        raise ValueError(
+            "schedule_candidate: publish_at must be strict UTC 'YYYY-MM-DDTHH:MM:SSZ' "
+            "(offset/naive/sub-second/surrounding-whitespace/malformed values are rejected)"
+        )
+    # ...then confirm it is a REAL calendar instant. The regex passes a shaped-but-impossible value
+    # (zero/low/over-range month/day/time); strptime rejects it so a value that would sort BEFORE a
+    # real 'now' and early-release can never reach the store (mirrors Slopper _normalize_publish_at).
+    try:
+        datetime.strptime(_pa[:-1], "%Y-%m-%dT%H:%M:%S")  # drop trailing 'Z'
+    except ValueError as exc:
+        raise ValueError(
+            "schedule_candidate: publish_at must be strict UTC 'YYYY-MM-DDTHH:MM:SSZ' "
+            "(offset/naive/sub-second/malformed values are rejected)"
+        ) from exc
     # The candidate's STORED target_handle is the authoritative publish-AS binding (§3). An
     # unbound full-ops-only draft (stored target_handle NULL/blank) cannot graduate to publish
     # (SEC-3) -- fail closed regardless of the param. Bind the job to the candidate's OWN handle
@@ -140,7 +179,7 @@ def schedule_candidate(
             "  (candidate_id, org_id, target_handle, release_state, publish_at, created_at, updated_at) "
             "VALUES (:cid, :org, :th, 'scheduled', :pa, :now, :now) RETURNING id"
         ),
-        {"cid": int(candidate_id), "org": org_id, "th": bound_handle, "pa": publish_at, "now": now},
+        {"cid": int(candidate_id), "org": org_id, "th": bound_handle, "pa": _pa, "now": now},
     ).fetchone()
     if row is None:
         # INSERT...RETURNING must yield a row; a None here would commit an orphaned 'scheduled'
@@ -301,12 +340,27 @@ def mark_posted(
     return True
 
 
-def cancel_publish_job(conn: Connection, *, job_id: int, org_id: str, now: str | None = None) -> bool:
+def cancel_publish_job(
+    conn: Connection,
+    *,
+    job_id: int,
+    org_id: str,
+    authorized_target_handle: str | None,
+    now: str | None = None,
+) -> bool:
     """Operator cancels a not-yet-posted job: release_state 'scheduled'/'due'/'handed_off' ->
-    'canceled', and the candidate goes BACK to 'kept' (re-schedulable). Org-scoped. immediate_txn."""
+    'canceled', and the candidate goes BACK to 'kept' (re-schedulable). Org-scoped. REFUSES unless
+    ``authorized_target_handle`` matches the job's stored ``target_handle`` (normalized) -- the caller
+    MUST prove it authorized THIS job's per-account publish binding (Phase 4 per-account re-check),
+    exactly like ``mark_handed_off``/``mark_posted``. Without it a session scoped to a DIFFERENT
+    account/persona could revert another operator's scheduled job with only ``job_id`` + ``org_id``
+    (the candidate flips back to 'kept' + re-enters the deck), bypassing the per-account wall that
+    every OTHER canonical state-flip already enforces. Returns whether a row changed. immediate_txn."""
     job = get_publish_job(conn, job_id)
     if job is None or job["org_id"] != org_id:
         return False
+    if _norm_handle(authorized_target_handle) != _norm_handle(job["target_handle"]):
+        return False  # caller did not authorize this job's publish-AS binding -> fail closed
     now = now or _utc_now_iso()
     res = conn.execute(
         _sa_text(
