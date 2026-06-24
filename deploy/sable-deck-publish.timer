@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the SablePlatform Content Deck claim-due publish worker every 5 min
+
+[Timer]
+# Every 5 min + shortly after boot. Keeps the operator hand-off queue current: a candidate
+# scheduled for a given publish_at becomes 'due' within ~5 min of that time. Cheap (one DB drain,
+# no external calls), single-flight (atomic per-job UPDATE), and oneshot so runs never overlap.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

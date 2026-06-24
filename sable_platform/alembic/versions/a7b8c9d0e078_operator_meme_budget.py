@@ -29,6 +29,10 @@ def upgrade() -> None:
         sa.Column("spend_usd", sa.Float(), nullable=False, server_default="0"),
         sa.Column("runs", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("updated_at", sa.Text(), nullable=False, server_default=sa.func.now()),
+        # Accumulator invariants -- spend/runs are non-negative. The DB backstop for the app-layer
+        # negative-spend guard in meme_budget.reconcile_meme_spend (mirrors 078_*.sql).
+        sa.CheckConstraint("spend_usd >= 0", name="ck_operator_meme_budget_spend_nonneg"),
+        sa.CheckConstraint("runs >= 0", name="ck_operator_meme_budget_runs_nonneg"),
     )
 
 

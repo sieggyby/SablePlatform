@@ -144,3 +144,96 @@ def test_week_rollover_resets_budget(conn):
     # next ISO week -> fresh $5
     nxt = operator_meme_status(conn, "op", "tig", now=_NEXT_WEEK)
     assert nxt["spend_usd"] == 0.0 and nxt["allowed"] is True and nxt["remaining_usd"] == 5.0
+
+
+# === Input validation + non-negative invariant (hardening) ===================
+
+@pytest.mark.parametrize("bad", [0.0, -0.5, float("nan"), float("inf"), float("-inf"), None, "x"])
+def test_reserve_rejects_bad_estimate(conn, bad):
+    """A finite estimate > 0 is required: a 0 / negative / NaN / inf / non-numeric estimate must
+    raise BEFORE any ledger write (a negative estimate would mint negative spend = budget credit)."""
+    with pytest.raises(ValueError):
+        reserve_meme_spend(conn, "op", "tig", estimate=bad, now=_NOW)
+    conn.commit()
+    # nothing was written -> the operator still has a full, clean budget.
+    assert operator_meme_status(conn, "op", "tig", now=_NOW)["spend_usd"] == 0.0
+
+
+@pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf"), "lots"])
+def test_reserve_rejects_bad_cap_override(conn, bad):
+    """An explicit cap must be finite and >= 0 (a negative / non-finite cap would void the ceiling)."""
+    with pytest.raises(ValueError):
+        reserve_meme_spend(conn, "op", "tig", estimate=0.15, cap=bad, now=_NOW)
+
+
+@pytest.mark.parametrize("est,act", [(0.0, 0.0), (-0.1, 0.0), (float("nan"), 0.0),
+                                     (0.15, -0.1), (0.15, float("inf")), (0.15, float("nan"))])
+def test_reconcile_rejects_bad_inputs(conn, est, act):
+    """reconcile requires a finite estimate > 0 and a finite actual >= 0."""
+    reserve_meme_spend(conn, "op", "tig", estimate=0.15, now=_NOW)
+    conn.commit()
+    with pytest.raises(ValueError):
+        reconcile_meme_spend(conn, "op", "tig", estimate=est, actual=act, now=_NOW)
+
+
+def test_double_reconcile_refuses_to_credit_budget(conn):
+    """A repeated reconcile must NOT keep subtracting the estimate into negative spend (=budget
+    credit). The second reconcile would drive spend below 0 -> ValueError, spend left at the first
+    reconcile's value."""
+    reserve_meme_spend(conn, "op", "tig", estimate=0.30, now=_NOW)
+    reconcile_meme_spend(conn, "op", "tig", estimate=0.30, actual=0.0, now=_NOW)   # -> 0.0
+    conn.commit()
+    assert operator_meme_status(conn, "op", "tig", now=_NOW)["spend_usd"] == 0.0
+    with pytest.raises(ValueError, match="below 0"):
+        reconcile_meme_spend(conn, "op", "tig", estimate=0.30, actual=0.0, now=_NOW)
+    conn.commit()
+    # unchanged -- the refused reconcile minted no negative spend.
+    assert operator_meme_status(conn, "op", "tig", now=_NOW)["spend_usd"] == 0.0
+
+
+def test_reconcile_without_reserve_refuses(conn):
+    """reconcile with no matching reservation ROW is refused outright (caller skipped reserve)."""
+    with pytest.raises(ValueError, match="no reservation row"):
+        reconcile_meme_spend(conn, "op", "tig", estimate=0.30, actual=0.0, now=_NOW)
+    conn.commit()
+    assert operator_meme_status(conn, "op", "tig", now=_NOW)["spend_usd"] == 0.0
+
+
+def test_reconcile_without_reserve_actual_equals_estimate_refuses(conn):
+    """The silent-drop gap: with NO reserve row, actual == estimate -> delta 0 -> the old guard
+    computed a non-negative new_spend and the UPDATE matched 0 rows, returning a clean zero status
+    and DROPPING the spend. Now the missing-row check raises before any write."""
+    with pytest.raises(ValueError, match="no reservation row"):
+        reconcile_meme_spend(conn, "op", "tig", estimate=0.30, actual=0.30, now=_NOW)
+    conn.commit()
+    assert operator_meme_status(conn, "op", "tig", now=_NOW)["spend_usd"] == 0.0
+
+
+def test_reconcile_without_reserve_actual_above_estimate_refuses(conn):
+    """Same gap with actual > estimate (delta > 0): without a reservation row the overage would
+    have silently vanished; it now raises (no write)."""
+    with pytest.raises(ValueError, match="no reservation row"):
+        reconcile_meme_spend(conn, "op", "tig", estimate=0.30, actual=0.55, now=_NOW)
+    conn.commit()
+    assert operator_meme_status(conn, "op", "tig", now=_NOW)["spend_usd"] == 0.0
+
+
+def test_db_check_rejects_negative_spend_and_runs(conn):
+    """DB backstop (078 CHECK spend_usd >= 0 / runs >= 0): a direct write that bypasses the app
+    guard still cannot persist a negative accumulator."""
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        conn.execute(
+            "INSERT INTO operator_meme_budget (operator_handle, org_id, week_iso, spend_usd, runs) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("op", "tig", "2026-W26", -0.01, 0),
+        )
+    conn.rollback()
+    with pytest.raises(IntegrityError):
+        conn.execute(
+            "INSERT INTO operator_meme_budget (operator_handle, org_id, week_iso, spend_usd, runs) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("op", "tig", "2026-W26", 0.0, -1),
+        )
+    conn.rollback()

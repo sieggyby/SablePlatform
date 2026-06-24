@@ -58,6 +58,46 @@ def log_cost(
     conn.commit()
 
 
+def reserve_image_spend(
+    conn: Connection,
+    org_id: str,
+    est: float,
+    *,
+    call_type: str = "meme_image",
+    model: str | None = None,
+) -> int:
+    """Insert a HELD ``cost_events`` reservation (cost_usd=est, call_status='reserved') and return
+    its ``event_id``. ``get_weekly_spend``/``get_daily_spend`` SUM regardless of status, so the hold
+    is immediately visible to a concurrent reserve.
+
+    The caller MUST run this INSIDE a serialized (``BEGIN IMMEDIATE`` / SERIALIZABLE) transaction
+    together with the weekly/daily cap re-check, so concurrent paid renders serialize and only those
+    that fit under the cap can take a hold (closes the check-then-spend race). Does NOT commit — the
+    caller's serialized txn owns the boundary. Pair with ``release_image_reservation`` (refund/finalize)."""
+    row = conn.execute(
+        text(
+            "INSERT INTO cost_events (org_id, call_type, model, cost_usd, call_status) "
+            "VALUES (:org_id, :call_type, :model, :cost_usd, 'reserved') RETURNING event_id"
+        ),
+        {"org_id": org_id, "call_type": call_type, "model": model, "cost_usd": float(est)},
+    ).fetchone()
+    if row is None:  # INSERT ... RETURNING must yield a row
+        raise SableError(BUDGET_EXCEEDED, "reserve_image_spend: INSERT ... RETURNING yielded no row")
+    return int(row[0])
+
+
+def release_image_reservation(conn: Connection, event_id: int) -> None:
+    """Delete a held reservation (only a still-'reserved' row), refunding the hold. Used after the
+    paid call resolves: on a NOT-charged failure it leaves no residual spend; on success / a charged
+    failure the caller deletes the hold and then logs the real ``meme_image`` outcome via
+    ``log_cost`` (so the final ledger row is exactly the charge, never double-counted). Commits."""
+    conn.execute(
+        text("DELETE FROM cost_events WHERE event_id = :e AND call_status = 'reserved'"),
+        {"e": int(event_id)},
+    )
+    conn.commit()
+
+
 def get_weekly_spend(conn: Connection, org_id: str) -> float:
     """Return total cost_usd for org in the current ISO calendar week (Mon–Sun UTC)."""
     now = datetime.datetime.now(datetime.timezone.utc)

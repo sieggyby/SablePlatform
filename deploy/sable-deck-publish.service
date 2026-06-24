@@ -1,0 +1,15 @@
+[Unit]
+Description=SablePlatform Content Deck claim-due publish worker
+# Flips every SCHEDULED content_publish_job whose publish_at has passed to 'due' for OPERATOR
+# HAND-OFF (composeUrl + media download — Sable NEVER auto-posts). Makes NO external API call:
+# it only runs claim_due_jobs() inside one immediate_txn and drains via count_due_jobs(). Without
+# this unit a scheduled candidate would sit 'scheduled' forever and never reach the operator.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=sable
+WorkingDirectory=/opt/sable/platform
+EnvironmentFile=/opt/sable/.env
+Environment=SABLE_OPERATOR_ID=deck-publish-due
+ExecStart=/opt/sable/venv/bin/sable-platform deck publish-due

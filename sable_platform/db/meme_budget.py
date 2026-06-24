@@ -17,10 +17,33 @@ check-then-act TOCTOU. The ISO-week boundary matches ``cost.get_weekly_spend``.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text
+
+# Float-dust tolerance: a reconcile that lands within this of 0 is clamped to 0 (never written as a
+# tiny negative that would trip the spend_usd >= 0 CHECK), but anything more negative FAILS CLOSED.
+_SPEND_EPS = 1e-9
+
+
+def _require_finite(value, name: str, *, positive: bool) -> float:
+    """Coerce ``value`` to a FINITE float and enforce its sign domain. ``positive=True`` -> must be
+    > 0 (an estimate is a real held reservation); otherwise must be >= 0 (a cap / actual cost).
+    Rejects None, non-numeric, NaN, and +/-inf with ValueError so a bad input can never corrupt
+    ``spend_usd`` or mint budget credit (the cost ceiling is only a ceiling if its inputs are sane)."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"meme_budget: {name} must be a finite number, got {value!r}")
+    if not math.isfinite(f):
+        raise ValueError(f"meme_budget: {name} must be finite, got {f!r}")
+    if positive and f <= 0:
+        raise ValueError(f"meme_budget: {name} must be > 0, got {f!r}")
+    if not positive and f < 0:
+        raise ValueError(f"meme_budget: {name} must be >= 0, got {f!r}")
+    return f
 
 # Default per-operator weekly cap (USD). Overridable per org via
 # orgs.config_json["max_meme_usd_per_operator_per_week"].
@@ -63,7 +86,10 @@ def meme_weekly_cap(conn, org_id: str) -> float:
         try:
             cfg = json.loads(row[0])
             v = cfg.get(_CAP_CONFIG_KEY)
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+            # A finite, non-negative numeric override only -- json.loads accepts NaN/Infinity by
+            # default, so guard isfinite too (a non-finite cap would void the ceiling).
+            if (isinstance(v, (int, float)) and not isinstance(v, bool)
+                    and math.isfinite(v) and v >= 0):
                 return float(v)
         except (ValueError, TypeError):
             pass
@@ -103,29 +129,36 @@ def reserve_meme_spend(conn, operator_handle: str, org_id: str, *,
                        cap: Optional[float] = None, now: Optional[datetime] = None) -> dict:
     """Atomically reserve ``estimate`` against this week's (operator, org) budget.
 
-    Mirrors ``replies.reserve_generation``: increment first, then if the NEW total exceeds the cap
-    refund the reservation (and its run) and return ``allowed=False`` -- so concurrent reservations
-    can't race past the ceiling. **The caller MUST hold an ``immediate_txn`` / ``serialized_txn``**
-    (BEGIN IMMEDIATE on SQLite / SERIALIZABLE on Postgres) AND commit: the increment-then-read-then-
-    refund is three statements, so the write-serialization is what makes the ceiling race-safe.
+    Mirrors ``replies.reserve_generation``: a SINGLE upsert (``INSERT ... ON CONFLICT DO UPDATE ...
+    RETURNING``) increments the spend AND reads back the NEW total in one statement, so concurrent
+    reservations cannot both pass a stale read (no TOCTOU) -- it is the RETURNING value, not a
+    separate read-after-write, that decides the cap. If the NEW total exceeds the cap the
+    reservation (and its run) is refunded and ``allowed=False`` is returned. The caller MUST commit.
     Returns the post-reserve status dict with ``allowed`` and ``estimate`` (the amount actually
     held; 0.0 when blocked)."""
     wk = week_iso(now)
     stamp = _stamp(now)
-    cap = meme_weekly_cap(conn, org_id) if cap is None else float(cap)
-    est = float(estimate)
+    # Validate inputs BEFORE touching the ledger: a finite cap >= 0 and a finite estimate > 0. A
+    # negative / NaN / inf estimate could otherwise mint budget credit (negative spend) or void the
+    # cap; reject it up front so the reserve-then-reconcile ceiling stays a true ceiling.
+    cap = meme_weekly_cap(conn, org_id) if cap is None else _require_finite(cap, "cap", positive=False)
+    est = _require_finite(estimate, "estimate", positive=True)
 
-    conn.execute(
+    row = conn.execute(
         text("INSERT INTO operator_meme_budget "
              "  (operator_handle, org_id, week_iso, spend_usd, runs, updated_at) "
              "VALUES (:h, :o, :w, :amt, 1, :now) "
              "ON CONFLICT(operator_handle, org_id, week_iso) DO UPDATE SET "
              "  spend_usd = operator_meme_budget.spend_usd + :amt, "
              "  runs = operator_meme_budget.runs + 1, "
-             "  updated_at = :now"),
+             "  updated_at = :now "
+             "RETURNING spend_usd, runs"),
         {"h": operator_handle, "o": org_id, "w": wk, "amt": est, "now": stamp},
-    )
-    spend, _ = _current(conn, operator_handle, org_id, wk)
+    ).fetchone()
+    # The post-increment total comes from the write statement's RETURNING -- atomic with the
+    # increment, NOT a separate read -- so the cap decision has no read-after-write TOCTOU
+    # (mirrors replies.reserve_generation; race-safe without depending on caller isolation level).
+    spend = float(row[0] or 0.0)
     if spend > cap:
         # Over the cap -> release the reservation we just took (and its run) so the stored spend
         # reflects only real, allowed produces.
@@ -153,14 +186,58 @@ def reconcile_meme_spend(conn, operator_handle: str, org_id: str, *,
     estimate, normally negative). Call after a successful ``reserve`` (allowed=True) + produce;
     ``actual=0.0`` fully unwinds the estimate (the producer was disabled / no call happened). The
     net effect across reserve+reconcile is exactly +``actual`` so stored spend stays >= 0. The
-    caller MUST commit. Returns the fresh status dict."""
+    caller MUST commit. Returns the fresh status dict.
+
+    FAIL CLOSED: inputs must be a finite estimate > 0 and a finite actual >= 0, and the reconcile
+    REQUIRES an existing reservation row for (operator, org, week) -- a reconcile is only ever valid
+    after a reserve created that row. A reconcile with NO matching row (caller skipped reserve, or is
+    reconciling the wrong key) raises (no write): without that guard an ``actual >= estimate`` against
+    an absent (0,0) row would compute a non-negative ``new_spend``, match ZERO rows in the UPDATE, and
+    return a clean zero-spend status -- silently DROPPING the spend and weakening the cap. It also
+    REFUSES if it would drive ``spend_usd`` below 0 (e.g. a double-reconcile) -- a repeated/mismatched
+    reconcile would otherwise mint negative spend = budget credit. The caller (serve layer) treats a
+    raised reconcile as a held reservation (logged), never a silent corruption."""
     wk = week_iso(now)
     stamp = _stamp(now)
-    delta = float(actual) - float(estimate)
-    conn.execute(
-        text("UPDATE operator_meme_budget SET "
-             "  spend_usd = operator_meme_budget.spend_usd + :d, updated_at = :now "
+    est = _require_finite(estimate, "estimate", positive=True)
+    act = _require_finite(actual, "actual", positive=False)
+    delta = act - est
+    # Read-then-write is safe: reconcile runs inside the caller's serialized (immediate) txn, so no
+    # concurrent reserve can interleave. REQUIRE the reservation row to EXIST first -- ``_current``
+    # collapses an absent row to (0.0, 0), so it cannot distinguish "no reserve" from "reserved $0";
+    # query the row directly and fail closed when it is missing (else an actual >= estimate would
+    # silently vanish against a zero-row UPDATE).
+    row = conn.execute(
+        text("SELECT spend_usd FROM operator_meme_budget "
              "WHERE operator_handle = :h AND org_id = :o AND week_iso = :w"),
-        {"h": operator_handle, "o": org_id, "w": wk, "d": delta, "now": stamp},
+        {"h": operator_handle, "o": org_id, "w": wk},
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            "reconcile_meme_spend: no reservation row for "
+            f"({operator_handle!r}, {org_id!r}, {wk}) -- refusing "
+            "(reconcile without a matching reserve, or wrong key?)"
+        )
+    spend_now = float(row[0] or 0.0)
+    new_spend = spend_now + delta
+    # Refuse anything that would push spend below 0 (with a float-dust tolerance), and clamp a
+    # sub-epsilon residual to exactly 0 so the >= 0 CHECK holds.
+    if new_spend < -_SPEND_EPS:
+        raise ValueError(
+            "reconcile_meme_spend: would drive spend_usd below 0 "
+            f"(current={spend_now}, delta={delta}) -- refusing (double-reconcile or no reserve?)"
+        )
+    new_spend = max(0.0, new_spend)
+    res = conn.execute(
+        text("UPDATE operator_meme_budget SET spend_usd = :s, updated_at = :now "
+             "WHERE operator_handle = :h AND org_id = :o AND week_iso = :w"),
+        {"h": operator_handle, "o": org_id, "w": wk, "s": new_spend, "now": stamp},
     )
+    if (res.rowcount or 0) == 0:
+        # The row existed at the SELECT above but the guarded UPDATE matched nothing -- the
+        # reservation vanished mid-reconcile. Fail closed rather than silently drop the spend.
+        raise ValueError(
+            "reconcile_meme_spend: guarded UPDATE affected 0 rows for "
+            f"({operator_handle!r}, {org_id!r}, {wk}) -- reservation row vanished mid-reconcile"
+        )
     return operator_meme_status(conn, operator_handle, org_id, now=now)

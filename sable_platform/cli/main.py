@@ -24,6 +24,7 @@ from sable_platform.cli.webhook_cmds import webhooks
 from sable_platform.cli.cron_cmds import cron
 from sable_platform.cli.checkin_cmds import checkin
 from sable_platform.cli.relay_cmds import relay
+from sable_platform.cli.deck_cmds import deck
 from sable_platform.cli.onboarding_cmds import onboard, operator
 from sable_platform.cli.allowlist_cmds import allowlist
 from sable_platform.cli.entitlements_cmds import entitlements
@@ -238,6 +239,7 @@ cli.add_command(webhooks)
 cli.add_command(cron)
 cli.add_command(checkin)
 cli.add_command(relay)
+cli.add_command(deck)
 cli.add_command(onboard)
 cli.add_command(operator)
 cli.add_command(allowlist)

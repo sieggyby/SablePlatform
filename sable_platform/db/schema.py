@@ -1514,6 +1514,10 @@ operator_meme_budget = Table(
     Column("spend_usd", Float, nullable=False, server_default="0"),
     Column("runs", Integer, nullable=False, server_default="0"),
     Column("updated_at", Text, nullable=False, server_default=func.now()),
+    # Accumulator invariants -- spend/runs are non-negative. DB backstop for the app-layer
+    # negative-spend guard in meme_budget.reconcile_meme_spend (mirrors 078_*.sql + the Alembic rev).
+    CheckConstraint("spend_usd >= 0", name="ck_operator_meme_budget_spend_nonneg"),
+    CheckConstraint("runs >= 0", name="ck_operator_meme_budget_runs_nonneg"),
 )
 
 reply_suggestions = Table(

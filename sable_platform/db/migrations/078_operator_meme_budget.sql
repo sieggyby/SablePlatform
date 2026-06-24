@@ -21,5 +21,12 @@ CREATE TABLE IF NOT EXISTS operator_meme_budget (
     spend_usd       REAL NOT NULL DEFAULT 0,
     runs            INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    PRIMARY KEY (operator_handle, org_id, week_iso)
+    PRIMARY KEY (operator_handle, org_id, week_iso),
+    -- The ledger is an accumulator -- spend and runs can only ever be non-negative. A reconcile
+    -- that would breach this is a corruption signal (double-reconcile / negative input) and is
+    -- refused at the app layer (meme_budget.reconcile_meme_spend) -- this CHECK is the DB backstop.
+    CHECK (spend_usd >= 0),
+    CHECK (runs >= 0)
 );
+
+UPDATE schema_version SET version = 78 WHERE version < 78;

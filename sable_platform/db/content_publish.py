@@ -7,8 +7,13 @@ kept->scheduled->posted; the worker lifecycle lives in ``release_state`` here.
 
 ``org_id`` is the scope wall on every accessor. NO cost column, ever. Writers require an
 ``immediate_txn`` (the caller commits); reads are transaction-free. Per-account publish
-authorization (``target_handle``) lives in the CALLER (SableWeb composeAccountsFor/
-composePersonasFor) -- this layer is org-scoped DATA access only.
+authorization (which handle is ALLOWED for an org) lives in the CALLER (SableWeb
+composeAccountsFor/composePersonasFor) -- this layer is org-scoped DATA access only. BUT the
+state-changing primitives here now FAIL CLOSED on a handle the caller did not authorize: the
+caller passes the SPECIFIC handle it validated, and ``schedule_candidate`` /``mark_handed_off``/
+``mark_posted`` reject it unless it matches the candidate/job's stored ``target_handle`` binding
+(normalized). So a caller can never authorize one account but act on a job bound to another
+(Phase 4 per-account re-check), even though the allow-list itself still lives in the caller.
 
 LOAD-BEARING SAFETY:
   * FAIL-CLOSED IDOR -- ``schedule_candidate`` rejects a candidate that does not resolve to the
@@ -17,7 +22,8 @@ LOAD-BEARING SAFETY:
   * STALE GUARD -- ``claim_due_jobs`` does NOT skip a scheduled candidate whose ORIGINAL
     ``expires_at`` has passed (``expire_due_candidates`` is pending-only, so a scheduled candidate
     is never auto-expired out from under its ``publish_at``); it releases. It DOES skip + cancel a
-    since-REJECTED candidate.
+    candidate that is no longer EXACTLY 'scheduled' (rejected/kept/gone/posted) -- never releasing
+    into a job-vs-candidate status split.
   * SINGLE-FLIGHT -- the worker claims each due job with an atomic conditional UPDATE (rowcount),
     so two workers never double-release the same job.
 """
@@ -28,6 +34,7 @@ from sqlalchemy.engine import Connection
 
 from sable_platform.db.content_deck import (
     _utc_now_iso,
+    get_candidate,
     get_candidate_org,
     set_candidate_status,
 )
@@ -36,6 +43,16 @@ _JOB_COLS = (
     "id, candidate_id, org_id, target_handle, release_state, publish_at, next_attempt_at, "
     "attempt_count, claimed_at, handed_off_at, posted_ref, created_at, updated_at"
 )
+
+# ``_JOB_COLS`` re-aliased to the ``j`` table alias, for the candidate JOIN in ``list_publish_jobs``
+# (so the calendar feed can carry the candidate's draft/caption + media ref for operator hand-off).
+_JOB_COLS_J = ", ".join(f"j.{c.strip()}" for c in _JOB_COLS.split(","))
+
+
+def _norm_handle(handle: str | None) -> str:
+    """Normalize an X handle for an equality check: strip, drop a leading ``@``, casefold. The
+    per-account publish binding is compared normalized so ``@TIGFoundation`` == ``tigfoundation``."""
+    return (handle or "").strip().lstrip("@").casefold()
 
 
 def get_job_org(conn: Connection, job_id: int) -> str | None:
@@ -79,15 +96,37 @@ def schedule_candidate(
 ) -> int | None:
     """Schedule a KEPT candidate for release at ``publish_at``. Creates a content_publish_job
     (release_state='scheduled') AND flips the candidate kept->scheduled in the same txn. Returns
-    the new job id, or None if the candidate isn't org-owned or isn't currently 'kept'. Requires a
-    non-empty ``target_handle`` (a null-target candidate cannot be scheduled -- masterplan SEC-3).
-    FAIL-CLOSED IDOR. Caller in immediate_txn."""
+    the new job id, or None if the candidate isn't org-owned, isn't currently 'kept', or is an
+    UNBOUND draft (its STORED ``target_handle`` is NULL/blank). The candidate's STORED
+    ``target_handle`` is the authoritative "publish AS" binding (masterplan §3); a null-target
+    candidate is a full-ops-only draft that CANNOT graduate to publish (SEC-3 / Phase 4), so it is
+    rejected here regardless of the param. The caller-supplied ``target_handle`` (the handle the
+    caller authorized via the full binding pair) MUST equal that stored binding (normalized) -- a
+    mismatch FAILS CLOSED (returns None), so a caller cannot authorize one account but schedule the
+    job as another. The job is then bound to the candidate's OWN stored handle (never an arbitrary
+    param). A blank ``target_handle`` param is still rejected up front. FAIL-CLOSED IDOR. Caller in
+    immediate_txn."""
     if get_candidate_org(conn, candidate_id) != org_id:
         return None  # unknown or wrong-org -> fail closed
     if not (target_handle or "").strip():
         raise ValueError(
             "schedule_candidate: target_handle is required (a null-target candidate cannot be scheduled)"
         )
+    # The candidate's STORED target_handle is the authoritative publish-AS binding (§3). An
+    # unbound full-ops-only draft (stored target_handle NULL/blank) cannot graduate to publish
+    # (SEC-3) -- fail closed regardless of the param. Bind the job to the candidate's OWN handle
+    # so the released job can never publish as an account the candidate was not produced for.
+    cand = get_candidate(conn, candidate_id)
+    if cand is None:
+        return None
+    bound_handle = cand.get("target_handle")
+    if not (bound_handle or "").strip():
+        return None  # unbound draft -> cannot be scheduled
+    # The caller authorized a SPECIFIC handle (via the full binding pair) and passed it here. It
+    # MUST equal the candidate's OWN stored binding -- otherwise the caller authorized one account
+    # but the job would publish as another. Fail closed on any mismatch (SEC-3 / Phase 4).
+    if _norm_handle(target_handle) != _norm_handle(bound_handle):
+        return None
     now = now or _utc_now_iso()
     # CONDITIONAL flip: only its OWN 'kept' state -> 'scheduled'. A non-kept candidate (already
     # scheduled/posted/rejected) is a no-op and NO job is created (idempotent double-schedule guard).
@@ -101,7 +140,7 @@ def schedule_candidate(
             "  (candidate_id, org_id, target_handle, release_state, publish_at, created_at, updated_at) "
             "VALUES (:cid, :org, :th, 'scheduled', :pa, :now, :now) RETURNING id"
         ),
-        {"cid": int(candidate_id), "org": org_id, "th": target_handle, "pa": publish_at, "now": now},
+        {"cid": int(candidate_id), "org": org_id, "th": bound_handle, "pa": publish_at, "now": now},
     ).fetchone()
     if row is None:
         # INSERT...RETURNING must yield a row; a None here would commit an orphaned 'scheduled'
@@ -114,13 +153,19 @@ def claim_due_jobs(conn: Connection, *, now: str | None = None, limit: int = 50)
     """The claim-due worker: flip SCHEDULED jobs whose ``publish_at <= now`` to 'due' for operator
     hand-off. SINGLE-FLIGHT (atomic conditional UPDATE per job -> rowcount), so two workers never
     double-claim. STALE GUARD: a scheduled candidate past its ORIGINAL ``expires_at`` STILL releases
-    (no ``expires_at`` check -- ``expire_due_candidates`` is pending-only). A since-REJECTED candidate
-    is SKIPPED and its job CANCELED. Returns the jobs newly flipped to 'due'. Caller in immediate_txn."""
+    (no ``expires_at`` check -- ``expire_due_candidates`` is pending-only). LIVENESS GATE: the
+    candidate must be EXACTLY 'scheduled' to release -- a candidate that is gone, rejected, or flipped
+    to any OTHER state (kept/pending/posted, e.g. a stale swipe clobbered it) is SKIPPED and its job
+    CANCELED (never released into a job-vs-candidate status split). RETRY GATE: a job carrying a future ``next_attempt_at`` (a
+    backoff timestamp set after a failed release attempt) is NOT yet eligible even if ``publish_at``
+    is in the past -- the masterplan future-gates retries on ``next_attempt_at <= now`` (mirrors the
+    relay publication-job claim). Returns the jobs newly flipped to 'due'. Caller in immediate_txn."""
     now = now or _utc_now_iso()
     due = conn.execute(
         _sa_text(
             f"SELECT {_JOB_COLS} FROM content_publish_jobs "
             "WHERE release_state = 'scheduled' AND publish_at <= :now "
+            "AND (next_attempt_at IS NULL OR next_attempt_at <= :now) "
             "ORDER BY publish_at, id LIMIT :limit"
         ),
         {"now": now, "limit": int(limit)},
@@ -132,8 +177,11 @@ def claim_due_jobs(conn: Connection, *, now: str | None = None, limit: int = 50)
             _sa_text("SELECT status FROM content_candidates WHERE id = :id AND org_id = :org"),
             {"id": int(job["candidate_id"]), "org": job["org_id"]},
         ).fetchone()
-        if cand is None or str(cand[0]) == "rejected":
-            # candidate gone or rejected after scheduling -> cancel the job, never release.
+        if cand is None or str(cand[0]) != "scheduled":
+            # The candidate must be EXACTLY 'scheduled' to release. Gone, rejected, OR flipped to any
+            # other state (kept/pending/posted — e.g. a stale-tab swipe or forged decide clobbered it
+            # out from under the job) -> cancel the job, never release into a status split (M1,
+            # hardened: a job=due/posted while candidate!=scheduled would break hand-off/post).
             conn.execute(
                 _sa_text(
                     "UPDATE content_publish_jobs SET release_state = 'canceled', updated_at = :now "
@@ -155,14 +203,47 @@ def claim_due_jobs(conn: Connection, *, now: str | None = None, limit: int = 50)
     return claimed
 
 
-def mark_handed_off(conn: Connection, *, job_id: int, org_id: str, now: str | None = None) -> bool:
+def count_due_jobs(conn: Connection, *, now: str | None = None) -> int:
+    """Count SCHEDULED jobs currently eligible for ``claim_due_jobs`` (``publish_at <= now`` with the
+    ``next_attempt_at`` backoff gate passed). The claim-drain loop's TERMINATION signal: ``claim_due_jobs``
+    returns ONLY the jobs it FLIPPED to 'due' -- a since-rejected candidate's job is CANCELED and
+    EXCLUDED -- so an empty claim batch cannot be read as "no more due rows" (a full ``limit``-sized batch
+    of all-canceled jobs comes back ``[]``). Reusing the SAME gate here lets the drain stop only when the
+    scheduled-due set is truly empty, instead of trusting the (lossy) claimed count. Read-only -- the
+    caller does NOT need to be inside a write txn, though the drain calls it inside the claim's
+    ``immediate_txn`` so the count reflects the rows that batch already flipped/canceled."""
+    now = now or _utc_now_iso()
+    row = conn.execute(
+        _sa_text(
+            "SELECT COUNT(*) FROM content_publish_jobs "
+            "WHERE release_state = 'scheduled' AND publish_at <= :now "
+            "AND (next_attempt_at IS NULL OR next_attempt_at <= :now)"
+        ),
+        {"now": now},
+    ).fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
+
+def mark_handed_off(
+    conn: Connection,
+    *,
+    job_id: int,
+    org_id: str,
+    authorized_target_handle: str | None,
+    now: str | None = None,
+) -> bool:
     """Operator opened the composeUrl hand-off: release_state 'due' -> 'handed_off'. Org-scoped +
     conditional (only its own 'due' state). REFUSES if the candidate is no longer 'scheduled' (e.g.
-    rejected after the job was claimed -- review M1: never hand off a killed candidate). Returns
-    whether a row changed. Caller in immediate_txn."""
+    rejected after the job was claimed -- review M1: never hand off a killed candidate). Also
+    REFUSES unless ``authorized_target_handle`` matches the job's stored ``target_handle``
+    (normalized) -- the caller MUST prove it authorized THIS job's per-account publish binding
+    (Phase 4 per-account re-check), so a session scoped to a different account/persona cannot drive
+    the hand-off with only ``job_id`` + ``org_id``. Returns whether a row changed. immediate_txn."""
     job = get_publish_job(conn, job_id)
     if job is None or job["org_id"] != org_id:
         return False
+    if _norm_handle(authorized_target_handle) != _norm_handle(job["target_handle"]):
+        return False  # caller did not authorize this job's publish-AS binding -> fail closed
     if _candidate_status(conn, int(job["candidate_id"]), org_id) != "scheduled":
         return False
     now = now or _utc_now_iso()
@@ -181,14 +262,21 @@ def mark_posted(
     *,
     job_id: int,
     org_id: str,
+    authorized_target_handle: str | None,
     posted_ref: str | None = None,
     now: str | None = None,
 ) -> bool:
     """Operator confirmed posted: release_state 'due'/'handed_off' -> 'posted' (+ ``posted_ref``),
-    and the candidate status -> 'posted'. Org-scoped. Returns whether the job changed. immediate_txn."""
+    and the candidate status -> 'posted'. Org-scoped. REFUSES unless ``authorized_target_handle``
+    matches the job's stored ``target_handle`` (normalized) -- the caller MUST prove it authorized
+    THIS job's per-account publish binding (Phase 4 per-account re-check), so a session scoped to a
+    different account/persona cannot post with only ``job_id`` + ``org_id``. Returns whether the job
+    changed. immediate_txn."""
     job = get_publish_job(conn, job_id)
     if job is None or job["org_id"] != org_id:
         return False
+    if _norm_handle(authorized_target_handle) != _norm_handle(job["target_handle"]):
+        return False  # caller did not authorize this job's publish-AS binding -> fail closed
     # Fail closed if the candidate is no longer 'scheduled' (e.g. rejected after the job was claimed)
     # -- never post into a job whose candidate was killed (review M1: avoid a posted/rejected split).
     if _candidate_status(conn, int(job["candidate_id"]), org_id) != "scheduled":
@@ -244,7 +332,13 @@ def list_publish_jobs(
     limit: int = 200,
 ) -> list[dict]:
     """The content-calendar feed: an org's publish jobs in the given ``release_states``, soonest
-    first. Defaults to the LIVE states; pass ``states=('posted',)`` for history. Empty ``states`` -> []."""
+    first. Defaults to the LIVE states; pass ``states=('posted',)`` for history. Empty ``states`` -> [].
+
+    Each row JOINs its candidate to also carry ``candidate_payload_json`` (the draft/caption text)
+    and ``candidate_media_content_id`` (the rendered-media R2 ref) so the calendar surface can build
+    the operator HAND-OFF affordance (composeUrl + media download) the masterplan requires for a 'due'
+    job. INNER JOIN is safe: a job's candidate always exists (FK; candidates soft-expire, never
+    physically delete, and a physical GC cascades the job). NO cost column is ever selected."""
     if not states:
         return []
     keys = [f":s{i}" for i in range(len(states))]
@@ -253,9 +347,13 @@ def list_publish_jobs(
         params[f"s{i}"] = s
     rows = conn.execute(
         _sa_text(
-            f"SELECT {_JOB_COLS} FROM content_publish_jobs "
-            f"WHERE org_id = :org AND release_state IN ({', '.join(keys)}) "
-            "ORDER BY publish_at, id LIMIT :limit"
+            f"SELECT {_JOB_COLS_J}, "
+            "  c.payload_json AS candidate_payload_json, "
+            "  c.media_content_id AS candidate_media_content_id "
+            "FROM content_publish_jobs j "
+            "JOIN content_candidates c ON c.id = j.candidate_id "
+            f"WHERE j.org_id = :org AND j.release_state IN ({', '.join(keys)}) "
+            "ORDER BY j.publish_at, j.id LIMIT :limit"
         ),
         params,
     ).fetchall()

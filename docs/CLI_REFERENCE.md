@@ -13,7 +13,7 @@ Complete command reference for the SablePlatform CLI. Commands operate on `sable
 ## Bootstrap & Maintenance
 
 ```bash
-sable-platform init                      # Create sable.db + apply all 77 migrations, or run Alembic on SABLE_DATABASE_URL
+sable-platform init                      # Create sable.db + apply all 78 migrations, or run Alembic on SABLE_DATABASE_URL
 sable-platform init --db-path /alt/path  # Force a specific SQLite file
 sable-platform db-health                 # Backend-neutral DB healthcheck (exit 0/1)
 sable-platform db-health --json          # JSON output for Docker/automation
@@ -241,6 +241,23 @@ sable-platform relay pause-org <ORG_ID>
 **Grantable operator roles:** `sable_operator`, `admin`.
 
 **Kill-switch (`disable` / `pause-org`):** in one transaction sets `relay_clients.enabled=0` (stops the poller) **and** marks every `pending`/`retry`/`claimed` `relay_publication_jobs` row for the org to `state='dead'` with `last_error='org disabled by operator'` (stops the publisher). `'dead'` is the only CHECK-allowed halted value in the §3.1 state set `('pending','claimed','retry','done','dead')` — there is no `'halted'` state. Each command writes an `audit_log` row (`source='relay'`). Re-enable with `relay enable <ORG_ID>` (note: this does not resurrect the dead jobs — they stay terminal; new submissions enqueue fresh jobs).
+
+---
+
+## deck — Content Deck claim-due publish worker (Phase 4)
+
+The out-of-band claim-due worker for `content_publish_jobs` (migration 077). Gated by `SABLE_OPERATOR_ID` like every other CLI command.
+
+```bash
+# Flip every SCHEDULED job whose publish_at has passed to 'due' for operator hand-off.
+sable-platform deck publish-due
+sable-platform deck publish-due --limit 100   # max jobs claimed per batch (the drain loops until none remain)
+sable-platform deck publish-due --json        # emit {"claimed": N, "batches": M}
+```
+
+**What it does:** drains the scheduled-due backlog — runs `claim_due_jobs()` inside one `immediate_txn` and loops until `count_due_jobs()` reports the scheduled-due set is empty, flipping each due job `scheduled → due` (and canceling a job whose candidate was since rejected). It makes **NO external API call** — there is no auto-send; a `'due'` job awaits an operator opening the composeUrl hand-off (`deck` Phase 4 in SableWeb). `claim_due_jobs` is single-flight (atomic conditional UPDATE per job), so concurrent runs never double-release a job.
+
+**Deploy:** run on a timer. `deploy/sable-deck-publish.service` (oneshot, `SABLE_OPERATOR_ID=deck-publish-due`) + `deploy/sable-deck-publish.timer` (every 5 min) keep the hand-off queue current. Without this worker a scheduled candidate sits `'scheduled'` forever and never surfaces to the operator.
 
 ---
 

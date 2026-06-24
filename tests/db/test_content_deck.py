@@ -21,7 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from sable_platform.db import content_deck as cd
-from sable_platform.db.connection import ensure_schema
+from sable_platform.db.connection import _MIGRATIONS, ensure_schema
 from sable_platform.relay.bot.txn import immediate_txn
 
 
@@ -434,9 +434,11 @@ def test_sql_path_cascade_and_survive():
     raw.close()
 
 
-def test_sql_path_reaches_version_76():
+def test_sql_path_reaches_head_version():
     raw = _sql_conn()
-    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 77
+    # Derive the head from the registry so this can't go stale on the next migration
+    # (mirrors tests/cli/test_init.py's LATEST_SCHEMA_VERSION).
+    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == _MIGRATIONS[-1][1]
     raw.close()
 
 

@@ -93,6 +93,50 @@ def test_schedule_requires_target_handle(sa_conn):
                                   target_handle="  ", publish_at=FUTURE)
 
 
+def test_schedule_rejects_unbound_candidate(sa_conn):
+    """SEC-3 / Phase 4: a candidate whose STORED target_handle is NULL is an unbound full-ops-only
+    draft that cannot graduate to publish -- supplying a non-empty handle param must NOT let it be
+    scheduled (the candidate's own binding is authoritative, not an arbitrary param)."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        # target_handle defaults to NULL -> an unbound draft.
+        cid = cd.upsert_candidate(sa_conn, org_id="orgA", kind="meme",
+                                  payload_json="{}", source="seed")
+        assert cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
+                                       status="kept", expected_status="pending")
+        job = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@anything", publish_at=FUTURE)
+    assert job is None                                            # cannot graduate to publish
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"     # untouched, still re-bindable
+    assert cp.list_publish_jobs(sa_conn, "orgA") == []            # no job created
+
+
+def test_schedule_rejects_handle_mismatch(sa_conn):
+    """The caller-supplied target_handle MUST match the candidate's OWN stored binding -- a
+    mismatch FAILS CLOSED (None, no job, candidate untouched), so a caller can never authorize one
+    account but schedule the job as another (Phase 4 per-account re-check)."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn, target="@tigfoundation")
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@someoneelse", publish_at=FUTURE)
+    assert jid is None                                            # mismatch -> fail closed
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"     # candidate untouched
+    assert cp.list_publish_jobs(sa_conn, "orgA") == []            # no job created
+
+
+def test_schedule_matches_handle_case_insensitively(sa_conn):
+    """The handle match is normalized (strip/@/casefold), so a differently-cased authorized handle
+    is accepted and the job binds to the candidate's stored handle."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn, target="@tigfoundation")
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="TIGFoundation", publish_at=FUTURE)
+    assert jid and jid > 0
+    assert cp.get_publish_job(sa_conn, jid)["target_handle"] == "@tigfoundation"  # stored binding
+
+
 def test_claim_due_respects_publish_at(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
@@ -110,10 +154,43 @@ def test_claim_due_respects_publish_at(sa_conn):
     assert cp.get_publish_job(sa_conn, j_due)["release_state"] == "due"
 
 
+def test_claim_due_respects_future_next_attempt_at(sa_conn):
+    """RETRY GATE (masterplan future-gating): a job whose ``publish_at`` is in the past but whose
+    ``next_attempt_at`` (a backoff timestamp) is in the FUTURE is NOT yet claimable -- the worker
+    must honour the retry/backoff schedule, not release early. A past (or NULL) next_attempt_at is
+    claimable as before."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        c_backoff = _kept(sa_conn, target="@a")
+        c_ready = _kept(sa_conn, target="@b")
+        j_backoff = cp.schedule_candidate(sa_conn, candidate_id=c_backoff, org_id="orgA",
+                                          target_handle="@a", publish_at=PAST)
+        j_ready = cp.schedule_candidate(sa_conn, candidate_id=c_ready, org_id="orgA",
+                                        target_handle="@b", publish_at=PAST)
+        # j_backoff has a FUTURE retry timestamp -> still gated despite a past publish_at.
+        sa_conn.execute(
+            text("UPDATE content_publish_jobs SET next_attempt_at = :f WHERE id = :id"),
+            {"f": FUTURE, "id": j_backoff},
+        )
+    with immediate_txn(sa_conn):
+        claimed = cp.claim_due_jobs(sa_conn, now=NOW)
+    assert [j["id"] for j in claimed] == [j_ready]                         # only the un-gated job
+    assert cp.get_publish_job(sa_conn, j_backoff)["release_state"] == "scheduled"  # still scheduled
+    # Once the backoff window has passed (next_attempt_at <= now) it becomes claimable.
+    with immediate_txn(sa_conn):
+        sa_conn.execute(
+            text("UPDATE content_publish_jobs SET next_attempt_at = :p WHERE id = :id"),
+            {"p": PAST, "id": j_backoff},
+        )
+    with immediate_txn(sa_conn):
+        claimed2 = cp.claim_due_jobs(sa_conn, now=NOW)
+    assert [j["id"] for j in claimed2] == [j_backoff]
+
+
 def test_claim_due_single_flight(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
     with immediate_txn(sa_conn):
@@ -128,7 +205,7 @@ def test_stale_scheduled_candidate_still_releases(sa_conn):
     becomes due at publish_at (expire_due_candidates is pending-only -> no auto-expire)."""
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn, expires_at=PAST)   # already past its expiry
+        cid = _kept(sa_conn, target="@a", expires_at=PAST)   # already past its expiry
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
     with immediate_txn(sa_conn):
@@ -139,7 +216,7 @@ def test_stale_scheduled_candidate_still_releases(sa_conn):
 def test_since_rejected_candidate_is_canceled_not_released(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
         # operator rejects the candidate AFTER scheduling
@@ -154,16 +231,17 @@ def test_since_rejected_candidate_is_canceled_not_released(sa_conn):
 def test_hand_off_then_post_flips_candidate(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
     with immediate_txn(sa_conn):
         cp.claim_due_jobs(sa_conn, now=NOW)                       # -> due
     with immediate_txn(sa_conn):
-        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA")
+        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a")
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "handed_off"
     with immediate_txn(sa_conn):
-        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", posted_ref="https://x.com/p/1")
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a",
+                              posted_ref="https://x.com/p/1")
     job = cp.get_publish_job(sa_conn, jid)
     assert job["release_state"] == "posted" and job["posted_ref"] == "https://x.com/p/1"
     assert cd.get_candidate(sa_conn, cid)["status"] == "posted"   # candidate flipped
@@ -172,7 +250,7 @@ def test_hand_off_then_post_flips_candidate(sa_conn):
 def test_cancel_returns_candidate_to_kept(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=FUTURE)
     with immediate_txn(sa_conn):
@@ -184,16 +262,85 @@ def test_cancel_returns_candidate_to_kept(sa_conn):
 def test_state_flips_are_org_scoped(sa_conn):
     _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn, org="orgA")
+        cid = _kept(sa_conn, org="orgA", target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
         cp.claim_due_jobs(sa_conn, now=NOW)
     with immediate_txn(sa_conn):
-        # orgB cannot touch orgA's job
-        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgB") is False
-        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgB") is False
+        # orgB cannot touch orgA's job (org check fail-closes before the handle check)
+        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgB", authorized_target_handle="@a") is False
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgB", authorized_target_handle="@a") is False
         assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgB") is False
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "due"  # untouched
+
+
+def test_transitions_fail_closed_on_unauthorized_handle(sa_conn):
+    """Phase-4 per-account re-check: even in the RIGHT org, a hand-off/post must carry the job's
+    OWN bound target_handle. A caller authorizing a DIFFERENT handle (e.g. scoped to @other while
+    the job is bound to @a) is refused -- it cannot drive the flip with just job_id + org_id."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn, target="@a")
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@a", publish_at=PAST)
+        cp.claim_due_jobs(sa_conn, now=NOW)                       # job -> due
+    with immediate_txn(sa_conn):
+        # wrong authorized handle -> fail closed (no hand-off, no post)
+        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA",
+                                  authorized_target_handle="@other") is False
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA",
+                              authorized_target_handle="@other") is False
+        # a None authorized handle is likewise refused
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA",
+                              authorized_target_handle=None) is False
+    assert cp.get_publish_job(sa_conn, jid)["release_state"] == "due"   # untouched
+    # the correctly-authorized handle still drives the hand-off (matched, case-insensitive)
+    with immediate_txn(sa_conn):
+        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA",
+                                  authorized_target_handle="A") is True
+    assert cp.get_publish_job(sa_conn, jid)["release_state"] == "handed_off"
+
+
+def test_claim_due_cancels_job_whose_candidate_left_scheduled(sa_conn):
+    """LIVENESS GATE (hardened): a scheduled job whose candidate is no longer EXACTLY 'scheduled' --
+    e.g. a stale-tab/forged swipe flipped it back to 'kept' -- must NOT be released. The worker
+    cancels the job instead of flipping it to 'due' (else a publish job comes due for a candidate
+    that isn't scheduled, breaking hand-off/post)."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = _kept(sa_conn, target="@a")
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@a", publish_at=PAST)
+        # candidate clobbered back to 'kept' AFTER scheduling (the decide-route lifecycle bug class)
+        assert cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
+                                       status="kept", expected_status="scheduled")
+    with immediate_txn(sa_conn):
+        claimed = cp.claim_due_jobs(sa_conn, now=NOW)
+    assert claimed == []                                                # NOT released
+    assert cp.get_publish_job(sa_conn, jid)["release_state"] == "canceled"  # cancelled, not 'due'
+    assert cd.get_candidate(sa_conn, cid)["status"] == "kept"           # candidate left as-is
+
+
+def test_list_publish_jobs_carries_candidate_draft_and_media(sa_conn):
+    """The calendar feed JOINs the candidate so a 'due' job can surface its draft/caption +
+    rendered-media ref for the operator hand-off (composeUrl + media download)."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = cd.upsert_candidate(
+            sa_conn, org_id="orgA", kind="meme",
+            payload_json='{"text":"gm from the deck"}', source="seed",
+            target_handle="@a", media_content_id="sable-tig/memes/abc.png",
+        )
+        assert cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
+                                       status="kept", expected_status="pending")
+        jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@a", publish_at=FUTURE)
+    jobs = cp.list_publish_jobs(sa_conn, "orgA")
+    assert len(jobs) == 1 and jobs[0]["id"] == jid
+    assert jobs[0]["candidate_payload_json"] == '{"text":"gm from the deck"}'
+    assert jobs[0]["candidate_media_content_id"] == "sable-tig/memes/abc.png"
+    # the original job columns still ride along unchanged
+    assert jobs[0]["target_handle"] == "@a" and jobs[0]["release_state"] == "scheduled"
 
 
 def test_list_publish_jobs_is_org_scoped_and_ordered(sa_conn):
@@ -219,15 +366,15 @@ def test_post_and_handoff_refuse_since_rejected_after_claim(sa_conn):
     split."""
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
         cp.claim_due_jobs(sa_conn, now=NOW)                                  # job -> due
         cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
                                 status="rejected", expected_status="scheduled")  # rejected AFTER claim
     with immediate_txn(sa_conn):
-        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA") is False
-        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA") is False
+        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a") is False
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a") is False
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "due"        # job not advanced
     assert cd.get_candidate(sa_conn, cid)["status"] == "rejected"            # candidate not un-rejected
 
@@ -235,36 +382,38 @@ def test_post_and_handoff_refuse_since_rejected_after_claim(sa_conn):
 def test_mark_handed_off_only_from_due(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=FUTURE)   # still 'scheduled'
     with immediate_txn(sa_conn):
-        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA") is False  # not 'due' yet
+        assert cp.mark_handed_off(sa_conn, job_id=jid, org_id="orgA",
+                                  authorized_target_handle="@a") is False  # not 'due' yet
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "scheduled"
 
 
 def test_double_post_is_idempotent(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
         cp.claim_due_jobs(sa_conn, now=NOW)
     with immediate_txn(sa_conn):
-        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA") is True
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a") is True
     with immediate_txn(sa_conn):
-        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA") is False   # already posted
+        assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA",
+                              authorized_target_handle="@a") is False   # already posted
     assert cd.get_candidate(sa_conn, cid)["status"] == "posted"
 
 
 def test_cancel_of_posted_job_refused_and_candidate_unchanged(sa_conn):
     _seed(sa_conn); sa_conn.commit()
     with immediate_txn(sa_conn):
-        cid = _kept(sa_conn)
+        cid = _kept(sa_conn, target="@a")
         jid = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
                                     target_handle="@a", publish_at=PAST)
         cp.claim_due_jobs(sa_conn, now=NOW)
-        cp.mark_posted(sa_conn, job_id=jid, org_id="orgA")
+        cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a")
     with immediate_txn(sa_conn):
         assert cp.cancel_publish_job(sa_conn, job_id=jid, org_id="orgA") is False  # can't cancel posted
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "posted"
