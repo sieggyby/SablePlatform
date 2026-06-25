@@ -388,9 +388,10 @@ def list_publish_jobs(
     """The content-calendar feed: an org's publish jobs in the given ``release_states``, soonest
     first. Defaults to the LIVE states; pass ``states=('posted',)`` for history. Empty ``states`` -> [].
 
-    Each row JOINs its candidate to also carry ``candidate_payload_json`` (the draft/caption text)
-    and ``candidate_media_content_id`` (the rendered-media R2 ref) so the calendar surface can build
-    the operator HAND-OFF affordance (composeUrl + media download) the masterplan requires for a 'due'
+    Each row JOINs its candidate to also carry ``candidate_payload_json`` (the draft/caption text),
+    ``candidate_media_content_id`` (the rendered-media R2 ref), and ``candidate_kind`` (the content
+    kind: meme/tweet/thread/quote_card/clip/copypasta) so the calendar surface can build the
+    operator HAND-OFF affordance (composeUrl + media download) the masterplan requires for a 'due'
     job. INNER JOIN is safe: a job's candidate always exists (FK; candidates soft-expire, never
     physically delete, and a physical GC cascades the job). NO cost column is ever selected."""
     if not states:
@@ -403,7 +404,8 @@ def list_publish_jobs(
         _sa_text(
             f"SELECT {_JOB_COLS_J}, "
             "  c.payload_json AS candidate_payload_json, "
-            "  c.media_content_id AS candidate_media_content_id "
+            "  c.media_content_id AS candidate_media_content_id, "
+            "  c.kind AS candidate_kind "
             "FROM content_publish_jobs j "
             "JOIN content_candidates c ON c.id = j.candidate_id "
             f"WHERE j.org_id = :org AND j.release_state IN ({', '.join(keys)}) "
