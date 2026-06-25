@@ -98,6 +98,7 @@ _MIGRATIONS = [
     ("077_content_publish_jobs.sql", 77),
     ("078_operator_meme_budget.sql", 78),
     ("079_deck_assertion_nonce.sql", 79),
+    ("080_content_quality_elo.sql", 80),
 ]
 
 

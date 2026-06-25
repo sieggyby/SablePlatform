@@ -240,6 +240,10 @@ TABLE_LOAD_ORDER: list[str] = [
     # Migration 079: single-use deck/produce assertion store (Codex Tier-1 replay defense). No FKs,
     # TEXT primary key (sig) -> NOT in SEQUENCE_TABLES.
     "deck_consumed_assertions",          # no FKs (TEXT PK = sig)
+    # Migration 080: content-preference Elo rollup (parallel to media_quality). No FKs, composite TEXT
+    # PK (org_id, subject_kind, subject_key) -> NOT in SEQUENCE_TABLES. (content_deck_decisions.applied
+    # rides its existing create above.)
+    "content_quality",                   # no FKs (composite TEXT PK, no sequence)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.

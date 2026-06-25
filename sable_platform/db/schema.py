@@ -2260,6 +2260,25 @@ media_quality = Table(
     PrimaryKeyConstraint("org_id", "content_id"),
 )
 
+# Content-preference Elo (mig 080), parallel to media_quality. Dual-grain: subject_kind='candidate'
+# (live within-deck tie-break, ephemeral) | 'feature' (durable engine signal at kind/template/format
+# grain). Folded forward-only from content_deck_decisions duels (pair_loser_id) by content_quality.py.
+content_quality = Table(
+    "content_quality",
+    metadata,
+    Column("org_id", Text, nullable=False),
+    Column("subject_kind", Text, nullable=False),
+    Column("subject_key", Text, nullable=False),
+    Column("elo", Float, nullable=False, server_default="1500"),
+    Column("n_offered", Integer, nullable=False, server_default="0"),
+    Column("n_chosen", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    PrimaryKeyConstraint("org_id", "subject_kind", "subject_key"),
+    CheckConstraint(
+        "subject_kind IN ('candidate', 'feature')", name="ck_content_quality_subject_kind"
+    ),
+)
+
 media_embeddings = Table(
     "media_embeddings",
     metadata,
@@ -2938,6 +2957,8 @@ content_deck_decisions = Table(
     Column("decision", Text, nullable=False),
     Column("surface", Text, nullable=False),
     Column("pair_loser_id", Integer),
+    # mig 080: forward-only fold flag for the content-quality Elo (parallel to media_rec_events.applied).
+    Column("applied", Integer, nullable=False, server_default="0"),
     Column("created_at", Text, nullable=False, server_default=func.now()),
     CheckConstraint(
         "actor_kind IN ('operator','community')", name="ck_content_deck_decisions_actor_kind"
@@ -2949,6 +2970,7 @@ content_deck_decisions = Table(
     CheckConstraint("surface IN ('web','discord')", name="ck_content_deck_decisions_surface"),
     Index("content_deck_decisions_by_candidate", "org_id", "candidate_id"),
     Index("content_deck_decisions_by_actor", "org_id", "actor", "created_at"),
+    Index("ix_content_deck_decisions_unapplied", "org_id", "applied"),  # mig 080
 )
 
 content_deck_operator_state = Table(

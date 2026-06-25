@@ -1,0 +1,144 @@
+"""Migration 080 — content-preference Elo rollup tests (sable_platform.db.content_quality).
+
+Exercises the duel-fold applier against the in-memory schema:
+  * apply_pending_content_events — forward-only pairwise Elo from the duel log, DUAL grain
+    (candidate = live tie-break; feature = durable, like-to-like over kind/template/format);
+  * swipe rows (NULL pair_loser_id) are cursored forward but NOT folded;
+  * idempotent (second call folds nothing);
+  * a GC'd candidate contributes no feature signal but still folds at candidate grain;
+  * get_content_quality — the {elo, pick_rate, n_offered, n_chosen} rollup, subject_kind-filtered,
+    NO cost column.
+All org-scoped.
+"""
+from __future__ import annotations
+
+import json
+
+from sqlalchemy import text
+
+from sable_platform.db import content_quality as cq
+
+_BASE = 1500.0
+
+
+def _seed_org(conn, org_id="orgA"):
+    conn.execute(text("INSERT INTO orgs (org_id, display_name) VALUES (:o, :o)"), {"o": org_id})
+    conn.commit()
+
+
+def _cand(conn, cid, org, kind, payload):
+    conn.execute(
+        text(
+            "INSERT INTO content_candidates (id, org_id, kind, status, target_handle, payload_json, source) "
+            "VALUES (:id, :org, :kind, 'pending', '@x', :pl, 'seed')"
+        ),
+        {"id": cid, "org": org, "kind": kind, "pl": json.dumps(payload)},
+    )
+
+
+def _duel(conn, org, winner, loser, did):
+    conn.execute(
+        text(
+            "INSERT INTO content_deck_decisions (id, candidate_id, org_id, actor, actor_kind, decision, surface, pair_loser_id) "
+            "VALUES (:id, :w, :org, 'op1', 'operator', 'keep', 'web', :l)"
+        ),
+        {"id": did, "w": winner, "org": org, "l": loser},
+    )
+
+
+def _swipe(conn, org, cand, did, decision="keep"):
+    conn.execute(
+        text(
+            "INSERT INTO content_deck_decisions (id, candidate_id, org_id, actor, actor_kind, decision, surface, pair_loser_id) "
+            "VALUES (:id, :c, :org, 'op1', 'operator', :d, 'web', NULL)"
+        ),
+        {"id": did, "c": cand, "org": org, "d": decision},
+    )
+
+
+def test_apply_pending_folds_duels_dual_grain(sa_conn):
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake", "format": "two-panel"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x"})
+    _cand(sa_conn, 3, "orgA", "meme", {"template_id": "two_buttons", "format": "two-panel"})
+    _duel(sa_conn, "orgA", 1, 2, 1)  # meme/drake beats tweet
+    _duel(sa_conn, "orgA", 1, 3, 2)  # meme/drake beats meme/two_buttons
+    sa_conn.commit()
+
+    folded = cq.apply_pending_content_events(sa_conn, "orgA")
+    assert folded == 2
+
+    cand = cq.get_content_quality(sa_conn, "orgA", "candidate")
+    feat = cq.get_content_quality(sa_conn, "orgA", "feature")
+
+    # candidate grain: #1 won twice (above base), #2/#3 lost (below base); counts right.
+    assert cand["1"]["elo"] > _BASE and cand["1"]["n_offered"] == 2 and cand["1"]["n_chosen"] == 2
+    assert cand["2"]["elo"] < _BASE and cand["2"]["n_chosen"] == 0
+    assert cand["3"]["elo"] < _BASE and cand["3"]["n_chosen"] == 0
+    assert cand["1"]["pick_rate"] == 1.0
+
+    # feature grain, LIKE-TO-LIKE: kind:meme beat kind:tweet (duel 1); template:drake beat
+    # template:two_buttons (duel 2). kind:meme-vs-meme (duel 2) and format two-panel-vs-two-panel are
+    # SAME-value → no update (not present or unchanged).
+    assert feat["kind:meme"]["elo"] > _BASE
+    assert feat["kind:tweet"]["elo"] < _BASE
+    assert feat["template:drake"]["elo"] > _BASE
+    assert feat["template:two_buttons"]["elo"] < _BASE
+    assert "format:two-panel" not in feat  # only same-value comparisons → never folded
+
+
+def test_idempotent_second_apply_folds_nothing(sa_conn):
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x"})
+    _duel(sa_conn, "orgA", 1, 2, 1)
+    sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 1
+    elo_after_first = cq.get_content_quality(sa_conn, "orgA", "candidate")["1"]["elo"]
+    # second call: nothing left unapplied → folds 0, Elo unchanged (no double-count).
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 0
+    assert cq.get_content_quality(sa_conn, "orgA", "candidate")["1"]["elo"] == elo_after_first
+
+
+def test_swipe_rows_not_folded_but_cursored(sa_conn):
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
+    _swipe(sa_conn, "orgA", 1, 1, "keep")  # NULL pair_loser_id → never folds into the Elo
+    sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 0  # no duel → nothing folded
+    assert cq.get_content_quality(sa_conn, "orgA", "candidate") == {}  # no Elo rows written
+    # the swipe row is marked applied=1 (cursored) so it isn't re-scanned forever.
+    row = sa_conn.execute(text("SELECT applied FROM content_deck_decisions WHERE id = 1")).fetchone()
+    assert row[0] == 1
+
+
+def test_gc_candidate_folds_candidate_grain_skips_feature(sa_conn):
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
+    # loser #99 has NO content_candidates row (GC'd; the no-FK decisions log survives the purge).
+    _duel(sa_conn, "orgA", 1, 99, 1)
+    sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 1
+    cand = cq.get_content_quality(sa_conn, "orgA", "candidate")
+    # candidate grain still folds (ids only): winner up, the GC'd loser down.
+    assert cand["1"]["elo"] > _BASE and cand["99"]["elo"] < _BASE
+    # feature grain: the loser has no features → no like-to-like pair formed (winner kind has no opponent).
+    assert cq.get_content_quality(sa_conn, "orgA", "feature") == {}
+
+
+def test_get_content_quality_org_scoped_no_cost(sa_conn):
+    _seed_org(sa_conn, "orgA")
+    _seed_org(sa_conn, "orgB")
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x"})
+    _cand(sa_conn, 3, "orgB", "meme", {"template_id": "drake"})
+    _cand(sa_conn, 4, "orgB", "tweet", {"text": "y"})
+    _duel(sa_conn, "orgA", 1, 2, 1)
+    _duel(sa_conn, "orgB", 3, 4, 2)
+    sa_conn.commit()
+    cq.apply_pending_content_events(sa_conn, "orgA")
+    a = cq.get_content_quality(sa_conn, "orgA")  # all grains, org A only
+    assert "1" in a and "3" not in a  # org B's candidate excluded
+    for v in a.values():
+        for k in v:
+            assert "cost" not in k.lower() and "usd" not in k.lower()
