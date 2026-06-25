@@ -131,7 +131,14 @@ def list_deck_candidates(
     """Per-operator deck feed: PENDING candidates for ``org_id``, excluding this operator's
     dismissed rows and un-expired snoozes. Ordered null-score-last, score DESC, newest first.
     (The replies-vs-originals two-section merge is a SableWeb read-layer concern -- this
-    returns the Originals stream only.)"""
+    returns the Originals stream only.)
+
+    DELIBERATE WEB-ONLY DIVERGENCE (C0): SableWeb's ``getDeckCandidates`` additionally drops a card
+    this operator SKIPPED within ~12h (a transient 'not now', read off ``content_deck_decisions``
+    where decision='skip'), so a skipped card stops re-showing on refresh. That skip-window predicate
+    is NOT replicated here on purpose: the Python feed serves no live operator surface (Slopper
+    ``deck.py`` exposes no operator-feed route). Mirror it here only if/when a Discord/community feed
+    reuses this function."""
     rows = conn.execute(
         _sa_text(
             f"SELECT c.id, c.org_id, c.kind, c.status, c.target_handle, c.payload_json, "
