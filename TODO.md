@@ -59,6 +59,19 @@ Memory: `project_solstitch_fitcheck` already tracks the build context. Add bot-s
 3. **Reverse direction.** "Pull prod state down to laptop for replay/debug." Not urgent — `migrate to-postgres` covers the one-shot first-cut, and there's no current need for the reverse.
 4. **Multi-process safety on target.** Today each sync runs a sequence of per-table transactions. If two operators run sync concurrently against the same prod target, cursors race. Add a target-side advisory lock (Postgres `pg_advisory_lock` or a `platform_meta` token) before adopting any automated cadence.
 
+### Content Deck — ambient generate→swipe→schedule loop
+
+**Substrate SHIPPED (Phase 0–4).** Migrations **076** content-deck (`content_candidates` / `content_deck_decisions` / `content_deck_operator_state` — the swipe log already records keep/reject/skip **+ pairwise `pair_loser_id` duels** for org-scoped Elo/BT), **077** `content_publish_jobs` (keep→schedule→release; the `deck publish-due` claim-due worker future-gates on `publish_at` and flips to `'due'` for OPERATOR HAND-OFF — NO auto-publish-to-X in v1), **078** `operator_meme_budget` (per-operator weekly produce ledger), **079** `deck_assertion_nonce` (single-use store for the SableWeb-signed per-account `deck_authz` HMAC — Codex Tier-1 replay defense). Code: `db/content_deck.py`, `db/content_publish.py`, `db/deck_assertions.py`, `cli/deck_cmds.py`. Plan: `~/sable-workspace/CONTENT_DECK_MASTERPLAN.md`. **Next free migration slot: 080.**
+
+**Design-review fixes DEPLOYED LIVE 2026-06-25** (branch `feat/content-deck-design-fixes`, all 3 repos, **NO migration — slot 080 untouched**, every change is an additive read or a write into existing mig-076 columns). SP side = the additive `content_publish.py` durable kept-feed SELECT (**M2**: `status='kept'` candidates survive reload/org-switch) + the Chunk-0 `candidate_kind` passthrough; the other 7 chunks are SableWeb/Slopper (**M4** thread-aware ordered per-tweet hand-off; **M1a** brand-safe `@tigintern` default + **N4** shitpost-floor band; **M1b** kind→role Wall-5 with **N2** approver override [arf/ben/p0/sparta]; **N1** produce-as-persona; **N3** tweet producer `POST /api/v1/deck/produce-text`). Record: `~/sable-workspace/CONTENT_DECK_DESIGN_FIXES_SHIPPED.md` + `CONTENT_DECK_DESIGN_REVIEW.md` + `CONTENT_DECK_FIX_PLAN{,_ADDENDUM}.md`.
+
+**Next / in-flight:**
+
+1. **Full content-preference Elo + pairwise A/B duel for the deck** — per-operator ratings over `content_deck_decisions` (the `pair_loser_id` substrate is already there), parallel to the existing `/ops/media-health` media Elo (`media_rec_events`, mig 066). No new migration expected.
+2. **Skip-persistence fix** — a deck skip currently re-shows on refresh; persist it so it doesn't re-surface (candidate is in `content_deck_operator_state` territory).
+
+**Deferred (not built):** thread / quote_card / clip producers (`generate_tweet_variants` makes standalone tweets, not threads; quote_card/clip need a paid render path — the kind selector offers only meme/tweet); non-depleting seed (M3 polish); cross-client "Due now / Ready" kept inbox (M2 N5 — kept feed is org-locked by decision).
+
 ---
 ## [Cult Grader cross-repo] 2026-06-01 — bridge-node backfill after lateral fix
 Source: Sable_Cult_Grader/docs/MEGA_IMPLEMENTATION_PLAN.md §5/§6. Cult Grader is fixing a latent bug where `compute_twitter_metrics` passed the project DISPLAY NAME instead of the handle to the reply-graph edge builders, so the project's own account was never excluded as a graph node. Since reply_threads come from the project's own posts, the project became a dominant HUB node that captured bridge-node (articulation-point) detection. (There are NO self-edges — `a!=b` is enforced; density direction is ambiguous.) `platform_sync._seed_bridge_nodes` (~line 719) seeded `sable.db` bridge-node entities from that corrupted graph.
