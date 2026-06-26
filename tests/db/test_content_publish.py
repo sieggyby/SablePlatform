@@ -323,9 +323,10 @@ def test_hand_off_then_post_flips_candidate(sa_conn):
     assert cp.get_publish_job(sa_conn, jid)["release_state"] == "handed_off"
     with immediate_txn(sa_conn):
         assert cp.mark_posted(sa_conn, job_id=jid, org_id="orgA", authorized_target_handle="@a",
-                              posted_ref="https://x.com/p/1")
+                              posted_ref="https://x.com/p/status/1899000000000000001")
     job = cp.get_publish_job(sa_conn, jid)
-    assert job["release_state"] == "posted" and job["posted_ref"] == "https://x.com/p/1"
+    # mark_posted now NORMALIZES the posted_ref to a bare tweet id (the JOIN key for outcome tracking)
+    assert job["release_state"] == "posted" and job["posted_ref"] == "1899000000000000001"
     assert cd.get_candidate(sa_conn, cid)["status"] == "posted"   # candidate flipped
 
 

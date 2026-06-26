@@ -56,6 +56,41 @@ from sable_platform.db.content_deck import (
 # ``_normalize_publish_at``) and rejects an out-of-range month/day/time.
 _STRICT_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
+# Posted-tweet-id normalization (deck posted->outcome tracking). The operator Mark-posted flow may
+# supply a full tweet URL or a bare id; ``mark_posted`` normalizes it to a BARE numeric id so it can
+# be the JOIN key into ``relay_tweet_snapshots.tweet_x_id`` with no new schema. BEST-EFFORT: an
+# absent/unparseable ref stores NULL (the post is NEVER blocked — the job just never enters the
+# outcome snapshot set). STRICT so a wrong id is never stored (which would attribute performance to
+# an unrelated tweet): a bare id is a FULL 5-25-digit match; a URL must be a real x.com/twitter.com
+# host with a ``/status/<id>`` path segment whose id is bounded by a non-digit (so "12345abc" or a
+# 26-digit run is REJECTED, not truncated), and a non-X host (example.com) is rejected.
+_TWEET_ID_BARE_RE = re.compile(r"^\d{5,25}$")
+_STATUS_PATH_RE = re.compile(r"/status(?:es)?/(\d{5,25})(?:/|$)")
+_TWEET_HOSTS = frozenset({"x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"})
+
+
+def parse_tweet_id(raw: str | None) -> str | None:
+    """Normalize an operator posted reference (tweet URL or bare id) to a bare numeric tweet id, or
+    None. Accepts a bare 5-25-digit id, or an ``x.com``/``twitter.com`` ``/status/<id>`` URL (with a
+    trailing ``/photo/N``, query, or anchor). Returns ``None`` on empty/unparseable/non-X input —
+    NEVER a truncated/partial id. Pure + side-effect-free."""
+    from urllib.parse import urlsplit
+
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if _TWEET_ID_BARE_RE.match(s):
+        return s
+    try:
+        parts = urlsplit(s if "//" in s else "https://" + s)
+    except ValueError:
+        return None
+    if (parts.hostname or "").lower() not in _TWEET_HOSTS:
+        return None  # not an x.com/twitter.com URL → never trust a /status/ id from another host
+    m = _STATUS_PATH_RE.search(parts.path)
+    return m.group(1) if m else None
+
+
 _JOB_COLS = (
     "id, candidate_id, org_id, target_handle, release_state, publish_at, next_attempt_at, "
     "attempt_count, claimed_at, handed_off_at, posted_ref, created_at, updated_at"
@@ -321,6 +356,9 @@ def mark_posted(
     if _candidate_status(conn, int(job["candidate_id"]), org_id) != "scheduled":
         return False
     now = now or _utc_now_iso()
+    # Normalize the posted reference to a BARE tweet id so it can JOIN relay_tweet_snapshots for the
+    # outcome panel. Best-effort: unparseable/absent -> NULL (never blocks the post; just untracked).
+    posted_ref = parse_tweet_id(posted_ref)
     res = conn.execute(
         _sa_text(
             "UPDATE content_publish_jobs SET release_state = 'posted', posted_ref = :ref, "
@@ -338,6 +376,85 @@ def mark_posted(
         status="posted", expected_status="scheduled",
     )
     return True
+
+
+def get_deck_posted_performance(conn: Connection, org_id: str) -> dict:
+    """The audience-OUTCOME rollup for posted deck content (the Content-Quality dashboard panel).
+
+    JOINs each posted job (release_state='posted' with a bare-id ``posted_ref``) to its candidate KIND
+    and to the SHARED ``relay_tweet_snapshots`` 24h/'ok' reading. Returns, per org and per kind, the
+    posted count, how many have MATURED (a 24h reading exists), the MATURING count (posted but not yet
+    24h-measured), and the mean 24h engagement (likes+retweets+replies — the campaign-rollup ``.total``,
+    NOT views) over matured rows only (null when none matured). MATURED-ONLY: a tweet < 24h old simply
+    has no 24h row and is reported as maturing, NEVER counted as zero. NO cost column. Org-scoped.
+
+    Degrades to all-zero/empty if the tables are absent — the caller wraps it best-effort so an old db
+    never 500s the dashboard.
+    """
+    rows = conn.execute(
+        _sa_text(
+            "SELECT j.posted_ref AS ref, c.kind AS kind, s.status AS snap_status, "
+            "  COALESCE(s.likes, 0) + COALESCE(s.retweets, 0) + COALESCE(s.replies, 0) AS engagement "
+            "FROM content_publish_jobs j "
+            "LEFT JOIN content_candidates c ON c.id = j.candidate_id AND c.org_id = j.org_id "
+            "LEFT JOIN relay_tweet_snapshots s "
+            "  ON s.tweet_x_id = j.posted_ref AND s.target_age_hours = 24 "
+            "WHERE j.org_id = :org AND j.release_state = 'posted' "
+            "  AND j.posted_ref IS NOT NULL AND j.posted_ref <> ''"
+        ),
+        {"org": org_id},
+    ).fetchall()
+
+    # DEDUP by distinct posted_ref: an operator could Mark-posted two different jobs with the SAME
+    # tweet — count the TWEET once (else measured/the mean inflate). The snapshot due-query dedups so
+    # there is normally ≤1 24h row per tweet, but relay_tweet_snapshots has no UNIQUE on
+    # (tweet_x_id, target_age_hours), so to stay DETERMINISTIC under a duplicate row we PREFER an 'ok'
+    # reading over any non-'ok' (deleted/null) — a real measurement always wins. Index a
+    # CompatConnection row by POSITION (the documented unpack gotcha).
+    seen: dict[str, dict] = {}
+    for r in rows:
+        ref = str(r[0])
+        status = (r[2] or None)
+        cur = seen.get(ref)
+        if cur is None or (cur["status"] != "ok" and status == "ok"):
+            seen[ref] = {"kind": str(r[1] or "(unset)"), "status": status, "eng": int(r[3] or 0)}
+
+    posted_count = len(seen)
+    measured_eng: list[int] = []
+    deleted_count = 0
+    by_kind: dict[str, dict] = {}
+    for v in seen.values():
+        k = by_kind.setdefault(v["kind"], {"posted": 0, "measured": 0, "eng_sum": 0})
+        k["posted"] += 1
+        if v["status"] == "ok":  # a MATURED 24h reading (a (0,0,0) reading is a real measured zero)
+            k["measured"] += 1
+            k["eng_sum"] += v["eng"]
+            measured_eng.append(v["eng"])
+        elif v["status"] == "deleted":  # 404'd — TERMINAL, never "maturing forever"
+            deleted_count += 1
+
+    measured_count = len(measured_eng)
+    avg_engagement = (sum(measured_eng) / measured_count) if measured_count else None
+    by_kind_out = [
+        {
+            "kind": kind,
+            "posted": v["posted"],
+            "measured": v["measured"],
+            "avg_engagement": (v["eng_sum"] / v["measured"]) if v["measured"] else None,
+        }
+        for kind, v in sorted(
+            by_kind.items(),
+            key=lambda kv: (-(kv[1]["eng_sum"] / kv[1]["measured"]) if kv[1]["measured"] else 1.0, kv[0]),
+        )
+    ]
+    return {
+        "posted_count": posted_count,
+        "measured_count": measured_count,
+        "avg_engagement": avg_engagement,
+        # posted but neither measured nor deleted (still maturing) — a gone tweet is terminal, excluded.
+        "maturing_count": posted_count - measured_count - deleted_count,
+        "by_kind": by_kind_out,
+    }
 
 
 def cancel_publish_job(
