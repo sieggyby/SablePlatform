@@ -130,7 +130,21 @@ def _apply_one_duel(conn: Connection, org_id: str, winner_id: int, loser_id: int
     # feature grain — like-to-like over the candidates' kind/template/format (durable engine signal).
     wfeat = _feature_map(conn, org_id, winner_id)
     lfeat = _feature_map(conn, org_id, loser_id)
+    # ``template``/``format`` are KIND-SPECIFIC vocabularies — a meme template id and a tweet format
+    # bucket are not comparable, and the deck duels ACROSS kinds (getDeckDuelPair pairs any two
+    # pending cards, no kind filter). So those two arms fold ONLY when the pair shares a kind; a
+    # cross-kind duel contributes the ``kind`` arm alone (its meaningful signal). ``kind`` always
+    # folds. (Before text candidates stamped a ``format``, this was moot — only one side ever carried
+    # one; it becomes load-bearing now that tweets/threads populate ``format:`` too.)
+    # NOTE: the feature subject_key (``format:<value>``) is not itself kind-namespaced, so this gate
+    # guards DUEL pairing, not subject_key pooling. The producers keep the two ``format`` vocabularies
+    # disjoint at the source — the text producer stamps ``text:<bucket>`` while the meme producer
+    # stamps the template display name — so a text-format row and a meme-format row can never share a
+    # subject_key even though they live in one namespace.
+    same_kind = wfeat.get("kind") is not None and wfeat.get("kind") == lfeat.get("kind")
     for t in _FEATURE_TYPES:
+        if t != "kind" and not same_kind:
+            continue
         wv, lv = wfeat.get(t), lfeat.get(t)
         if wv and lv and wv != lv:
             _pairwise(conn, org_id, "feature", f"{t}:{wv}", f"{t}:{lv}", now)

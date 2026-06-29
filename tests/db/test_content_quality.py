@@ -87,6 +87,39 @@ def test_apply_pending_folds_duels_dual_grain(sa_conn):
     assert "format:two-panel" not in feat  # only same-value comparisons → never folded
 
 
+def test_cross_kind_duel_folds_kind_only_not_format(sa_conn):
+    """``template``/``format`` are KIND-SPECIFIC vocabularies, and the deck duels ACROSS kinds. A
+    meme (format:two-panel) vs a tweet that now ALSO carries a format (format:hot_take) must fold the
+    ``kind`` arm ONLY — never compare a meme template/format to a text format (would mix two
+    incompatible vocabularies in one namespace)."""
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake", "format": "two-panel"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x", "format": "hot_take"})
+    _duel(sa_conn, "orgA", 1, 2, 1)  # meme beats tweet — CROSS-KIND
+    sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 1
+    feat = cq.get_content_quality(sa_conn, "orgA", "feature")
+    assert feat["kind:meme"]["elo"] > _BASE and feat["kind:tweet"]["elo"] < _BASE  # kind folds
+    # format/template do NOT cross kinds:
+    assert "format:two-panel" not in feat and "format:hot_take" not in feat
+    assert "template:drake" not in feat
+
+
+def test_same_kind_text_duel_folds_format(sa_conn):
+    """Two TWEETS with different format buckets: the ``format`` arm folds WITHIN the kind, so the
+    text format: Elo populates (the gap this change closes). ``kind`` is same-value → not folded."""
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "tweet", {"text": "a", "format": "hot_take"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "b", "format": "listicle"})
+    _duel(sa_conn, "orgA", 1, 2, 1)  # hot_take beats listicle — SAME-KIND
+    sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 1
+    feat = cq.get_content_quality(sa_conn, "orgA", "feature")
+    assert feat["format:hot_take"]["elo"] > _BASE
+    assert feat["format:listicle"]["elo"] < _BASE
+    assert "kind:tweet" not in feat  # same kind on both sides → no kind fold
+
+
 def test_idempotent_second_apply_folds_nothing(sa_conn):
     _seed_org(sa_conn)
     _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
