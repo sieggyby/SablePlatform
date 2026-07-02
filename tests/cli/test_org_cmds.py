@@ -170,6 +170,12 @@ import pytest
     ("max_ai_usd_per_org_per_week", "10001", False),  # above max 10000
     ("stuck_run_threshold_hours", "0.5", True),  # boundary inclusive
     ("stuck_run_threshold_hours", "0.1", False),  # below 0.5
+    ("max_ambient_usd_per_org_per_day", "0.50", True),
+    ("max_ambient_usd_per_org_per_day", "101", False),   # above max 100
+    ("ambient_num_per_kind", "4", True),
+    ("ambient_num_per_kind", "13", False),               # above the produce range
+    ("ambient_max_pending_per_kind", "10", True),
+    ("ambient_max_pending_per_kind", "0", False),        # below min 1
 ])
 def test_org_config_range_validation(tmp_path, monkeypatch, key, value, should_pass):
     """org config set rejects out-of-range numeric values."""
@@ -183,3 +189,27 @@ def test_org_config_range_validation(tmp_path, monkeypatch, key, value, should_p
     else:
         assert r.exit_code != 0, f"Expected fail for {key}={value}: {r.output}"
         assert "out of range" in r.output
+
+
+def test_list_org_configs_parses_and_survives_bad_blob(tmp_path, monkeypatch):
+    """list_org_configs returns (org_id, parsed dict) for every org; a NULL/corrupt
+    config_json degrades to {} instead of hiding the other orgs from a batch job."""
+    from sable_platform.db.connection import get_db
+    from sable_platform.db.orgs import list_org_configs
+
+    db_path = str(tmp_path / "t.db")
+    _setup_file_db(db_path)
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    CliRunner().invoke(org_create, ["alpha", "--name", "A"])
+    CliRunner().invoke(org_create, ["beta", "--name", "B"])
+    CliRunner().invoke(org_config_set, ["beta", "ambient_deck_enabled", "true"])
+    conn = get_db(db_path)
+    try:
+        conn.execute("UPDATE orgs SET config_json = 'not json' WHERE org_id = 'alpha'")
+        conn.commit()
+        cfgs = {o: c for o, c in list_org_configs(conn)}
+        assert set(cfgs) >= {"alpha", "beta"}
+        assert cfgs["alpha"] == {}                       # corrupt blob → {}
+        assert cfgs["beta"]["ambient_deck_enabled"] == "true"
+    finally:
+        conn.close()

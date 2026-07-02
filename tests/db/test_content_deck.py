@@ -258,6 +258,23 @@ def test_valid_pairwise_decision_writes(sa_conn):
     assert row[0] == loser
 
 
+def test_count_pending_candidates_by_kind_and_org(sa_conn):
+    _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        _mk(sa_conn, kind="meme")
+        _mk(sa_conn, kind="meme")
+        _mk(sa_conn, kind="tweet")
+        _mk(sa_conn, org="orgB", kind="meme")            # other org — never counted
+        kept = _mk(sa_conn, kind="meme")
+        cd.set_candidate_status(sa_conn, candidate_id=kept, org_id="orgA", status="kept")
+    sa_conn.commit()
+    assert cd.count_pending_candidates(sa_conn, "orgA", kind="meme") == 2   # kept excluded
+    assert cd.count_pending_candidates(sa_conn, "orgA", kind="tweet") == 1
+    assert cd.count_pending_candidates(sa_conn, "orgA", kind="clip") == 0
+    assert cd.count_pending_candidates(sa_conn, "orgA") == 3                # all kinds
+    assert cd.count_pending_candidates(sa_conn, "orgB", kind="meme") == 1
+
+
 # --- expire (pending-only, org-scoped) --------------------------------------
 def test_expire_due_is_pending_only_and_org_scoped(sa_conn):
     _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()

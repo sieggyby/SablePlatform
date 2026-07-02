@@ -9,6 +9,7 @@ import pytest
 import datetime
 
 from sable_platform.db.cost import (
+    get_org_ambient_daily_cap,
     log_cost,
     get_weekly_spend,
     get_org_cost_cap,
@@ -193,6 +194,87 @@ def test_get_org_image_daily_cap_default_below_weekly(in_memory_db):
         cap = get_org_image_daily_cap(conn, "orgG")
     assert cap == pytest.approx(2.00)
     assert cap < 5.00  # the property that makes it bind
+
+
+def test_get_daily_spend_call_type_prefix_family(in_memory_db):
+    # The ambient producer's daily cap sums the whole 'ambient.' tag family — and ONLY it.
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('orgP', 'Org P')")
+    for ct, cost in [
+        ("ambient.meme_ideate", 0.30),
+        ("ambient.write_variants", 0.05),
+        ("meme_ideate", 0.40),        # operator Generate click — NOT ambient
+        ("write_variants", 0.10),     # operator compose — NOT ambient
+    ]:
+        conn.execute(
+            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status, created_at) "
+            "VALUES ('orgP', ?, ?, 'success', '2026-06-23 10:00:00')",
+            (ct, cost),
+        )
+    conn.commit()
+    now = datetime.datetime(2026, 6, 23, 15, 0, 0, tzinfo=_UTC)
+    assert get_daily_spend(conn, "orgP", call_type_prefix="ambient.", now=now) == pytest.approx(0.35)
+
+
+def test_get_daily_spend_prefix_and_call_type_mutually_exclusive(in_memory_db):
+    conn = in_memory_db
+    with pytest.raises(ValueError):
+        get_daily_spend(conn, "orgP", call_type="x", call_type_prefix="y")
+
+
+def test_get_daily_spend_prefix_escapes_like_wildcards(in_memory_db):
+    # A literal '%'/'_' in the prefix must match literally, never as a LIKE wildcard.
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('orgQ', 'Org Q')")
+    for ct in ("ambient_meme", "ambientXmeme"):  # '_' as wildcard would match BOTH
+        conn.execute(
+            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status, created_at) "
+            "VALUES ('orgQ', ?, 0.10, 'success', '2026-06-23 10:00:00')",
+            (ct,),
+        )
+    conn.commit()
+    now = datetime.datetime(2026, 6, 23, 15, 0, 0, tzinfo=_UTC)
+    assert get_daily_spend(conn, "orgQ", call_type_prefix="ambient_", now=now) == pytest.approx(0.10)
+
+
+def test_get_org_ambient_daily_cap_from_db_config(in_memory_db):
+    conn = in_memory_db
+    cfg = json.dumps({"max_ambient_usd_per_org_per_day": 0.25})
+    conn.execute(
+        "INSERT INTO orgs (org_id, display_name, config_json) VALUES ('orgR', 'Org R', ?)",
+        (cfg,),
+    )
+    conn.commit()
+    assert get_org_ambient_daily_cap(conn, "orgR") == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize("blob", ["[]", '"a string"', "42"])
+def test_cap_accessors_degrade_on_non_dict_config_json(in_memory_db, blob):
+    # Codex FIX: valid-but-non-dict JSON ('[]') used to raise AttributeError through
+    # cfg.get and crash the budget gate; every cap accessor must fall back to defaults.
+    from sable_platform.db.cost import get_org_cost_cap
+    conn = in_memory_db
+    conn.execute(
+        "INSERT INTO orgs (org_id, display_name, config_json) VALUES ('orgT', 'Org T', ?)",
+        (blob,),
+    )
+    conn.commit()
+    with patch("sable_platform.db.cost._read_platform_config", return_value={}):
+        assert get_org_ambient_daily_cap(conn, "orgT") == pytest.approx(1.00)
+        assert get_org_cost_cap(conn, "orgT") == pytest.approx(5.00)
+        assert get_org_image_daily_cap(conn, "orgT") == pytest.approx(2.00)
+
+
+def test_get_org_ambient_daily_cap_default_below_weekly(in_memory_db):
+    # Same binding property as the image cap: the $1/day default must sit below the $5/week
+    # default or a nightly producer could consume the whole week's budget.
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('orgS', 'Org S')")
+    conn.commit()
+    with patch("sable_platform.db.cost._read_platform_config", return_value={}):
+        cap = get_org_ambient_daily_cap(conn, "orgS")
+    assert cap == pytest.approx(1.00)
+    assert cap < 5.00
 
 
 def test_get_daily_spend_naive_now_treated_as_utc(in_memory_db):

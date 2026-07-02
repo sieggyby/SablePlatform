@@ -131,7 +131,9 @@ def get_org_cost_cap(conn: Connection, org_id: str) -> float:
             cap = cfg.get("max_ai_usd_per_org_per_week")
             if cap is not None:
                 return float(cap)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            # AttributeError: a non-dict JSON blob ('[]', '"x"') has no .get —
+            # degrade to the platform/default cap, never crash a budget gate.
             pass
 
     platform_cfg = _read_platform_config()
@@ -163,11 +165,17 @@ def get_daily_spend(
     org_id: str,
     *,
     call_type: str | None = None,
+    call_type_prefix: str | None = None,
     now: datetime.datetime | None = None,
 ) -> float:
     """Total ``cost_usd`` for ``org_id`` in the current UTC calendar day, optionally filtered
-    to one ``call_type`` (e.g. ``'meme_image'``). ``now`` is injectable for tests. The finer,
-    same-day companion to ``get_weekly_spend`` — closes the "weekly-only" image-cap gap."""
+    to one ``call_type`` (e.g. ``'meme_image'``) OR to a ``call_type_prefix`` family (e.g.
+    ``'ambient.'`` sums every ``ambient.*`` tag — the same dotted-prefix convention the relay's
+    ``relay_socialdata.%`` daily cap uses). The two filters are mutually exclusive. ``now`` is
+    injectable for tests. The finer, same-day companion to ``get_weekly_spend`` — closes the
+    "weekly-only" image-cap gap."""
+    if call_type is not None and call_type_prefix is not None:
+        raise ValueError("call_type and call_type_prefix are mutually exclusive")
     now = now or datetime.datetime.now(datetime.timezone.utc)
     if now.tzinfo is None:  # treat a naive `now` as already-UTC (don't let astimezone() assume local)
         now = now.replace(tzinfo=datetime.timezone.utc)
@@ -187,6 +195,12 @@ def get_daily_spend(
     if call_type is not None:
         sql += "   AND call_type = :ct"
         params["ct"] = call_type
+    elif call_type_prefix is not None:
+        # LIKE-escape the prefix so a literal '%'/'_' in a tag can never widen the match
+        # (dotted tags like 'ambient.' contain neither today; this is belt-and-suspenders).
+        esc = call_type_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        sql += "   AND call_type LIKE :ctp ESCAPE '\\'"
+        params["ctp"] = f"{esc}%"
     row = conn.execute(text(sql), params).fetchone()
     return float(row[0])
 
@@ -211,7 +225,9 @@ def get_org_image_daily_cap(conn: Connection, org_id: str) -> float:
             cap = cfg.get("max_image_usd_per_org_per_day")
             if cap is not None:
                 return float(cap)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            # AttributeError: a non-dict JSON blob ('[]', '"x"') has no .get —
+            # degrade to the platform/default cap, never crash a budget gate.
             pass
 
     platform_cfg = _read_platform_config()
@@ -219,4 +235,39 @@ def get_org_image_daily_cap(conn: Connection, org_id: str) -> float:
         platform_cfg.get("platform", {})
         .get("cost_caps", {})
         .get("max_image_usd_per_org_per_day", 2.00)
+    )
+
+
+def get_org_ambient_daily_cap(conn: Connection, org_id: str) -> float:
+    """Per-org DAILY cap for the AMBIENT deck producers (the ``ambient.*`` cost-tag family —
+    the nightly ``sable deck produce-ambient`` batch). Resolution order mirrors
+    ``get_org_cost_cap``: ``orgs.config_json.max_ambient_usd_per_org_per_day`` >
+    platform ``cost_caps.max_ambient_usd_per_org_per_day`` > $1.00 default.
+
+    The default is deliberately BELOW the weekly AI-cap default ($5.00/week) so it actually
+    BINDS (same reasoning as the image cap above): ambient spend is a subset of weekly AI
+    spend, and a nightly producer must never be able to consume the whole week's budget in a
+    couple of runs. Operator-driven produce (the deck Generate button) is NOT counted against
+    this cap — it carries its own controls (``operator_meme_budget`` / ``reserve_generation``)
+    and logs non-``ambient.*`` tags."""
+    row = conn.execute(
+        text("SELECT config_json FROM orgs WHERE org_id=:org_id"),
+        {"org_id": org_id},
+    ).fetchone()
+    if row:
+        try:
+            cfg = json.loads(row["config_json"] or "{}")
+            cap = cfg.get("max_ambient_usd_per_org_per_day")
+            if cap is not None:
+                return float(cap)
+        except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+            # AttributeError: a non-dict JSON blob ('[]', '"x"') has no .get —
+            # degrade to the platform/default cap, never crash a budget gate.
+            pass
+
+    platform_cfg = _read_platform_config()
+    return float(
+        platform_cfg.get("platform", {})
+        .get("cost_caps", {})
+        .get("max_ambient_usd_per_org_per_day", 1.00)
     )

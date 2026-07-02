@@ -42,6 +42,12 @@ _NUMERIC_RANGES: dict[str, tuple[float, float]] = {
     "bridge_decay_threshold": (0.0, 1.0),
     "discord_pulse_regression_threshold": (0.0, 1.0),
     "max_ai_usd_per_org_per_week": (0.0, 10000.0),
+    # Ambient deck generation (the nightly `sable deck produce-ambient` batch — BUILD-DARK).
+    # String companions (`ambient_deck_enabled`, `ambient_produce_as`, `ambient_kinds`) pass
+    # through unvalidated like every other free-text key.
+    "max_ambient_usd_per_org_per_day": (0.0, 100.0),
+    "ambient_num_per_kind": (1, 12),
+    "ambient_max_pending_per_kind": (1, 200),
 }
 
 
@@ -63,6 +69,23 @@ def validate_org_config(key: str, value: str):
             raise ValueError(f"Value {parsed} out of range for '{key}' (must be {lo}–{hi}).")
         return parsed
     return value
+
+
+def list_org_configs(conn) -> list[tuple[str, dict]]:
+    """Every org's ``(org_id, parsed config_json)``, ordered by ``org_id``. A row whose
+    ``config_json`` is NULL/empty/unparseable yields ``{}`` (never raises — a single bad
+    blob must not hide the other orgs from a config-driven batch job). Read-only."""
+    rows = conn.execute(text("SELECT org_id, config_json FROM orgs ORDER BY org_id")).fetchall()
+    out: list[tuple[str, dict]] = []
+    for row in rows:
+        try:
+            cfg = json.loads(row[1]) if row[1] else {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+        except (json.JSONDecodeError, TypeError, ValueError):
+            cfg = {}
+        out.append((row[0], cfg))
+    return out
 
 
 def set_org_config(conn, org_id: str, key: str, value: str):

@@ -219,6 +219,19 @@ def claim_pending_candidate(conn: Connection, *, candidate_id: int, org_id: str,
     return (result.rowcount or 0) > 0
 
 
+def count_pending_candidates(conn: Connection, org_id: str, *, kind: str | None = None) -> int:
+    """How many status='pending' candidates ``org_id`` has, optionally for one ``kind``.
+    Read-only. The ambient producer's per-kind backlog gate: an org whose deck is not being
+    triaged stops accumulating paid candidates instead of piling on."""
+    sql = "SELECT COUNT(*) FROM content_candidates WHERE org_id = :org AND status = 'pending'"
+    params: dict = {"org": org_id}
+    if kind is not None:
+        sql += " AND kind = :kind"
+        params["kind"] = kind
+    row = conn.execute(_sa_text(sql), params).fetchone()
+    return int(row[0])
+
+
 def expire_due_candidates(conn: Connection, *, org_id: str, now: str | None = None) -> int:
     """Soft-expire DUE candidates: flip ONLY status='pending' rows whose expires_at has
     passed to status='expired'. NEVER touches kept/scheduled/posted/rejected (round-3
