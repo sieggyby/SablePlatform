@@ -71,6 +71,25 @@ def validate_org_config(key: str, value: str):
     return value
 
 
+def get_org_config_value(conn, org_id: str, key: str):
+    """One org's single ``config_json`` value, or ``None`` when the org/key/blob is
+    missing or unparseable — the SAFE single-key read (a FAIL-CLOSED consumer like the
+    Phase-5 ``pairwise_disclosure_signed`` gate treats ``None``/empty as disabled).
+    Read-only."""
+    row = conn.execute(
+        text("SELECT config_json FROM orgs WHERE org_id = :org_id"), {"org_id": org_id}
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        cfg = json.loads(row[0]) if row[0] else {}
+        if not isinstance(cfg, dict):
+            return None
+        return cfg.get(key)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
 def list_org_configs(conn) -> list[tuple[str, dict]]:
     """Every org's ``(org_id, parsed config_json)``, ordered by ``org_id``. A row whose
     ``config_json`` is NULL/empty/unparseable yields ``{}`` (never raises — a single bad

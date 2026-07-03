@@ -175,3 +175,51 @@ def test_get_content_quality_org_scoped_no_cost(sa_conn):
     for v in a.values():
         for k in v:
             assert "cost" not in k.lower() and "usd" not in k.lower()
+
+
+def _community_duel(conn, org, winner, loser, did, actor="discord:user:42"):
+    conn.execute(
+        text(
+            "INSERT INTO content_deck_decisions (id, candidate_id, org_id, actor, actor_kind, decision, surface, pair_loser_id) "
+            "VALUES (:id, :w, :org, :a, 'community', 'keep', 'discord', :l)"
+        ),
+        {"id": did, "w": winner, "org": org, "l": loser, "a": actor},
+    )
+
+
+def test_community_duels_fold_into_quarantined_prefix(sa_conn):
+    """Phase-5 QUARANTINE: a community duel folds into 'community:'-prefixed rows at BOTH
+    grains, so operator-Elo consumers (ranking, the meme/text loops — all keyed on
+    unprefixed keys) can never read community taste."""
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake", "format": "Drake"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x"})
+    _community_duel(sa_conn, "orgA", 1, 2, 1)
+    sa_conn.commit()
+
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 1
+    cand = cq.get_content_quality(sa_conn, "orgA", "candidate")
+    feat = cq.get_content_quality(sa_conn, "orgA", "feature")
+
+    # community rows exist ONLY under the prefix…
+    assert cand["community:1"]["elo"] > _BASE and cand["community:2"]["elo"] < _BASE
+    assert feat["community:kind:meme"]["elo"] > _BASE
+    assert feat["community:kind:tweet"]["elo"] < _BASE
+    # …and the operator keyspace is untouched.
+    assert "1" not in cand and "2" not in cand
+    assert "kind:meme" not in feat and "kind:tweet" not in feat
+
+
+def test_mixed_operator_and_community_batch_folds_separately(sa_conn):
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x"})
+    _duel(sa_conn, "orgA", 1, 2, 1)                 # operator: meme beats tweet
+    _community_duel(sa_conn, "orgA", 2, 1, 2)       # community: tweet beats meme (opposite!)
+    sa_conn.commit()
+
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 2
+    feat = cq.get_content_quality(sa_conn, "orgA", "feature")
+    # the two signals live in separate keyspaces and may DISAGREE without interfering
+    assert feat["kind:meme"]["elo"] > _BASE            # operators liked the meme
+    assert feat["community:kind:meme"]["elo"] < _BASE  # the community didn't

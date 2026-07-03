@@ -544,3 +544,99 @@ def test_list_deck_decisions_org_pins_both_sides(sa_conn):
     sa_conn.commit()
     assert cd.list_deck_decisions(sa_conn, "orgA") == []  # d.org_id=A but c.org_id=B -> excluded
     assert cd.list_deck_decisions(sa_conn, "orgB") == []  # c.org_id=B but d.org_id=A -> excluded
+
+
+# --- Phase-5 community-duel accessors ---------------------------------------
+def _duel_row(conn, org, winner, loser, *, actor="discord:user:1", actor_kind="community",
+              surface="discord", created_at=None):
+    import datetime as _dt
+    created = created_at or _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        text(
+            "INSERT INTO content_deck_decisions (candidate_id, org_id, actor, actor_kind, decision, "
+            " surface, pair_loser_id, created_at) "
+            "VALUES (:w, :org, :a, :ak, 'keep', :s, :l, :c)"
+        ),
+        {"w": winner, "org": org, "a": actor, "ak": actor_kind, "s": surface, "l": loser, "c": created},
+    )
+
+
+def test_get_deck_duel_pair_pending_only_and_window(sa_conn):
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        a = _mk(sa_conn, kind="tweet")
+        b = _mk(sa_conn, kind="meme")
+        kept = _mk(sa_conn, kind="tweet")
+        cd.set_candidate_status(sa_conn, candidate_id=kept, org_id="orgA", status="kept")
+    sa_conn.commit()
+    pair = cd.get_deck_duel_pair(sa_conn, "orgA")
+    assert sorted(r["id"] for r in pair) == sorted([a, b])  # kept excluded, pending only
+
+    # a RECENT discord duel excludes BOTH participants…
+    _duel_row(sa_conn, "orgA", a, b); sa_conn.commit()
+    assert cd.get_deck_duel_pair(sa_conn, "orgA") == []
+    # …but an OLD one (outside the 12h window) does not.
+    sa_conn.execute(text("DELETE FROM content_deck_decisions")); sa_conn.commit()
+    _duel_row(sa_conn, "orgA", a, b, created_at="2020-01-01T00:00:00Z"); sa_conn.commit()
+    assert len(cd.get_deck_duel_pair(sa_conn, "orgA")) == 2
+
+
+def test_get_deck_duel_pair_web_duels_do_not_exclude(sa_conn):
+    """The operator web duel is a different surface — it must not starve the Discord game."""
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        a = _mk(sa_conn); b = _mk(sa_conn)
+    sa_conn.commit()
+    _duel_row(sa_conn, "orgA", a, b, actor="op1", actor_kind="operator", surface="web")
+    sa_conn.commit()
+    assert len(cd.get_deck_duel_pair(sa_conn, "orgA")) == 2
+
+
+def test_get_deck_duel_pair_org_scoped(sa_conn):
+    _seed(sa_conn, "orgA", "orgB"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        _mk(sa_conn, org="orgB"); _mk(sa_conn, org="orgB")
+    sa_conn.commit()
+    assert cd.get_deck_duel_pair(sa_conn, "orgA") == []
+
+
+def test_has_recent_duel_vote(sa_conn):
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        a = _mk(sa_conn); b = _mk(sa_conn)
+    sa_conn.commit()
+    _duel_row(sa_conn, "orgA", a, b, actor="discord:user:7"); sa_conn.commit()
+    assert cd.has_recent_duel_vote(sa_conn, "orgA", actor="discord:user:7",
+                                   candidate_ids=(a, b), since="2020-01-01T00:00:00Z")
+    # a different actor, or a window after the vote → no match
+    assert not cd.has_recent_duel_vote(sa_conn, "orgA", actor="discord:user:8",
+                                       candidate_ids=(a, b), since="2020-01-01T00:00:00Z")
+    assert not cd.has_recent_duel_vote(sa_conn, "orgA", actor="discord:user:7",
+                                       candidate_ids=(a, b), since="2999-01-01T00:00:00Z")
+
+
+def test_community_duel_leaderboard_agreement_math(sa_conn):
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        kept = _mk(sa_conn)      # operators later kept this one
+        rej = _mk(sa_conn)       # operators later rejected this one
+        pend = _mk(sa_conn)      # still pending — no verdict
+        cd.set_candidate_status(sa_conn, candidate_id=kept, org_id="orgA", status="kept")
+        cd.set_candidate_status(sa_conn, candidate_id=rej, org_id="orgA", status="rejected")
+    sa_conn.commit()
+    # voter 1: picked the kept card over the rejected one (agrees) + one undecided pair
+    _duel_row(sa_conn, "orgA", kept, rej, actor="discord:user:1")
+    _duel_row(sa_conn, "orgA", pend, kept, actor="discord:user:1")
+    # voter 2: picked the rejected card over the kept one (disagrees)
+    _duel_row(sa_conn, "orgA", rej, kept, actor="discord:user:2")
+    # an OPERATOR web duel must not appear on the community board
+    _duel_row(sa_conn, "orgA", kept, rej, actor="op1", actor_kind="operator", surface="web")
+    sa_conn.commit()
+
+    board = cd.get_community_duel_leaderboard(sa_conn, "orgA")
+    assert [r["actor"] for r in board] == ["discord:user:1", "discord:user:2"]
+    v1, v2 = board[0], board[1]
+    assert v1["votes"] == 2 and v1["agreed"] == 1 and v1["decided"] == 2
+    # voter 2 picked rej over kept — the inverse of the ops verdict: decided but NOT
+    # agreed (agreed requires winner kept/scheduled/posted OR loser rejected).
+    assert v2["votes"] == 1 and v2["agreed"] == 0 and v2["decided"] == 1

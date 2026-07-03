@@ -23,7 +23,7 @@ LOAD-BEARING SAFETY (from the audit):
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text as _sa_text
 from sqlalchemy.engine import Connection
@@ -217,6 +217,106 @@ def claim_pending_candidate(conn: Connection, *, candidate_id: int, org_id: str,
         {"claimed": claimed_status, "id": int(candidate_id), "org": org_id},
     )
     return (result.rowcount or 0) > 0
+
+
+def get_deck_duel_pair(
+    conn: Connection,
+    org_id: str,
+    *,
+    surface: str = "discord",
+    window_hours: int = 12,
+    now: str | None = None,
+) -> list[dict]:
+    """Pick up to TWO status='pending' candidates for a COMMUNITY A/B duel (Phase 5) —
+    the Python sibling of SableWeb's ``getDeckDuelPair``. Excludes any candidate that
+    already appeared in a duel on this ``surface`` within ``window_hours`` (org-level —
+    one Discord duel serves MANY voters, so the exclusion is per-surface, not per-actor,
+    stopping the same pair from re-posting all day while still letting a card collect
+    more votes later). RANDOM order so pairs vary. Returns 0/1/2 rows (the caller
+    degrades to "not enough cards"). Read-only; never flips status; no cost column."""
+    if now is None:
+        now = _utc_now_iso()
+    try:
+        window_start = (
+            datetime.fromisoformat(now.replace("Z", "+00:00")) - timedelta(hours=window_hours)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        window_start = now
+    rows = conn.execute(
+        _sa_text(
+            f"SELECT {_CAND_COLS} FROM content_candidates c "
+            "WHERE c.org_id = :org AND c.status = 'pending' "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM content_deck_decisions d "
+            "     WHERE d.org_id = c.org_id AND d.surface = :surface "
+            "       AND d.pair_loser_id IS NOT NULL "
+            "       AND (d.candidate_id = c.id OR d.pair_loser_id = c.id) "
+            "       AND d.created_at > :since"
+            "  ) "
+            "ORDER BY RANDOM() LIMIT 2"
+        ),
+        {"org": org_id, "surface": surface, "since": window_start},
+    ).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def has_recent_duel_vote(
+    conn: Connection,
+    org_id: str,
+    *,
+    actor: str,
+    candidate_ids: tuple[int, int],
+    since: str,
+) -> bool:
+    """Whether ``actor`` already voted on a duel involving either of ``candidate_ids``
+    after ``since`` — the DURABLE one-vote-per-member guard behind the bot's in-memory
+    dedup (which dies on restart). Read-only."""
+    row = conn.execute(
+        _sa_text(
+            "SELECT 1 FROM content_deck_decisions "
+            "WHERE org_id = :org AND actor = :actor AND pair_loser_id IS NOT NULL "
+            "  AND created_at >= :since "
+            "  AND (candidate_id IN (:a, :b) OR pair_loser_id IN (:a, :b)) "
+            "LIMIT 1"
+        ),
+        {"org": org_id, "actor": actor, "since": since,
+         "a": int(candidate_ids[0]), "b": int(candidate_ids[1])},
+    ).fetchone()
+    return row is not None
+
+
+def get_community_duel_leaderboard(
+    conn: Connection,
+    org_id: str,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    """The Phase-5 taste leaderboard: per community actor, duel votes cast and how often
+    their pick AGREED with the eventual operator verdict (winner ended kept/scheduled/
+    posted, or the loser ended rejected — pairs with no operator verdict yet count only
+    toward ``votes``). Most-votes first. Read-only; no cost column; interpretive."""
+    rows = conn.execute(
+        _sa_text(
+            "SELECT d.actor, COUNT(*) AS votes, "
+            "  SUM(CASE WHEN w.status IN ('kept','scheduled','posted') "
+            "            OR l.status = 'rejected' THEN 1 ELSE 0 END) AS agreed, "
+            "  SUM(CASE WHEN w.status IN ('kept','scheduled','posted','rejected') "
+            "            OR l.status IN ('kept','scheduled','posted','rejected') "
+            "           THEN 1 ELSE 0 END) AS decided "
+            "FROM content_deck_decisions d "
+            "LEFT JOIN content_candidates w ON w.id = d.candidate_id AND w.org_id = d.org_id "
+            "LEFT JOIN content_candidates l ON l.id = d.pair_loser_id AND l.org_id = d.org_id "
+            "WHERE d.org_id = :org AND d.actor_kind = 'community' "
+            "  AND d.pair_loser_id IS NOT NULL AND d.decision = 'keep' "
+            "GROUP BY d.actor ORDER BY votes DESC, agreed DESC LIMIT :limit"
+        ),
+        {"org": org_id, "limit": int(limit)},
+    ).fetchall()
+    return [
+        {"actor": str(r[0]), "votes": int(r[1] or 0), "agreed": int(r[2] or 0),
+         "decided": int(r[3] or 0)}
+        for r in rows
+    ]
 
 
 def count_pending_candidates(conn: Connection, org_id: str, *, kind: str | None = None) -> int:

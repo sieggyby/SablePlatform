@@ -97,13 +97,14 @@ def apply_pending_content_events(conn: Connection, org_id: str) -> int:
     with immediate_txn(sa_conn):
         rows = conn.execute(
             text(
-                "SELECT id, candidate_id, pair_loser_id, decision FROM content_deck_decisions "
+                "SELECT id, candidate_id, pair_loser_id, decision, actor_kind "
+                "FROM content_deck_decisions "
                 "WHERE org_id = :org AND applied = 0 ORDER BY id ASC"
             ),
             {"org": org_id},
         ).fetchall()
         for r in rows:
-            event_id, winner_id, loser_id, decision = r[0], r[1], r[2], r[3]
+            event_id, winner_id, loser_id, decision, actor_kind = r[0], r[1], r[2], r[3], r[4]
             # Fold ONLY a genuine duel: a pair_loser_id carried on a 'keep' row (the winner). The
             # decision guard future-proofs the Elo against a stray pair_loser_id ever appearing on a
             # reject/skip row (which would fold with inverted semantics) — the /duel route only ever
@@ -114,7 +115,15 @@ def apply_pending_content_events(conn: Connection, org_id: str) -> int:
                 and decision == "keep"
                 and int(winner_id) != int(loser_id)
             ):
-                _apply_one_duel(conn, org_id, int(winner_id), int(loser_id), now)
+                # Phase-5 QUARANTINE: a COMMUNITY duel (the Discord game) folds into
+                # 'community:'-prefixed subject keys at BOTH grains — structurally separate
+                # rows in the same table, so community taste NEVER pollutes the operator
+                # Elo that steers ranking/production. Every operator-Elo consumer keys on
+                # unprefixed 'kind:/template:/format:' (or bare candidate ids) and can't
+                # match a prefixed row; promotion past the quarantine is gated on the
+                # masterplan §11 K-tests (a deliberate future change, not a config flip).
+                prefix = "community:" if actor_kind == "community" else ""
+                _apply_one_duel(conn, org_id, int(winner_id), int(loser_id), now, key_prefix=prefix)
                 folded += 1
             conn.execute(
                 text("UPDATE content_deck_decisions SET applied = 1 WHERE id = :id"),
@@ -123,10 +132,13 @@ def apply_pending_content_events(conn: Connection, org_id: str) -> int:
     return folded
 
 
-def _apply_one_duel(conn: Connection, org_id: str, winner_id: int, loser_id: int, now: str) -> None:
-    """Fold one duel (winner beat loser) at candidate grain (live tie-break) + feature grain (durable)."""
+def _apply_one_duel(conn: Connection, org_id: str, winner_id: int, loser_id: int, now: str,
+                    *, key_prefix: str = "") -> None:
+    """Fold one duel (winner beat loser) at candidate grain (live tie-break) + feature grain (durable).
+    ``key_prefix`` namespaces BOTH grains' subject keys ('community:' for the Phase-5 Discord game —
+    the quarantine that keeps community taste out of the operator Elo)."""
     # candidate grain — the live within-deck tie-break overlay (ephemeral; GC's with the candidate).
-    _pairwise(conn, org_id, "candidate", str(winner_id), str(loser_id), now)
+    _pairwise(conn, org_id, "candidate", f"{key_prefix}{winner_id}", f"{key_prefix}{loser_id}", now)
     # feature grain — like-to-like over the candidates' kind/template/format (durable engine signal).
     wfeat = _feature_map(conn, org_id, winner_id)
     lfeat = _feature_map(conn, org_id, loser_id)
@@ -147,7 +159,7 @@ def _apply_one_duel(conn: Connection, org_id: str, winner_id: int, loser_id: int
             continue
         wv, lv = wfeat.get(t), lfeat.get(t)
         if wv and lv and wv != lv:
-            _pairwise(conn, org_id, "feature", f"{t}:{wv}", f"{t}:{lv}", now)
+            _pairwise(conn, org_id, "feature", f"{key_prefix}{t}:{wv}", f"{key_prefix}{t}:{lv}", now)
 
 
 def _feature_map(conn: Connection, org_id: str, candidate_id: int) -> dict[str, str]:

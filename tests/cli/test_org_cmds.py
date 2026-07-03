@@ -191,6 +191,29 @@ def test_org_config_range_validation(tmp_path, monkeypatch, key, value, should_p
         assert "out of range" in r.output
 
 
+def test_get_org_config_value_safe_reads(tmp_path, monkeypatch):
+    """The single-key read behind the Phase-5 fail-closed disclosure gate: a real value
+    returns; missing org/key or a corrupt/non-dict blob returns None (never raises)."""
+    from sable_platform.db.connection import get_db
+    from sable_platform.db.orgs import get_org_config_value
+
+    db_path = str(tmp_path / "t.db")
+    _setup_file_db(db_path)
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    CliRunner().invoke(org_create, ["gamma", "--name", "G"])
+    CliRunner().invoke(org_config_set, ["gamma", "pairwise_disclosure_signed", "2026-07-02 sieggy"])
+    conn = get_db(db_path)
+    try:
+        assert get_org_config_value(conn, "gamma", "pairwise_disclosure_signed") == "2026-07-02 sieggy"
+        assert get_org_config_value(conn, "gamma", "nope") is None
+        assert get_org_config_value(conn, "no_such_org", "pairwise_disclosure_signed") is None
+        conn.execute("UPDATE orgs SET config_json = '[]' WHERE org_id = 'gamma'")
+        conn.commit()
+        assert get_org_config_value(conn, "gamma", "pairwise_disclosure_signed") is None
+    finally:
+        conn.close()
+
+
 def test_list_org_configs_parses_and_survives_bad_blob(tmp_path, monkeypatch):
     """list_org_configs returns (org_id, parsed dict) for every org; a NULL/corrupt
     config_json degrades to {} instead of hiding the other orgs from a batch job."""
