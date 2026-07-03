@@ -313,9 +313,11 @@ def list_deck_decisions(
     ideation-quality readout (read-only, NO cost, NEVER mutates).
 
     Returns each decision with the candidate's ``kind``, ``payload_json`` (where
-    ``template_id`` / ``register_band`` live) and producer ``score``. Optional ``kind``
-    filter (e.g. ``'meme'``) and ``since`` (an ISO-8601 inclusive lower bound on
-    ``created_at``). Newest first.
+    ``template_id`` / ``register_band`` live), producer ``score``, and CURRENT ``status``
+    (so a consumer can reconcile a historical decision against where the candidate ended
+    up — e.g. the hard-negatives reader skips a reject whose candidate was later
+    reverted + kept). Optional ``kind`` filter (e.g. ``'meme'``) and ``since`` (an
+    ISO-8601 inclusive lower bound on ``created_at``). Newest first.
 
     INNER JOIN: candidates soft-expire (never physically deleted -- masterplan DI-NEW-2), so
     every real decision still resolves to its candidate. A decision whose candidate was
@@ -331,7 +333,8 @@ def list_deck_decisions(
     """
     sql = (
         "SELECT d.id AS decision_id, d.candidate_id, d.decision, d.surface, d.actor, "
-        "  d.actor_kind, d.pair_loser_id, d.created_at, c.kind, c.payload_json, c.score "
+        "  d.actor_kind, d.pair_loser_id, d.created_at, c.kind, c.payload_json, c.score, "
+        "  c.status "
         "FROM content_deck_decisions d "
         "JOIN content_candidates c ON c.id = d.candidate_id "
         "WHERE d.org_id = :org AND c.org_id = :org"
