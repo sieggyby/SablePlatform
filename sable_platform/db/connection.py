@@ -99,6 +99,7 @@ _MIGRATIONS = [
     ("078_operator_meme_budget.sql", 78),
     ("079_deck_assertion_nonce.sql", 79),
     ("080_content_quality_elo.sql", 80),
+    ("081_cost_operator_attribution.sql", 81),
 ]
 
 

@@ -37,12 +37,22 @@ def log_cost(
     output_tokens: int = 0,
     call_status: str = "success",
     job_id: str | None = None,
+    operator_id: str | None = None,
 ) -> None:
+    """Append one billed call to the ``cost_events`` ledger.
+
+    ``operator_id`` (mig 081) is the acting operator's stable SableWeb SESSION
+    identity (``operator_arf`` …), stamped only when a logged-in human initiated
+    the spend — NOT the persona X-handle (personas are shared across humans).
+    None = unattributed (system paths: workflows, ambient producers, timers).
+    """
     conn.execute(
         text(
             "INSERT INTO cost_events"
-            " (org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd, call_status)"
-            " VALUES (:org_id, :job_id, :call_type, :model, :input_tokens, :output_tokens, :cost_usd, :call_status)"
+            " (org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd,"
+            " call_status, operator_id)"
+            " VALUES (:org_id, :job_id, :call_type, :model, :input_tokens, :output_tokens,"
+            " :cost_usd, :call_status, :operator_id)"
         ),
         {
             "org_id": org_id,
@@ -53,6 +63,7 @@ def log_cost(
             "output_tokens": output_tokens,
             "cost_usd": cost_usd,
             "call_status": call_status,
+            "operator_id": operator_id,
         },
     )
     conn.commit()

@@ -293,10 +293,15 @@ cost_events = Table(
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("call_status", Text, nullable=False, server_default=text("'success'")),
     Column("created_at", Text, nullable=False, server_default=func.now()),
+    # Migration 081 — the acting operator's SableWeb SESSION identity (operator_arf …),
+    # NOT the persona X-handle. NULL = unattributed (pre-081 rows / system paths).
+    Column("operator_id", Text),
     Index("idx_cost_org", "org_id"),
     Index("idx_cost_created", "created_at"),
     # Migration 030
     Index("idx_cost_events_org_date", "org_id", "created_at"),
+    # Migration 081
+    Index("idx_cost_operator", "operator_id"),
 )
 
 sync_runs = Table(

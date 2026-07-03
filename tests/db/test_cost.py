@@ -35,6 +35,22 @@ def test_log_cost_inserts_row(in_memory_db):
     assert row["model"] == "claude-3"
     assert row["input_tokens"] == 100
     assert row["output_tokens"] == 50
+    assert row["operator_id"] is None  # unattributed by default (system path)
+
+
+def test_log_cost_stamps_operator_id(in_memory_db):
+    """Mig 081: an operator-initiated call stamps the SESSION identity on the ledger."""
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org1', 'Org One')")
+    conn.commit()
+
+    log_cost(conn, "org1", "write_variants", 0.02, operator_id="operator_arf")
+
+    row = conn.execute(
+        "SELECT operator_id, cost_usd FROM cost_events WHERE org_id='org1'"
+    ).fetchone()
+    assert row["operator_id"] == "operator_arf"
+    assert row["cost_usd"] == pytest.approx(0.02)
 
 
 def test_get_weekly_spend_sums_current_week(in_memory_db):

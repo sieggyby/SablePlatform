@@ -168,7 +168,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 80
+    assert row["version"] == 81
 
 
 def test_all_tables_exist():
@@ -187,7 +187,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 80
+    assert row["version"] == 81
 
 
 def test_workflow_tables_columns():
@@ -1301,7 +1301,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 80
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 81
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1478,7 +1478,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 80
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 81
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
@@ -1517,3 +1517,40 @@ def test_migration_069_partial_apply_reaches_69():
     assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 69
     cols = {r[1] for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols
+
+
+def test_migration_081_operator_id_column_and_index():
+    """Migration 081: cost_events gains nullable operator_id + its index."""
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cost_events)").fetchall()}
+    assert "operator_id" in cols, "cost_events missing 'operator_id'"
+    idx = {r[1] for r in conn.execute("PRAGMA index_list(cost_events)").fetchall()}
+    assert "idx_cost_operator" in idx
+
+    # NULL = unattributed (system paths / pre-081 rows); a stamped row round-trips.
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('tig', 'TIG')")
+    conn.execute(
+        "INSERT INTO cost_events (org_id, call_type, cost_usd) VALUES ('tig', 'write_variants', 0.01)"
+    )
+    conn.execute(
+        "INSERT INTO cost_events (org_id, call_type, cost_usd, operator_id) "
+        "VALUES ('tig', 'write_variants', 0.02, 'operator_arf')"
+    )
+    conn.commit()
+    rows = {
+        r[0]: r[1]
+        for r in conn.execute("SELECT cost_usd, operator_id FROM cost_events WHERE org_id='tig'")
+    }
+    assert rows[0.01] is None  # unattributed
+    assert rows[0.02] == "operator_arf"
+
+
+def test_migration_081_partial_apply_reaches_81():
+    """Applying through 081 lands at version 81 with the column present."""
+    conn = _make_conn()
+    _apply_migrations_through(conn, 81)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 81
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(cost_events)").fetchall()}
+    assert "operator_id" in cols
