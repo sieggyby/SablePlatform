@@ -152,8 +152,8 @@ def test_batch_read_returns_servable_subset(sa_conn):
 # --- Layer B closed windows ------------------------------------------------------
 
 def _mark(conn, *, query="@tig -from:tig", ws=None, we=None, ids=(), now=NOW):
-    ws = ws or _iso(NOW - timedelta(days=10))
-    we = we or _iso(NOW - timedelta(days=5))
+    ws = ws or _iso(NOW - timedelta(days=40))
+    we = we or _iso(NOW - timedelta(days=35))
     with immediate_txn(conn):
         ok = tc.mark_window_complete(
             conn, query=query, window_start=ws, window_end=we,
@@ -212,23 +212,40 @@ def test_unknown_window_misses(sa_conn):
 
 
 def test_date_only_window_bounds_work(sa_conn):
-    """Cult Grader windows are bare DATES ('2026-06-28'). A window ending today at
-    00:00 is CLOSED (SocialData `until:` is exclusive — it covers through yesterday);
-    naive parses must be treated as UTC, never raise naive-vs-aware."""
+    """Cult Grader windows are bare DATES ('2026-05-28'). Naive parses must be
+    treated as UTC (never raise naive-vs-aware), and a plateaued date-only window
+    marks + hydrates cleanly."""
     _write(sa_conn, [_raw("411")])
     with immediate_txn(sa_conn):
         ok = tc.mark_window_complete(
-            sa_conn, query="@tig -from:tig", window_start="2026-06-28",
-            window_end="2026-07-03", x_ids=["411"], source="cult_grader",
+            sa_conn, query="@tig -from:tig", window_start="2026-05-23",
+            window_end="2026-05-28", x_ids=["411"], source="cult_grader",
             now=datetime(2026, 7, 3, 14, 0, 0, tzinfo=timezone.utc),
         )
     sa_conn.commit()
     assert ok is True
     got = tc.get_completed_window(
-        sa_conn, query="@tig -from:tig", window_start="2026-06-28",
-        window_end="2026-07-03",
+        sa_conn, query="@tig -from:tig", window_start="2026-05-23",
+        window_end="2026-05-28",
     )
     assert [t["id_str"] for t in got] == ["411"]
+
+
+def test_recent_closed_window_refused_until_plateau(sa_conn):
+    """T2-1: a window that ENDED recently is closed as a SET but its members'
+    engagement is still moving — freezing it in the immutable shared store would
+    silently defeat consumers' own re-fetch healing (CG's drop-newest-window). Only
+    windows ending ≥PLATEAU_DAYS ago are cacheable."""
+    _write(sa_conn, [_raw("412")])
+    with immediate_txn(sa_conn):
+        ok = tc.mark_window_complete(
+            sa_conn, query="@tig -from:tig",
+            window_start=_iso(NOW - timedelta(days=8)),
+            window_end=_iso(NOW - timedelta(days=3)),  # closed, but < 14d past
+            x_ids=["412"], source="cult_grader", now=NOW,
+        )
+    sa_conn.commit()
+    assert ok is False
 
 
 def test_date_only_open_window_still_refused(sa_conn):

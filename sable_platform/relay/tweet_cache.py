@@ -216,17 +216,23 @@ def mark_window_complete(
     now: datetime | None = None,
 ) -> bool:
     """Layer-B write: record that the (query, window) search is COMPLETE with this
-    result-set. REFUSES (returns False, writes nothing) when the window end is in the
-    future or unparseable — an OPEN window is never final. First writer wins (a repeat
-    mark of the same window is a no-op — closed windows are immutable by definition).
-    The caller MUST be inside an ``immediate_txn`` and should have write-through'd the
-    tweets FIRST (reuse hydrates through relay_tweets)."""
+    result-set. REFUSES (returns False, writes nothing) unless the window end is at
+    least ``PLATEAU_DAYS`` past — an OPEN window is never final, and a RECENT window's
+    member tweets carry non-final engagement that would be frozen forever (the store
+    is immutable): serving them would silently defeat consumers' own re-fetch healing
+    (e.g. Cult Grader's deliberate drop-newest-window re-fetch — adversarial finding
+    T2-1). By the plateau the SET is final AND the engagement is final. First writer
+    wins (a repeat mark of the same window is a no-op). The caller MUST be inside an
+    ``immediate_txn`` and should have write-through'd the tweets FIRST (reuse hydrates
+    through relay_tweets)."""
     now = now or _now()
     end = _parse_iso(window_end)
-    if end is None or end > now:
+    if end is None or end > now - timedelta(days=PLATEAU_DAYS):
         logger.warning(
-            "tweet_cache: refusing to mark OPEN/unparseable window (%s .. %s) for %r",
-            window_start, window_end, query,
+            "tweet_cache: refusing to mark OPEN/RECENT/unparseable window (%s .. %s) "
+            "for %r — only windows ending ≥%dd ago are cacheable (set + engagement "
+            "both final)",
+            window_start, window_end, query, PLATEAU_DAYS,
         )
         return False
     qn = normalize_query(query)
