@@ -1539,6 +1539,13 @@ def gc_tweets_raw_payload(conn: Connection, *, older_than_days: int = 30) -> int
     ``raw`` (NOT a row delete; deleting would orphan submissions/publications
     that FK to the tweet). GC by ``fetched_at``. Returns the count of rows whose
     ``raw`` was cleared (only rows that still had a non-NULL ``raw``).
+
+    MIG-082 EXEMPTION (load-bearing): rows with ``source='cult_grader'`` are the
+    shared cache's HISTORICAL ASSET — closed-window hydration
+    (``tweet_cache.get_completed_window``) treats ANY member with a NULL ``raw``
+    as a whole-window miss, so nulling one member's raw would silently re-charge
+    every future run for the entire window (Codex finding SP-1). Reply/sweep rows
+    keep the 30d TTL — a Layer-A miss on those re-heals with ONE cheap fetch.
     """
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=older_than_days)
@@ -1546,7 +1553,8 @@ def gc_tweets_raw_payload(conn: Connection, *, older_than_days: int = 30) -> int
     result = conn.execute(
         text(
             "UPDATE relay_tweets SET raw = NULL "
-            "WHERE raw IS NOT NULL AND fetched_at < :cutoff"
+            "WHERE raw IS NOT NULL AND fetched_at < :cutoff "
+            "AND (source IS NULL OR source != 'cult_grader')"
         ),
         {"cutoff": cutoff},
     )

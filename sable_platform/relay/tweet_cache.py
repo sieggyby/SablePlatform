@@ -236,22 +236,19 @@ def mark_window_complete(
         )
         return False
     qn = normalize_query(query)
-    existing = conn.execute(
-        text(
-            "SELECT id FROM relay_search_windows "
-            "WHERE query_norm = :q AND window_start = :ws AND window_end = :we"
-        ),
-        {"q": qn, "ws": window_start, "we": window_end},
-    ).fetchone()
-    if existing is not None:
-        return True  # already final — immutable
     uniq = list(dict.fromkeys(str(i) for i in x_ids if i))
+    # Single idempotent INSERT (Codex SP-2): two concurrent writers completing the
+    # same window must both succeed — check-then-insert raced into an
+    # IntegrityError that would latch a caller's fail-open bridge off for the
+    # whole run. ON CONFLICT DO NOTHING is supported by BOTH dialects (SQLite
+    # ≥3.24 / Postgres) and preserves first-writer-wins immutability.
     conn.execute(
         text(
             "INSERT INTO relay_search_windows "
             "(query_norm, window_start, window_end, completed_at, result_count, "
             " result_ids_json, source) "
-            "VALUES (:q, :ws, :we, :now, :n, :ids, :src)"
+            "VALUES (:q, :ws, :we, :now, :n, :ids, :src) "
+            "ON CONFLICT (query_norm, window_start, window_end) DO NOTHING"
         ),
         {"q": qn, "ws": window_start, "we": window_end, "now": _iso(now),
          "n": len(uniq), "ids": json.dumps(uniq), "src": source},

@@ -280,3 +280,38 @@ def test_cult_lateral_is_a_valid_sweep_source(sa_conn):
         {"i": oid},
     ).fetchone()
     assert row[0] == "cult_lateral" and row[1] == "auto_mention"
+
+
+def test_raw_gc_exempts_cult_grader_rows(sa_conn):
+    """Codex SP-1: nulling one window member's raw makes the WHOLE window miss
+    forever — cult_grader rows (the window substrate) are exempt from the 30d raw
+    TTL; reply/sweep rows keep it (a Layer-A miss re-heals with one cheap fetch)."""
+    from sable_platform.relay.db import gc_tweets_raw_payload
+
+    _write(sa_conn, [_raw("711")], source="cult_grader")
+    _write(sa_conn, [_raw("712")], source="sweep")
+    sa_conn.execute(text(
+        "UPDATE relay_tweets SET fetched_at = '2026-01-01T00:00:00Z'"
+    ))
+    sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cleared = gc_tweets_raw_payload(sa_conn, older_than_days=30)
+    sa_conn.commit()
+    assert cleared == 1  # only the sweep row
+    rows = dict(sa_conn.execute(
+        text("SELECT x_id, raw IS NOT NULL FROM relay_tweets")
+    ).fetchall())
+    assert rows["711"] in (1, True) and rows["712"] in (0, False)
+
+
+def test_concurrent_window_marks_never_raise(sa_conn):
+    """Codex SP-2: the INSERT is ON CONFLICT DO NOTHING — a second writer of the
+    same window succeeds quietly (first-writer-wins preserved)."""
+    _write(sa_conn, [_raw("721")])
+    ok1, ws, we = _mark(sa_conn, ids=["721"])
+    # simulate the loser of the race: same window, different membership — must not
+    # raise AND must not overwrite
+    ok2, _, _ = _mark(sa_conn, ids=["721", "722"])
+    assert ok1 is True and ok2 is True
+    got = tc.get_completed_window(sa_conn, query="@tig -from:tig", window_start=ws, window_end=we)
+    assert [t["id_str"] for t in got] == ["721"]
