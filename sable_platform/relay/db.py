@@ -3096,13 +3096,19 @@ def upsert_relay_tweet(
     engagement_json: str | None = None,
     lang: str | None = None,
     author_followers: int | None = None,
+    posted_at: str | None = None,
+    source: str | None = None,
 ) -> int:
     """Write-through upsert of a tweet INCLUDING the 062 cache signals; return id.
 
     Superset of :func:`upsert_tweet` that also persists ``engagement_json`` /
-    ``lang`` / ``author_followers`` (the heuristic pre-rank inputs, plan §3.7).
-    Idempotent on the ``x_id`` UNIQUE index (a repeat call refreshes the cached
-    fields incl. ``fetched_at``). The caller MUST be inside an ``immediate_txn``.
+    ``lang`` / ``author_followers`` (the heuristic pre-rank inputs, plan §3.7) and,
+    since mig 082, ``posted_at`` (the tweet's REAL creation time — the Layer-A
+    plateau gate) + ``source`` (which system fetched it). Both COALESCE-preserved on
+    update: a caller that doesn't know them never clobbers a value a previous
+    write-through recorded. Idempotent on the ``x_id`` UNIQUE index (a repeat call
+    refreshes the cached fields incl. ``fetched_at``). The caller MUST be inside an
+    ``immediate_txn``.
     """
     existing = conn.execute(
         text("SELECT id FROM relay_tweets WHERE x_id = :x_id"),
@@ -3123,6 +3129,8 @@ def upsert_relay_tweet(
         "author_followers": (
             None if author_followers is None else int(author_followers)
         ),
+        "posted_at": posted_at,
+        "source": source,
     }
     if existing is not None:
         conn.execute(
@@ -3139,7 +3147,9 @@ def upsert_relay_tweet(
                 "  raw = :raw, "
                 "  engagement_json = :engagement_json, "
                 "  lang = :lang, "
-                "  author_followers = :author_followers "
+                "  author_followers = :author_followers, "
+                "  posted_at = COALESCE(:posted_at, posted_at), "
+                "  source = COALESCE(:source, source) "
                 "WHERE x_id = :x_id"
             ),
             {**params, "now": _utc_now_iso()},
@@ -3150,10 +3160,10 @@ def upsert_relay_tweet(
             "INSERT INTO relay_tweets "
             "(x_id, x_author_id, x_author_handle, text, media_urls, is_reply, "
             " in_reply_to_x_id, conversation_x_id, fetched_at, raw, engagement_json, "
-            " lang, author_followers) "
+            " lang, author_followers, posted_at, source) "
             "VALUES (:x_id, :x_author_id, :x_author_handle, :text, :media_urls, "
             "        :is_reply, :in_reply_to_x_id, :conversation_x_id, :now, :raw, "
-            "        :engagement_json, :lang, :author_followers) "
+            "        :engagement_json, :lang, :author_followers, :posted_at, :source) "
             "RETURNING id"
         ),
         {**params, "now": _utc_now_iso()},

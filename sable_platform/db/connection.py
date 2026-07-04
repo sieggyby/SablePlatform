@@ -100,6 +100,7 @@ _MIGRATIONS = [
     ("079_deck_assertion_nonce.sql", 79),
     ("080_content_quality_elo.sql", 80),
     ("081_cost_operator_attribution.sql", 81),
+    ("082_shared_tweet_cache.sql", 82),
 ]
 
 

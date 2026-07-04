@@ -1787,7 +1787,33 @@ relay_tweets = Table(
     # invalidates correctly). Both nullable.
     Column("embedding_json", Text),
     Column("embedding_model", Text),
+    # Migration 082 — the shared SocialData cache: the tweet's REAL creation time
+    # (the Layer-A 14-day engagement-plateau gate + bidirectional routing gates) and
+    # which system fetched it. Both nullable (pre-082 rows lack them).
+    Column("posted_at", Text),
+    Column("source", Text),
     Index("relay_tweets_author", "x_author_id"),
+    Index("ix_relay_tweets_posted_at", "posted_at"),
+)
+
+# Migration 082 — Layer B: the CLOSED-WINDOW search cache. A date-bounded search over
+# a PAST window is final, so the first system to run it records the result-set (x_ids
+# resolved through relay_tweets) and the second reuses it for $0. The open/current
+# window is never cached. result_ids_json is the authoritative membership list.
+relay_search_windows = Table(
+    "relay_search_windows",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("query_norm", Text, nullable=False),
+    Column("window_start", Text, nullable=False),
+    Column("window_end", Text, nullable=False),
+    Column("completed_at", Text, nullable=False, server_default=func.now()),
+    Column("result_count", Integer, nullable=False, server_default="0"),
+    Column("result_ids_json", Text, nullable=False, server_default="[]"),
+    Column("source", Text),
+    UniqueConstraint("query_norm", "window_start", "window_end",
+                     name="uq_relay_search_windows_window"),
+    Index("ix_relay_search_windows_query", "query_norm", "window_start"),
 )
 
 relay_messages = Table(
@@ -2226,6 +2252,11 @@ relay_tweet_snapshots = Table(
     Column("views", Integer),
     Column("author_followers", Integer),
     Column("status", Text, nullable=False, server_default="ok"),
+    # Migration 082 — the K1 anti-contamination marker: NULL = the fixed-age track
+    # (24h/72h EzS readings), 'cult_final' = Cult Grader's final-engagement-at-
+    # maturity track (written with target_age_hours = -1 so fixed-age consumers,
+    # which filter target_age_hours = 24/72, can never pool it).
+    Column("source", Text),
     Index("ix_relay_tweet_snapshots_tweet", "tweet_x_id"),
 )
 

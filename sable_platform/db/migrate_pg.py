@@ -159,6 +159,8 @@ TABLE_LOAD_ORDER: list[str] = [
     # the other two are TEXT-PK (handle / tweet_x_id).
     "relay_quality_accounts",            # no FKs (TEXT PK handle, no sequence)
     "relay_quality_tweets",              # no FKs (TEXT PK tweet_x_id, no sequence)
+    "relay_search_windows",              # no FKs (mig 082 closed-window cache) - Integer autoincrement PK, see SEQUENCE_TABLES
+    "relay_search_windows",
     "relay_tweet_snapshots",             # no FKs (Integer autoincrement PK)
     # Migration 066: media recommendation center. 3 new tables with NO FKs to
     # each other (or anything) -- any order among them is fine. Only
