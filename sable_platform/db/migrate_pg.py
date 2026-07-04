@@ -160,7 +160,6 @@ TABLE_LOAD_ORDER: list[str] = [
     "relay_quality_accounts",            # no FKs (TEXT PK handle, no sequence)
     "relay_quality_tweets",              # no FKs (TEXT PK tweet_x_id, no sequence)
     "relay_search_windows",              # no FKs (mig 082 closed-window cache) - Integer autoincrement PK, see SEQUENCE_TABLES
-    "relay_search_windows",
     "relay_tweet_snapshots",             # no FKs (Integer autoincrement PK)
     # Migration 066: media recommendation center. 3 new tables with NO FKs to
     # each other (or anything) -- any order among them is fine. Only
@@ -322,6 +321,8 @@ SEQUENCE_TABLES: dict[str, str] = {
     # Integer autoincrement PK -- relay_quality_accounts (TEXT PK handle) and
     # relay_quality_tweets (TEXT PK tweet_x_id) have no sequence.
     "relay_tweet_snapshots": "id",
+    # Migration 082: shared SocialData cache (Integer autoincrement PK).
+    "relay_search_windows": "id",
     # Migration 066: media recommendation center. Only media_rec_events has an
     # Integer autoincrement PK -- media_quality and media_embeddings are
     # composite TEXT-PK (org_id, content_id) and have no sequence.
