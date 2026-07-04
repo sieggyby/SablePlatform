@@ -240,3 +240,26 @@ def test_date_only_open_window_still_refused(sa_conn):
         )
     sa_conn.commit()
     assert ok is False
+
+
+def test_cult_lateral_is_a_valid_sweep_source(sa_conn):
+    """The shared-cache plan §5 lateral flow: upsert_sweep_opportunity must accept
+    sweep_source='cult_lateral' (mapped onto the 057-allowed 'auto_mention' origin)."""
+    from sable_platform.relay.db import upsert_sweep_opportunity
+
+    sa_conn.execute(text("INSERT INTO orgs (org_id, display_name) VALUES ('tig','tig')"))
+    sa_conn.execute(text("INSERT INTO relay_clients (org_id) VALUES ('tig')"))
+    sa_conn.commit()
+    _write(sa_conn, [_raw("611")])
+    tid = sa_conn.execute(text("SELECT id FROM relay_tweets WHERE x_id='611'")).fetchone()[0]
+    with immediate_txn(sa_conn):
+        oid = upsert_sweep_opportunity(
+            sa_conn, org_id="tig", tweet_id=int(tid), sweep_source="cult_lateral",
+            note="lateral by @alice",
+        )
+    sa_conn.commit()
+    row = sa_conn.execute(
+        text("SELECT sweep_source, origin FROM relay_reply_opportunities WHERE id=:i"),
+        {"i": oid},
+    ).fetchone()
+    assert row[0] == "cult_lateral" and row[1] == "auto_mention"

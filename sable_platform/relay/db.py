@@ -2544,6 +2544,10 @@ _SWEEP_SOURCE_TO_ORIGIN = {
     "topic": "auto_mention",
     "from_set": "auto_mention",
     "vip": "auto_mention",
+    # Cult Grader's fresh community-lateral tweets (shared-cache plan §5) — the
+    # replies-among-top-community-authors the mention sweep never sees. Injected
+    # by CG's platform_feed post-step, capped per run, unscored (score NULL).
+    "cult_lateral": "auto_mention",
 }
 _VALID_SWEEP_SOURCES = tuple(_SWEEP_SOURCE_TO_ORIGIN.keys())
 

@@ -45,7 +45,9 @@ _SDK_IMPORT_ALLOWED = {
 _FORBIDDEN_TOP_IMPORTS = {"telegram", "discord", "anthropic"}
 
 # The ONLY relay modules permitted to embed raw SQL (the data-access layer).
-_RAW_SQL_ALLOWED = {"db.py", "socialdata.py"}
+# tweet_cache.py is the mig-082 shared-cache DATA-ACCESS module (Layer A/B reads
+# + writes) — a peer of db.py, not orchestration; raw SQL is its job.
+_RAW_SQL_ALLOWED = {"db.py", "socialdata.py", "tweet_cache.py"}
 
 
 def _relay_py_files() -> list[Path]:
