@@ -50,6 +50,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 ## Working Conventions
 
+- **Ship rule — keep `origin/main` fast-forwarded (2026-07-05 reconcile).** `origin/main` now mirrors the deployed feature branch. After every ship (commits landed on the working branch + deployed), fast-forward it: `git push origin HEAD:main`. If that push is rejected as non-fast-forward, STOP — main has diverged; reconcile deliberately (audit for unique content first, as in `~/sable-workspace/ORIGIN_MAIN_RECONCILE_PLAN.md`), never force-push.
 - Small patches over rewrites. Don't touch existing repo logic unless explicitly asked.
 - Tests use in-memory SQLite — no `~/.sable/sable.db` modification.
 - Adapters are subprocess-based; mock them in tests.
