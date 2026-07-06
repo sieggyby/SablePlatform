@@ -16,7 +16,7 @@
 | 🟡 **IN-TRIAL** | Built and running, scoped to one client / proving out | Yes, framed as "we're piloting this with [client]" |
 | 🔵 **ROADMAP** | Specified or scaffolded, not yet running | No — pitch as "coming," never as available |
 
-**Bottom line up front:** The seven headline tools are live and sellable today (community diagnostic, prospecting, content tracking, KOL matching, content production, Discord engagement, and the client/operator console), plus the SablePlatform backbone — and a second wave of reply-amplification and proof-of-work capabilities has now shipped on top of it: the **Reply-Opportunity Feed**, **Scale-of-Work-Delivered** reporting, the **Media Rec Center**, **reply campaigns**, the **Trending-Story Autopilot** (deployed, dormant until swept), and the **§10 anti-AI-"tell" humanizer** — all ✅ LIVE. One capability is in client trial (weekly check-ins). NULO auto-CM has moved from "stubbed" to a **built-but-dormant** product in development (🟡 IN-DEVELOPMENT — present as coming, not running). The remaining roadmap is narrower: cross-platform **relay auto-posting** (OAuth send), the project-legibility bot, and a client-comms surface. The roadmap items are the most exciting *story* but are not yet running — do not let them get pitched as shipped.
+**Bottom line up front:** The seven headline tools are live and sellable today (community diagnostic, prospecting, content tracking, KOL matching, content production, Discord engagement, and the client/operator console), plus the SablePlatform backbone — and a second wave of reply-amplification and proof-of-work capabilities has now shipped on top of it: the **Reply-Opportunity Feed**, **Scale-of-Work-Delivered** reporting, the **Media Rec Center**, **reply campaigns**, the **Trending-Story Autopilot** (deployed, dormant until swept), and the **§10 anti-AI-"tell" humanizer** — all ✅ LIVE. A **third wave shipped 2026-06-25 → 2026-07-02 and is ✅ LIVE: the Content Deck** — a swipe-to-publish content pipeline (meme/tweet/thread producers, nightly ambient restock, keep→schedule→operator hand-off) with a preference-learning layer tuned by operator and community duels (see outcome 12) — plus the **Tweet Assist compose workspace** (topic engine + tweetbank). One capability is in client trial (weekly check-ins). NULO auto-CM has moved from "stubbed" to a **built-but-dormant** product in development (🟡 IN-DEVELOPMENT — present as coming, not running), and the **sable-audit** discovery bot is built and adversarially QA'd (its public report page is already live) but not yet deployed. The remaining roadmap is narrower: cross-platform **relay auto-posting** (OAuth send), the project-legibility bot, and a client-comms surface. The roadmap items are the most exciting *story* but are not yet running — do not let them get pitched as shipped.
 
 ---
 
@@ -65,7 +65,7 @@ A Telegram + Discord bot where operators drop links, screenshots, and videos; th
 - **One-tap content logging** — paste a link or forward a post, the bot does the rest
 - AI enrichment: summarizes, classifies format/intent, scores culture signals
 - Three-layer **dedup** so the same content isn't double-counted
-- Media auto-archived — every screenshot/video uploaded and linked to its record (Google Drive today; the shared R2 media layer is wired but not yet flipped on)
+- Media auto-archived — every screenshot/video uploaded to the shared R2 media layer and linked to its record, served through the signed `media.sable.tools` proxy (the Drive → R2 cutover is done)
 - Human **review queue** for ambiguous items, plus a deep operator command set
 - **Weekly Smart Brief** (`/brief`) — a 6-section analytical report (what worked, contributor movement, participation tiers, retention curves) auto-generated each Monday and exported to the client's Drive as a Google Doc
 - **Outcome attribution** (`/outcome`) — tag a piece of content with the result it drove (follower gain, DM, partnership lead, event), turning "we posted" into "this produced a lead"
@@ -106,7 +106,9 @@ Sable's content production and account-strategy engine — Claude, ffmpeg, yt-dl
 - Account voice management, tweet/thread drafting, hook scoring, full account audits
 - Community intelligence: lexicon extraction, narrative velocity, pre-churn silence signals, churn-intervention playbooks
 - **Automated weekly cycle** (`sable weekly`) — track performance → scan trends → advise → generate calendar → sync vault, on a timer; this is the "at scale" engine
-- **Operator reply-assist** — *suggested* (never auto-posted) replies, with a persistent per-operator daily generation quota *(✅ LIVE, mig 056)*. This is now fed by the **Reply-Opportunity Feed** and the **§10 humanizer** (see outcomes 8 and 11 below) — drafts read as the operator, not an LLM, and a human always sends them
+- **Operator reply-assist** — *suggested* (never auto-posted) replies, with a persistent per-operator daily generation quota *(✅ LIVE, mig 056)*. This is now fed by the **Reply-Opportunity Feed** and the **§10 humanizer** (see outcomes 8 and 11 below) — drafts read as the operator, not an LLM, and a human always sends them. A **reply length/energy slider** lets the operator dial verbosity to fit the moment
+- **Tweet Assist compose workspace** *(✅ LIVE, migs 071/072/074)* — reply + compose in one surface: compose-as-persona, an AI **topic-suggestion engine with a feedback loop** (the topics operators pick steer next week's batch), and a per-client **tweetbank** of approved evergreen tweets (human-fed plus AI-suggested with human approval)
+- **The Content Deck** *(✅ LIVE — see outcome 12)* — Slopper is the producer side: meme/tweet/thread generation, nightly ambient restock, and hard-negatives steering
 
 > **BD takeaway:** This is the content factory — an **internal** engine. The *operator* gets the data-driven view of what's working; the *client* gets the output: high-volume short-form content on their accounts, with results surfaced through the SableWeb client portal (never the raw pipeline). Slopper is internal operator tooling by design — it is never exposed to clients directly.
 
@@ -123,9 +125,10 @@ Sable's dedicated Discord bot for community-role automation and engagement mecha
 - **"Airlock"** new-member verification — invite-source-aware admit / hold / triage
 - **`/relax-mode`** — mods pause image-only enforcement with one toggle for off-theme moments
 - A passive **vibe-personalization** layer (opt-in, budget-capped) so roasts land personally, plus a **full audit trail** on every enforcement action
+- **`/duel` + `/tasteboard`** *(live on SolStitch since 2026-07-02)* — a community pairwise content game: members vote head-to-head on content candidates, and their votes feed the Content Deck's preference layer (quarantined from operator signal until validated — see outcome 12)
 
-**Built but not yet merged/enabled (branch code, not in production):**
-- **Scored Mode** — grades posted fits on a rubric and reveals scores once a post earns enough reactions (ships off by default; QA-approved on a branch, not merged)
+**Merged and shipped DISABLED (in the deployed image, not enabled in any guild):**
+- **Scored Mode** — grades posted fits on a rubric and reveals scores once a post earns enough reactions (QA-approved, merged, ships off by default — enabling it is a per-guild operator decision)
 - A public **`/leaderboard`** and an ops **"state pin"** config dashboard
 
 > **BD takeaway:** Daily, sticky, in-server engagement — not just analytics from the outside. *Caveat:* the fitcheck/scoring mechanics are tuned to SolStitch's fashion community; reuse for another client is a re-tune, not a config flip.
@@ -147,12 +150,13 @@ The Sable Portal — a production web app with a strict wall between what client
 - Prospect fit scores and Sable verdicts, prospect/client triage
 - Cost dashboard, audit trail
 - Entity intelligence + force-directed relationship graph, playbook effectiveness
-- Content pipeline, action queue, reply-assist, KOL network/wizard
+- Content pipeline + **Content Deck**, content-quality and media-health dashboards, action queue, reply-assist / Tweet Assist, KOL network/wizard, per-human cost attribution (`/ops/reply-cost`)
 - Morning brief, ops alerts, source freshness
 
 **Public, no-login surfaces (lead-gen):**
 - **Case-study microsites** (`/proof/*`, `/synq`) — animated client success stories you can send straight to a prospect
 - A self-serve **prospect intake form** (`/intake`) that drops inbound leads into the operator pipeline
+- A public **community-audit report page** (`/audit/[guild]`) — the web half of the sable-audit wedge, live ahead of the bot itself
 
 > **BD takeaway:** Clients get a clean, professional health portal scoped to *only their data*. They **never** see fit scores, verdicts, costs, or pipeline data — that wall is enforced in code (separate data-assembly paths, verdict sanitization, fail-closed guards). Safe to demo.
 
@@ -179,7 +183,7 @@ A standing, auto-sourced queue of *which tweets to reply to right now*, surfaced
 A first-class record of operator work — clock-in coverage, logged actions, and posted replies — that rolls up into both an internal report and a sanitized client-facing card. A key BD differentiator: it turns "trust us, we're active" into a defensible packet.
 
 - **Mod-slot clock-in** + a free-form **"Log Work"** entry for the work that isn't a reply or a clip
-- **"Mark posted"** reply-outcome capture — when an operator posts an assisted reply, it's recorded, which is what makes *replies-delivered* a **real, measured count** (sourced from `reply_outcomes`)
+- **"Mark posted"** reply-outcome capture — when an operator posts an assisted reply, it's recorded, which is what makes *replies-delivered* a **real, measured count** (sourced from `reply_outcomes`); a scheduled **auto-detector** now catches posted replies even when nobody clicks Mark-posted (mig 069 stamps operator-vs-auto provenance)
 - An internal **"Scale of Work Delivered"** report (per-operator breakdown) and a **sanitized client-facing "Work Delivered" card** that shows totals only — never operator names, raw logs, or costs (the client/operator wall is enforced in code)
 
 > **BD takeaway:** This is proof-of-work, and the honesty discipline is load-bearing. **Replies-delivered is *measured*.** **Coverage-hours and communities-covered are *self-reported / operator-declared* — interpretive context, not hard metrics.** Always present them with that caveat. This is *not* operator surveillance and must never be pitched that way. See [`marketing/MESSAGING.md`](marketing/MESSAGING.md) for the exact approved wording.
@@ -212,6 +216,22 @@ Three capabilities that make reply amplification coordinated, timely, and indist
 
 ---
 
+### 12. Keep the content pipeline stocked — and learning the client's taste
+**The Content Deck** (`Sable_Slopper` producers + `SablePlatform` migs 076–080 + SableWeb `/ops/content-deck`) · ✅ **LIVE** · *shipped 2026-06-25 → 2026-07-02*
+
+A swipe-to-publish pipeline that keeps a standing deck of ready-to-post content stocked — and gets sharper with every decision made on it.
+
+- Generated **content candidates land in a swipe deck**; operators keep / reject / skip. Kept items flow **keep → schedule → release → operator hand-off** — composed and handed to a human to post, **never auto-posted**
+- **Producers live today:** memes (remixing the client's own corpus, per-operator weekly dollar budget), single tweets, and threads — generated on demand from the console
+- **Ambient generation** — a nightly producer restocks the deck automatically within a per-org daily dollar cap *(live for TIG; per-org opt-in)*
+- **A preference-learning layer** — pairwise A/B duels + a content-quality Elo tune generation toward what actually gets kept, with a `/ops/content-quality` dashboard, a weekly content digest, preference-ranked deck ordering, and a **hard-negatives loop** so rejected patterns stop reappearing
+- **The community joins the taste loop** — the sable-roles `/duel` game (outcome 6) lets community members vote head-to-head; their votes are quarantined from operator signal until validated
+- Posted deck content is **auto-detected and outcome-snapshotted** with the same fixed-age discipline as replies
+
+> **BD takeaway:** this turns the content factory into an always-stocked, self-improving pipeline instead of a per-request service — and the client's own community helps tune it. The boundary stands: a human posts everything.
+
+---
+
 ## The operator's command center
 
 Behind the client-facing tools, an operator drives the whole suite from two surfaces:
@@ -233,7 +253,8 @@ Behind the client-facing tools, an operator drives the whole suite from two surf
 - **Shared database** — one canonical store every tool reads and writes, so a contributor tracked in SableTracking shows up in the client's health report and the operator's relationship graph
 - **Canonical data contracts** — tools agree on what a "lead," "entity," or "metric" means
 - **Workflow engine + alerts** — cross-tool automation and monitoring (above)
-- **Shared media layer** (✅ LIVE for Slopper clips) — R2 storage + an HMAC-signed, expiring-URL proxy (the `sable-media-proxy` Cloudflare Worker, live at `sable-media-proxy.siegby.workers.dev`), with content-addressed dedup and per-client bucket isolation. Powering Slopper's clip-assist today; the SableTracking cutover (Drive → R2) and the branded `media.sable.tools` domain are still pending
+- **Shared media layer** (✅ LIVE) — R2 storage + an HMAC-signed, expiring-URL proxy (the `sable-media-proxy` Cloudflare Worker, live at the branded **`media.sable.tools`** domain), with content-addressed dedup and per-client bucket isolation. Powers Slopper clips, SableTracking media (the Drive → R2 cutover is done), and Content Deck media
+- **Shared SocialData cache** (✅ LIVE, mig 082) — one cross-system tweet cache shared by the reply stack and the community diagnostic, so the same paid data is never bought twice
 - **Adapters** — clean integration so each specialized tool stays independent
 
 > **BD takeaway:** When you pitch "an integrated growth operation," *this* is what makes it integrated. The data flows between tools automatically.
@@ -256,6 +277,11 @@ The vision: Sable runs a persona-engineered AI community manager inside a client
 - Expands its autonomy category-by-category as approval rates prove out
 
 *Status: the full pipeline is built and tested — classifier, KB, drafter, safety/autonomy gate, escalation, weekly digest, adversarial harness, **and the live publish step** (it enqueues to the now-built SableRelay outbox; it is no longer stubbed). RobotMoney is onboarded as a **dormant** tenant (paused), pending a voice-viability spike pass and operator sign-off on real outputs. For BD: present NULO as **coming / in development**, never as a running service — but the old "it's only a stub" framing is out of date.*
+
+### Self-serve community audit — the discovery wedge
+**`sable-audit`** · 🟡 **BUILT, NOT DEPLOYED** *(the public report page is already ✅ LIVE on the portal)*
+
+A Sable-branded, self-invite Discord bot: a server owner invites it → free $0 metadata audit → consent-gated deep audit with findings, security checks, and a contributor leaderboard — each weak finding maps to a Sable service. The bot is built and adversarially QA'd (backing tables live, migs 067/070); what remains is registering the Discord app and deploying it resident. Pitch as **coming** ("a free self-serve audit") — the operator-run diagnostic (outcome 2) is the live equivalent today.
 
 ### Cross-platform relay — auto-posting
 **`SableRelay`** · ✅ **substrate + feed BUILT** · 🔵 **OAuth auto-posting ROADMAP**
@@ -294,13 +320,20 @@ Placeholder for a future dedicated client-communications surface. Currently a no
 | Media Rec Center (no-LLM media matching + media-health) | SablePlatform (mig 066) | ✅ LIVE |
 | Reply campaigns / flash-mob | SablePlatform (mig 061) | ✅ LIVE |
 | Trending-Story Autopilot | SablePlatform (mig 064) | ✅ DEPLOYED (dormant until swept) |
+| Content Deck (swipe → schedule → hand-off; meme/tweet/thread producers) | Sable_Slopper + SablePlatform (migs 076–079) + SableWeb | ✅ LIVE |
+| Ambient deck generation (nightly restock, budget-capped) | Sable_Slopper | ✅ LIVE (TIG; per-org opt-in) |
+| Content-preference Elo + pairwise duels + content-quality dashboard | SablePlatform (mig 080) + SableWeb | ✅ LIVE |
+| Community `/duel` content game | sable-roles | ✅ LIVE (SolStitch) |
+| Tweet Assist compose + topic engine + tweetbank | Sable_Slopper + SablePlatform (migs 071/072/074) | ✅ LIVE |
 | Scale-of-Work-Delivered + reply-outcome capture | SablePlatform (mig 059) + SableWeb | ✅ LIVE (replies *measured*; coverage hours/communities *self-reported*) |
 | Discord engagement games | sable-roles | ✅ LIVE |
-| Fitcheck Scored Mode | sable-roles | 🔵 ROADMAP (built on branch, not merged) |
+| Fitcheck Scored Mode | sable-roles | 🟡 BUILT (merged, ships disabled — not enabled in any guild) |
 | Client portal + operator console | SableWeb | ✅ LIVE |
 | Workflow engine + alerts | SablePlatform | ✅ LIVE |
 | Alert-Triage API | SablePlatform | ✅ LIVE |
-| Shared media storage + delivery | SablePlatform + sable-media-proxy | ✅ LIVE (Slopper clips; Tracking cutover pending) |
+| Shared media storage + delivery | SablePlatform + sable-media-proxy | ✅ LIVE (clips + Tracking + deck media; `media.sable.tools`) |
+| Shared SocialData cache (cross-tool, anti-double-spend) | SablePlatform (mig 082) | ✅ LIVE |
+| Self-serve community-audit bot | sable-audit (migs 067/070) | 🟡 BUILT (report page LIVE; bot not deployed) |
 | Weekly client check-ins | SablePlatform (checkin) | 🟡 IN-TRIAL (TIG) |
 | Autonomous AI community manager (NULO) | SableAutoCM (mig 058) | 🟡 IN-DEVELOPMENT (built end-to-end, ships dormant) |
 | Relay substrate + publish-exactly-once feed | SableRelay (mig 057/062/064/065) | ✅ BUILT (tested) |
@@ -312,8 +345,8 @@ Placeholder for a future dedicated client-communications surface. Currently a no
 
 ## The one-paragraph version (for a deck or a cold email)
 
-> Sable is a managed community-growth operation for crypto projects. We find under-served, well-funded projects, run an AI diagnostic that grades their community's health and pinpoints exactly where it's fragile, then run the fix: a content factory that produces and optimizes short-form video and posts, a reply-amplification engine that puts the right reply targets in front of operators and drafts human-sent replies that read as the operator (never a bot), KOL outreach planning with warm-intro routing, in-Discord engagement games, and full contribution tracking. We then *prove* it — every assisted reply an operator posts is a measured proof item, rolled into a sanitized "work delivered" record for the client. All of it is visible to the client through a clean health portal and to our operators through a single console, with automated alerts when something needs attention. Coming next: an autonomous AI community manager ("NULO") that handles tier-1 engagement with human oversight — built and in development, not yet live.
+> Sable is a managed community-growth operation for crypto projects. We find under-served, well-funded projects, run an AI diagnostic that grades their community's health and pinpoints exactly where it's fragile, then run the fix: a content factory that produces and optimizes short-form video, memes, tweets, and threads — with a standing content deck that restocks itself nightly and learns the team's taste from every keep/reject — a reply-amplification engine that puts the right reply targets in front of operators and drafts human-sent replies that read as the operator (never a bot), KOL outreach planning with warm-intro routing, in-Discord engagement games, and full contribution tracking. We then *prove* it — every assisted reply an operator posts is a measured proof item, rolled into a sanitized "work delivered" record for the client. All of it is visible to the client through a clean health portal and to our operators through a single console, with automated alerts when something needs attention. Coming next: an autonomous AI community manager ("NULO") that handles tier-1 engagement with human oversight — built and in development, not yet live.
 
 ---
 
-*Maintained for BD. When a roadmap item ships, move its row to LIVE and update the relevant section. Outbound sales/marketing collateral built from this map (pitch deck, one-pagers, messaging + language guardrails) lives in [`marketing/`](marketing/). Engineering detail for each tool lives in that repo's own `README.md` / `CLAUDE.md`; the backbone's technical docs are in this `docs/` directory (see [CROSS_REPO_INTEGRATION.md](CROSS_REPO_INTEGRATION.md), [ARCHITECTURE.md](ARCHITECTURE.md)).*
+*Maintained for BD. Refreshed 2026-07-05 (Content Deck wave, Tweet Assist compose, media domain, Tracking→R2, shared cache, sable-audit status). When a roadmap item ships, move its row to LIVE and update the relevant section. Outbound sales/marketing collateral built from this map (pitch deck, one-pagers, messaging + language guardrails) lives in [`marketing/`](marketing/). Engineering detail for each tool lives in that repo's own `README.md` / `CLAUDE.md`; the backbone's technical docs are in this `docs/` directory (see [CROSS_REPO_INTEGRATION.md](CROSS_REPO_INTEGRATION.md), [ARCHITECTURE.md](ARCHITECTURE.md)).*

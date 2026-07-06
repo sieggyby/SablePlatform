@@ -57,7 +57,7 @@ From just a Twitter handle, we produce:
 
 **Four things run today, end to end:**
 
-1. **Content engine** (`Sable_Slopper`, ✅ LIVE) — short-form video clipping from any YouTube URL, memes, account voice, hook scoring, and an automated weekly cycle: track performance → scan trends → advise → generate a posting calendar. Internal engine; the client sees the output, never the pipeline.
+1. **Content engine** (`Sable_Slopper`, ✅ LIVE) — short-form video clipping from any YouTube URL, memes, account voice, hook scoring, and an automated weekly cycle: track performance → scan trends → advise → generate a posting calendar. Now includes the **Content Deck** (✅ LIVE): a standing swipe deck of ready-to-post memes/tweets/threads, restocked nightly within budget caps, that learns the team's taste from every keep/reject. Internal engine; the client sees the output, never the pipeline.
 2. **Reply amplification** (Reply-Opportunity Feed + reply-assist, ✅ LIVE) — see slide 6.
 3. **Community intelligence** (`Sable_Cult_Grader` + `SableTracking`, ✅ LIVE) — the diagnostic plus full contribution tracking; every link/screenshot/video an operator drops is classified, deduped, and logged.
 4. **Scale-of-work proof** (✅ LIVE) — see slide 7.

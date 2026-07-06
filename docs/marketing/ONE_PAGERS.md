@@ -21,6 +21,7 @@
 - Memes, scene compositing, face-swap, and character-explainer videos with TTS.
 - Account voice management, tweet/thread drafting, and hook scoring.
 - An **automated weekly cycle**: track performance → scan live niche trends → advise what to make (and stop making) → generate a posting calendar aligned to inventory.
+- **The Content Deck** (✅ LIVE): a standing swipe deck of ready-to-post memes, tweets, and threads — restocked nightly within budget caps, scheduled and handed to a human to post (never auto-posted), and tuned by a preference-learning loop (operator keep/reject plus community duels).
 
 **Measured vs. interpretive:**
 - *Measured:* content items produced and logged; performance pulled live for posted content (format lift, attribution).
