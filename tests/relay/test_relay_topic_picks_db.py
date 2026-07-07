@@ -10,6 +10,8 @@ Exercises ``record_topic_pick`` / ``recent_topic_picks`` against the in-memory
 """
 from __future__ import annotations
 
+import datetime as _dt
+
 from sqlalchemy import text
 
 from sable_platform.relay import db as relay_db
@@ -28,17 +30,23 @@ def test_record_and_recent(sa_conn):
     _seed(sa_conn)
     sa_conn.commit()
     assert relay_db.recent_topic_picks(sa_conn, "orgA") == []
+    # picked_at must sit INSIDE recent_topic_picks' default 30d window, which is computed from the
+    # REAL current date — a hardcoded date silently ages out and the test starts failing on a
+    # calendar boundary (it did: seeded 2026-06-07, first failed 2026-07-07).
+    picked_at = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
     with immediate_txn(sa_conn):
         pid = relay_db.record_topic_pick(
             sa_conn, org_id="orgA", topic="rollups season", register_band="serious",
-            operator_handle="operator_arf", now="2026-06-07T00:00:00Z",
+            operator_handle="operator_arf", now=picked_at,
         )
     assert pid > 0
     picks = relay_db.recent_topic_picks(sa_conn, "orgA")
     assert len(picks) == 1
     assert picks[0]["topic"] == "rollups season"
     assert picks[0]["register_band"] == "serious"
-    assert picks[0]["picked_at"] == "2026-06-07T00:00:00Z"
+    assert picks[0]["picked_at"] == picked_at
 
 
 def test_append_only_no_dedup(sa_conn):

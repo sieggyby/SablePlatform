@@ -225,6 +225,7 @@ def get_deck_duel_pair(
     *,
     surface: str = "discord",
     window_hours: int = 12,
+    kinds: tuple[str, ...] | None = None,
     now: str | None = None,
 ) -> list[dict]:
     """Pick up to TWO status='pending' candidates for a COMMUNITY A/B duel (Phase 5) —
@@ -232,8 +233,11 @@ def get_deck_duel_pair(
     already appeared in a duel on this ``surface`` within ``window_hours`` (org-level —
     one Discord duel serves MANY voters, so the exclusion is per-surface, not per-actor,
     stopping the same pair from re-posting all day while still letting a card collect
-    more votes later). RANDOM order so pairs vary. Returns 0/1/2 rows (the caller
-    degrades to "not enough cards"). Read-only; never flips status; no cost column."""
+    more votes later). ``kinds`` restricts the pool to those candidate kinds (the
+    per-org ``duel_kinds`` config — e.g. community-tweet-only duels for TIG); ``None``
+    means no kind filter (the pre-083 behavior, byte-identical SQL). RANDOM order so
+    pairs vary. Returns 0/1/2 rows (the caller degrades to "not enough cards").
+    Read-only; never flips status; no cost column."""
     if now is None:
         now = _utc_now_iso()
     try:
@@ -242,10 +246,17 @@ def get_deck_duel_pair(
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         window_start = now
+    params: dict = {"org": org_id, "surface": surface, "since": window_start}
+    kind_clause = ""
+    if kinds:
+        placeholders = ", ".join(f":kind_{i}" for i in range(len(kinds)))
+        kind_clause = f"  AND c.kind IN ({placeholders}) "
+        params.update({f"kind_{i}": k for i, k in enumerate(kinds)})
     rows = conn.execute(
         _sa_text(
             f"SELECT {_CAND_COLS} FROM content_candidates c "
             "WHERE c.org_id = :org AND c.status = 'pending' "
+            f"{kind_clause}"
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM content_deck_decisions d "
             "     WHERE d.org_id = c.org_id AND d.surface = :surface "
@@ -255,7 +266,7 @@ def get_deck_duel_pair(
             "  ) "
             "ORDER BY RANDOM() LIMIT 2"
         ),
-        {"org": org_id, "surface": surface, "since": window_start},
+        params,
     ).fetchall()
     return [dict(r._mapping) for r in rows]
 

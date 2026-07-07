@@ -193,6 +193,11 @@ def schedule_candidate(
     cand = get_candidate(conn, candidate_id)
     if cand is None:
         return None
+    # mig 083: an ingested real community tweet (the /duel prediction game) is duel-only content --
+    # it must never enter the publish path. Its target_handle is always NULL (the unbound reject
+    # below already fires), but the kind reject holds even if a row were ever bound. Fail closed.
+    if str(cand.get("kind") or "") == "community_tweet":
+        return None
     bound_handle = cand.get("target_handle")
     if not (bound_handle or "").strip():
         return None  # unbound draft -> cannot be scheduled

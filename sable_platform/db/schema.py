@@ -2971,7 +2971,9 @@ content_candidates = Table(
     Column("expires_at", Text),
     Column("created_at", Text, nullable=False, server_default=func.now()),
     CheckConstraint(
-        "kind IN ('clip','tweet','thread','quote_card','meme','copypasta')",
+        # mig 083: 'community_tweet' = ingested REAL community tweets for the /duel game --
+        # duel-only rows (target_handle always NULL, never keep/schedule/publish, never Elo-folded).
+        "kind IN ('clip','tweet','thread','quote_card','meme','copypasta','community_tweet')",
         name="ck_content_candidates_kind",
     ),
     CheckConstraint(

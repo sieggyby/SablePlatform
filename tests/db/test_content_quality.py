@@ -5,7 +5,8 @@ Exercises the duel-fold applier against the in-memory schema:
     (candidate = live tie-break; feature = durable, like-to-like over kind/template/format);
   * swipe rows (NULL pair_loser_id) are cursored forward but NOT folded;
   * idempotent (second call folds nothing);
-  * a GC'd candidate contributes no feature signal but still folds at candidate grain;
+  * UNFOLDABLE duels (mig 083): a community_tweet on either side, or a GC'd candidate
+    (kind unknowable), skips BOTH grains — cursored forward, never folded;
   * get_content_quality — the {elo, pick_rate, n_offered, n_chosen} rollup, subject_kind-filtered,
     NO cost column.
 All org-scoped.
@@ -145,18 +146,69 @@ def test_swipe_rows_not_folded_but_cursored(sa_conn):
     assert row[0] == 1
 
 
-def test_gc_candidate_folds_candidate_grain_skips_feature(sa_conn):
+def test_gc_candidate_duel_is_unfoldable(sa_conn):
+    """mig 083: a duel whose candidate is GC'd/deleted before the fold (kind unknowable — e.g. a
+    community-tweet rollback DELETE) skips BOTH grains rather than guessing, but still cursors
+    applied=1 forward. (Pre-083 this folded candidate grain on bare ids — rows for a dead candidate
+    that no consumer could ever read.)"""
     _seed_org(sa_conn)
     _cand(sa_conn, 1, "orgA", "meme", {"template_id": "drake"})
     # loser #99 has NO content_candidates row (GC'd; the no-FK decisions log survives the purge).
     _duel(sa_conn, "orgA", 1, 99, 1)
     sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 0  # unfoldable → nothing folded
+    assert cq.get_content_quality(sa_conn, "orgA", "candidate") == {}
+    assert cq.get_content_quality(sa_conn, "orgA", "feature") == {}
+    row = sa_conn.execute(text("SELECT applied FROM content_deck_decisions WHERE id = 1")).fetchone()
+    assert row[0] == 1  # cursored forward — never re-scanned
+
+
+def _community_duel(conn, org, winner, loser, did):
+    conn.execute(
+        text(
+            "INSERT INTO content_deck_decisions (id, candidate_id, org_id, actor, actor_kind, decision, surface, pair_loser_id) "
+            "VALUES (:id, :w, :org, 'discord:user:42', 'community', 'keep', 'discord', :l)"
+        ),
+        {"id": did, "w": winner, "org": org, "l": loser},
+    )
+
+
+def test_community_tweet_duel_never_folds_either_grain(sa_conn):
+    """mig 083: the /duel prediction game over REAL community tweets writes decision rows but must
+    never touch content_quality — no candidate-grain rows, no feature-grain rows, no 'community:'-
+    prefixed rows. Ground truth lives in the payload; votes live in the decisions log."""
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "community_tweet", {"text": "gm", "author_handle": "gabbyvorbeck"})
+    _cand(sa_conn, 2, "orgA", "community_tweet", {"text": "wagmi", "author_handle": "synapz_org"})
+    _community_duel(sa_conn, "orgA", 1, 2, 1)
+    sa_conn.commit()
+    assert cq.apply_pending_content_events(sa_conn, "orgA") == 0
+    assert cq.get_content_quality(sa_conn, "orgA") == {}  # all grains empty — prefixed or not
+    row = sa_conn.execute(text("SELECT applied FROM content_deck_decisions WHERE id = 1")).fetchone()
+    assert row[0] == 1
+
+
+def test_community_tweet_on_either_side_skips_but_normal_duels_still_fold(sa_conn):
+    """A mixed batch: a community_tweet-vs-tweet duel (either-side rule) skips; a normal
+    meme-vs-tweet duel in the SAME catch-up still folds."""
+    _seed_org(sa_conn)
+    _cand(sa_conn, 1, "orgA", "community_tweet", {"text": "gm", "author_handle": "gabbyvorbeck"})
+    _cand(sa_conn, 2, "orgA", "tweet", {"text": "x"})
+    _cand(sa_conn, 3, "orgA", "meme", {"template_id": "drake"})
+    _cand(sa_conn, 4, "orgA", "tweet", {"text": "y"})
+    _community_duel(sa_conn, "orgA", 1, 2, 1)  # community_tweet beats tweet → UNFOLDABLE
+    _duel(sa_conn, "orgA", 3, 4, 2)            # meme beats tweet → folds normally
+    sa_conn.commit()
     assert cq.apply_pending_content_events(sa_conn, "orgA") == 1
     cand = cq.get_content_quality(sa_conn, "orgA", "candidate")
-    # candidate grain still folds (ids only): winner up, the GC'd loser down.
-    assert cand["1"]["elo"] > _BASE and cand["99"]["elo"] < _BASE
-    # feature grain: the loser has no features → no like-to-like pair formed (winner kind has no opponent).
-    assert cq.get_content_quality(sa_conn, "orgA", "feature") == {}
+    assert set(cand) == {"3", "4"}  # the community pair contributed NO candidate rows
+    feat = cq.get_content_quality(sa_conn, "orgA", "feature")
+    assert feat["kind:meme"]["elo"] > _BASE and feat["kind:tweet"]["elo"] < _BASE
+    assert not any("community_tweet" in k for k in feat)
+    rows = sa_conn.execute(
+        text("SELECT id, applied FROM content_deck_decisions ORDER BY id")
+    ).fetchall()
+    assert [(r[0], r[1]) for r in rows] == [(1, 1), (2, 1)]  # both cursored
 
 
 def test_get_content_quality_org_scoped_no_cost(sa_conn):

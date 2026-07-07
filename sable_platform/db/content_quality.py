@@ -85,10 +85,12 @@ def apply_pending_content_events(conn: Connection, org_id: str) -> int:
     forward without folding (its keep-rate signal is read directly by the engine, NOT via this flag, so
     marking it keeps the unapplied set bounded). Each duel applies a candidate-grain pairwise Elo
     (winner = ``candidate_id`` beats loser = ``pair_loser_id``) plus a like-to-like FEATURE-grain
-    update. The whole catch-up runs inside ONE ``immediate_txn`` so a crash rolls back BOTH the quality
-    bumps and the applied flags together (forward-only, idempotent). Returns the number of DUELS folded
-    (0 when caught up). Best-effort by contract: the caller wraps this so a rollup hiccup never breaks a
-    deck read."""
+    update. A duel is UNFOLDABLE — cursored forward without folding — when either candidate is a
+    ``community_tweet`` (mig 083 prediction game, no content-taste signal) or is GC'd/deleted (kind
+    unknowable). The whole catch-up runs inside ONE ``immediate_txn`` so a crash rolls back BOTH the
+    quality bumps and the applied flags together (forward-only, idempotent). Returns the number of
+    DUELS folded (0 when caught up). Best-effort by contract: the caller wraps this so a rollup hiccup
+    never breaks a deck read."""
     from sable_platform.relay.bot.txn import immediate_txn
 
     sa_conn = getattr(conn, "_conn", conn)
@@ -122,9 +124,23 @@ def apply_pending_content_events(conn: Connection, org_id: str) -> int:
                 # unprefixed 'kind:/template:/format:' (or bare candidate ids) and can't
                 # match a prefixed row; promotion past the quarantine is gated on the
                 # masterplan §11 K-tests (a deliberate future change, not a config flip).
-                prefix = "community:" if actor_kind == "community" else ""
-                _apply_one_duel(conn, org_id, int(winner_id), int(loser_id), now, key_prefix=prefix)
-                folded += 1
+                #
+                # Phase-A community-tweet duels (mig 083) are a PREDICTION game over real
+                # tweets, not a taste signal over produced content — they never fold at
+                # EITHER grain (their ground truth lives in the payload, their votes in
+                # this decisions log). A duel whose candidate is GC'd/deleted before the
+                # fold is likewise unfoldable (kind unknowable — e.g. a community-tweet
+                # rollback) and skips rather than guessing. Skipped rows still cursor
+                # applied=1 forward so they are never re-visited.
+                wfeat = _feature_map(conn, org_id, int(winner_id))
+                lfeat = _feature_map(conn, org_id, int(loser_id))
+                if _duel_foldable(wfeat, lfeat):
+                    prefix = "community:" if actor_kind == "community" else ""
+                    _apply_one_duel(
+                        conn, org_id, int(winner_id), int(loser_id), now,
+                        key_prefix=prefix, wfeat=wfeat, lfeat=lfeat,
+                    )
+                    folded += 1
             conn.execute(
                 text("UPDATE content_deck_decisions SET applied = 1 WHERE id = :id"),
                 {"id": event_id},
@@ -132,16 +148,31 @@ def apply_pending_content_events(conn: Connection, org_id: str) -> int:
     return folded
 
 
+def _duel_foldable(wfeat: dict[str, str], lfeat: dict[str, str]) -> bool:
+    """A duel folds into the Elo only when BOTH candidates still exist with a known kind and
+    NEITHER is a ``community_tweet`` (mig 083 — real-tweet prediction duels carry no content-taste
+    signal about produced candidates, at either grain)."""
+    if not wfeat.get("kind") or not lfeat.get("kind"):
+        return False
+    return "community_tweet" not in (wfeat["kind"], lfeat["kind"])
+
+
 def _apply_one_duel(conn: Connection, org_id: str, winner_id: int, loser_id: int, now: str,
-                    *, key_prefix: str = "") -> None:
+                    *, key_prefix: str = "",
+                    wfeat: dict[str, str] | None = None,
+                    lfeat: dict[str, str] | None = None) -> None:
     """Fold one duel (winner beat loser) at candidate grain (live tie-break) + feature grain (durable).
     ``key_prefix`` namespaces BOTH grains' subject keys ('community:' for the Phase-5 Discord game —
-    the quarantine that keeps community taste out of the operator Elo)."""
+    the quarantine that keeps community taste out of the operator Elo). ``wfeat``/``lfeat`` accept
+    the caller's already-fetched feature maps (the fold loop looks them up for the foldability gate)
+    so the candidates aren't re-queried; omitted, they're fetched here (direct/test callers)."""
     # candidate grain — the live within-deck tie-break overlay (ephemeral; GC's with the candidate).
     _pairwise(conn, org_id, "candidate", f"{key_prefix}{winner_id}", f"{key_prefix}{loser_id}", now)
     # feature grain — like-to-like over the candidates' kind/template/format (durable engine signal).
-    wfeat = _feature_map(conn, org_id, winner_id)
-    lfeat = _feature_map(conn, org_id, loser_id)
+    if wfeat is None:
+        wfeat = _feature_map(conn, org_id, winner_id)
+    if lfeat is None:
+        lfeat = _feature_map(conn, org_id, loser_id)
     # ``template``/``format`` are KIND-SPECIFIC vocabularies — a meme template id and a tweet format
     # bucket are not comparable, and the deck duels ACROSS kinds (getDeckDuelPair pairs any two
     # pending cards, no kind filter). So those two arms fold ONLY when the pair shares a kind; a
@@ -165,7 +196,7 @@ def _apply_one_duel(conn: Connection, org_id: str, winner_id: int, loser_id: int
 def _feature_map(conn: Connection, org_id: str, candidate_id: int) -> dict[str, str]:
     """The duel-foldable feature values for a candidate (kind always; template/format from the meme
     payload). Returns {} when the candidate is GC'd (the NO-FK decisions log survives a candidate purge)
-    — that side simply contributes no feature signal."""
+    — since mig 083 a duel with a GC'd side is unfoldable entirely (see ``_duel_foldable``)."""
     row = conn.execute(
         text("SELECT kind, payload_json FROM content_candidates WHERE id = :id AND org_id = :org"),
         {"id": candidate_id, "org": org_id},

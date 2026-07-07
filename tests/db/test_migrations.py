@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from sable_platform.db.connection import ensure_schema
 
 
@@ -168,7 +170,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 82
+    assert row["version"] == 83
 
 
 def test_all_tables_exist():
@@ -187,7 +189,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 82
+    assert row["version"] == 83
 
 
 def test_workflow_tables_columns():
@@ -1301,7 +1303,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 82
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 83
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1478,7 +1480,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 82
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 83
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
@@ -1554,3 +1556,123 @@ def test_migration_081_partial_apply_reaches_81():
     assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 81
     cols = {r[1] for r in conn.execute("PRAGMA table_info(cost_events)").fetchall()}
     assert "operator_id" in cols
+
+
+# ---------------------------------------------------------------------------
+# Migration 083 — content_candidates kind CHECK gains 'community_tweet' (the
+# /duel "which popped" prediction game over ingested REAL community tweets).
+# content_candidates is NOT a leaf table (content_publish_jobs +
+# content_deck_operator_state reference it ON DELETE CASCADE, foreign_keys=ON
+# everywhere), so this is an FK-aware THREE-table rebuild — the data-bearing
+# survival test below is the audit-B1 pin: a naive single-table rebuild would
+# cascade-wipe both children and only a populated DB can catch it.
+# ---------------------------------------------------------------------------
+
+def _seed_deck_family_through_82(conn: sqlite3.Connection) -> None:
+    """Seed org + candidate + publish job + operator state + a duel decision on the
+    PRE-083 schema (applied through 082)."""
+    _apply_migrations_through(conn, 82)
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute(
+        "INSERT INTO content_candidates (id, org_id, kind, status, target_handle, payload_json, source) "
+        "VALUES (11, 'tig', 'meme', 'scheduled', '@tigintern', '{\"template_id\":\"drake\"}', 'test')"
+    )
+    conn.execute(
+        "INSERT INTO content_candidates (id, org_id, kind, status, payload_json, source) "
+        "VALUES (12, 'tig', 'tweet', 'pending', '{\"text\":\"gm\"}', 'test')"
+    )
+    conn.execute(
+        "INSERT INTO content_publish_jobs (id, candidate_id, org_id, target_handle, release_state, publish_at) "
+        "VALUES (21, 11, 'tig', '@tigintern', 'posted', '2026-07-01T12:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO content_deck_operator_state (candidate_id, operator_handle, state) "
+        "VALUES (12, 'operator_arf', 'dismissed')"
+    )
+    conn.execute(
+        "INSERT INTO content_deck_decisions (candidate_id, org_id, actor, actor_kind, decision, surface, pair_loser_id) "
+        "VALUES (11, 'tig', 'operator_arf', 'operator', 'keep', 'web', 12)"
+    )
+    conn.commit()
+
+
+def test_migration_083_rebuild_preserves_deck_family_data():
+    """Migration 083 (the FK-aware rebuild) must carry candidates, publish jobs,
+    operator state, AND the untouched decisions log across intact — under
+    PRAGMA foreign_keys=ON, exactly as ensure_schema runs it."""
+    conn = _make_conn()
+    _seed_deck_family_through_82(conn)
+    _apply_migrations_through(conn, 83)
+
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 83
+    cands = {
+        r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT id, kind, status FROM content_candidates ORDER BY id"
+        ).fetchall()
+    }
+    assert cands == {11: ("meme", "scheduled"), 12: ("tweet", "pending")}
+    job = conn.execute(
+        "SELECT candidate_id, release_state, posted_ref FROM content_publish_jobs WHERE id = 21"
+    ).fetchone()
+    assert job is not None and job[0] == 11 and job[1] == "posted"
+    state = conn.execute(
+        "SELECT state FROM content_deck_operator_state WHERE candidate_id = 12 AND operator_handle = 'operator_arf'"
+    ).fetchone()
+    assert state is not None and state[0] == "dismissed"
+    dec = conn.execute(
+        "SELECT candidate_id, pair_loser_id FROM content_deck_decisions"
+    ).fetchone()
+    assert dec is not None and dec[0] == 11 and dec[1] == 12
+
+
+def test_migration_083_kind_check_admits_community_tweet_rejects_junk():
+    """The rebuilt CHECK accepts 'community_tweet' and still rejects unknown kinds."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('tig', 'TIG')")
+    conn.execute(
+        "INSERT INTO content_candidates (org_id, kind, payload_json, source) "
+        "VALUES ('tig', 'community_tweet', '{\"text\":\"gm\",\"author_handle\":\"gabbyvorbeck\"}', 'community_ingest')"
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT kind, target_handle FROM content_candidates WHERE kind = 'community_tweet'"
+    ).fetchone()
+    assert row is not None and row[1] is None  # duel-only rows are ingested UNBOUND
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO content_candidates (org_id, kind, payload_json, source) "
+            "VALUES ('tig', 'not_a_kind', '{}', 'test')"
+        )
+
+
+def test_migration_083_fk_cascade_and_indexes_survive_rebuild():
+    """The renamed tables keep live FK enforcement (child cascade on parent delete)
+    and the canonical index names."""
+    conn = _make_conn()
+    _seed_deck_family_through_82(conn)
+    _apply_migrations_through(conn, 83)
+
+    # The rebuilt FKs still point at content_candidates (rename rewrote the clauses):
+    # deleting the parent cascades both children.
+    conn.execute("DELETE FROM content_candidates WHERE id = 11")
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM content_publish_jobs").fetchone()[0] == 0
+    conn.execute("DELETE FROM content_candidates WHERE id = 12")
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM content_deck_operator_state").fetchone()[0] == 0
+
+    for table, expected in [
+        ("content_candidates", {"content_candidates_by_org_status", "content_candidates_by_dedupe"}),
+        ("content_publish_jobs", {"content_publish_jobs_by_org_state", "content_publish_jobs_due",
+                                  "content_publish_jobs_by_candidate"}),
+    ]:
+        idx = {r[1] for r in conn.execute(f"PRAGMA index_list({table})").fetchall()}
+        assert expected <= idx, f"{table} lost indexes in the 083 rebuild: {expected - idx}"
+
+    # AUTOINCREMENT sequence survived the rename — a fresh insert must not collide with copied ids.
+    cur = conn.execute(
+        "INSERT INTO content_candidates (org_id, kind, payload_json, source) "
+        "VALUES ('tig', 'tweet', '{\"text\":\"fresh\"}', 'test')"
+    )
+    assert cur.lastrowid > 12

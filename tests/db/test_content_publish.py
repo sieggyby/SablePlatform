@@ -193,6 +193,23 @@ def test_schedule_rejects_unbound_candidate(sa_conn):
     assert cp.list_publish_jobs(sa_conn, "orgA") == []            # no job created
 
 
+def test_schedule_rejects_community_tweet_even_if_bound(sa_conn):
+    """mig 083: an ingested real community tweet is duel-only content — it must never enter the
+    publish path. Ingest always writes it UNBOUND (the SEC-3 reject already fires), so this pins the
+    deeper wall: even a row that somehow carries a matching binding is refused ON KIND."""
+    _seed(sa_conn); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        cid = cd.upsert_candidate(sa_conn, org_id="orgA", kind="community_tweet",
+                                  payload_json='{"text": "gm", "author_handle": "gabbyvorbeck"}',
+                                  source="community_ingest", target_handle="@tigfoundation")
+        assert cd.set_candidate_status(sa_conn, candidate_id=cid, org_id="orgA",
+                                       status="kept", expected_status="pending")
+        job = cp.schedule_candidate(sa_conn, candidate_id=cid, org_id="orgA",
+                                    target_handle="@tigfoundation", publish_at=FUTURE)
+    assert job is None                                            # kind reject, fail closed
+    assert cp.list_publish_jobs(sa_conn, "orgA") == []            # no job created
+
+
 def test_schedule_rejects_handle_mismatch(sa_conn):
     """The caller-supplied target_handle MUST match the candidate's OWN stored binding -- a
     mismatch FAILS CLOSED (None, no job, candidate untouched), so a caller can never authorize one

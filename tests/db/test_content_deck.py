@@ -600,6 +600,30 @@ def test_get_deck_duel_pair_org_scoped(sa_conn):
     assert cd.get_deck_duel_pair(sa_conn, "orgA") == []
 
 
+def test_get_deck_duel_pair_kinds_filter(sa_conn):
+    """mig 083: ``kinds`` restricts the pool (the per-org duel_kinds config — e.g. TIG's
+    community-tweet-only game); omitted/None keeps the unfiltered pre-083 behavior, so an org with
+    no config can never be affected by the new parameter."""
+    _seed(sa_conn, "orgA"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        t = _mk(sa_conn, kind="tweet")
+        m = _mk(sa_conn, kind="meme")
+        c1 = _mk(sa_conn, kind="community_tweet")
+        c2 = _mk(sa_conn, kind="community_tweet")
+    sa_conn.commit()
+
+    pair = cd.get_deck_duel_pair(sa_conn, "orgA", kinds=("community_tweet",))
+    assert sorted(r["id"] for r in pair) == sorted([c1, c2])  # AI cards never selected
+
+    # multi-kind filter composes; the no-kwarg call sees the whole pending pool.
+    assert {r["id"] for r in cd.get_deck_duel_pair(sa_conn, "orgA", kinds=("tweet", "meme"))} == {t, m}
+    assert len(cd.get_deck_duel_pair(sa_conn, "orgA")) == 2  # unfiltered — any two of the four
+
+    # the 12h per-surface reuse exclusion composes with the kind filter.
+    _duel_row(sa_conn, "orgA", c1, c2); sa_conn.commit()
+    assert cd.get_deck_duel_pair(sa_conn, "orgA", kinds=("community_tweet",)) == []
+
+
 def test_has_recent_duel_vote(sa_conn):
     _seed(sa_conn, "orgA"); sa_conn.commit()
     with immediate_txn(sa_conn):
