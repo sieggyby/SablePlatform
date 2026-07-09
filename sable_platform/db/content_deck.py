@@ -28,6 +28,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text as _sa_text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import get_dialect, json_extract_text
+
 _CAND_COLS = (
     "id, org_id, kind, status, target_handle, payload_json, media_content_id, source, "
     "score, score_reason, tell_score, dedupe_key, expires_at, created_at"
@@ -226,6 +228,8 @@ def get_deck_duel_pair(
     surface: str = "discord",
     window_hours: int = 12,
     kinds: tuple[str, ...] | None = None,
+    lang: str | None = None,
+    include_untagged_lang: bool = False,
     now: str | None = None,
 ) -> list[dict]:
     """Pick up to TWO status='pending' candidates for a COMMUNITY A/B duel (Phase 5) —
@@ -235,7 +239,12 @@ def get_deck_duel_pair(
     stopping the same pair from re-posting all day while still letting a card collect
     more votes later). ``kinds`` restricts the pool to those candidate kinds (the
     per-org ``duel_kinds`` config — e.g. community-tweet-only duels for TIG); ``None``
-    means no kind filter (the pre-083 behavior, byte-identical SQL). RANDOM order so
+    means no kind filter (the pre-083 behavior, byte-identical SQL). ``lang`` restricts
+    to candidates whose ``payload_json.lang`` matches (the per-channel language routing —
+    e.g. a Chinese-channel duel serves ``lang='zh'`` cards only); ``include_untagged_lang``
+    ALSO admits rows with no ``lang`` field (used for the DEFAULT-language channel so a
+    hypothetically untagged card is never silently lost — the zh channel passes False so
+    only tagged-zh cards appear). ``None`` lang = no language filter. RANDOM order so
     pairs vary. Returns 0/1/2 rows (the caller degrades to "not enough cards").
     Read-only; never flips status; no cost column."""
     if now is None:
@@ -252,11 +261,21 @@ def get_deck_duel_pair(
         placeholders = ", ".join(f":kind_{i}" for i in range(len(kinds)))
         kind_clause = f"  AND c.kind IN ({placeholders}) "
         params.update({f"kind_{i}": k for i, k in enumerate(kinds)})
+    lang_clause = ""
+    if lang:
+        # dialect-portable JSON extraction (SQLite json_extract vs Postgres ->>).
+        lang_expr = json_extract_text("payload_json", "lang", get_dialect(conn))
+        if include_untagged_lang:
+            lang_clause = f"  AND ({lang_expr} = :lang OR {lang_expr} IS NULL) "
+        else:
+            lang_clause = f"  AND {lang_expr} = :lang "
+        params["lang"] = lang
     rows = conn.execute(
         _sa_text(
             f"SELECT {_CAND_COLS} FROM content_candidates c "
             "WHERE c.org_id = :org AND c.status = 'pending' "
             f"{kind_clause}"
+            f"{lang_clause}"
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM content_deck_decisions d "
             "     WHERE d.org_id = c.org_id AND d.surface = :surface "

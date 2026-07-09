@@ -664,3 +664,38 @@ def test_community_duel_leaderboard_agreement_math(sa_conn):
     # voter 2 picked rej over kept — the inverse of the ops verdict: decided but NOT
     # agreed (agreed requires winner kept/scheduled/posted OR loser rejected).
     assert v2["votes"] == 1 and v2["agreed"] == 0 and v2["decided"] == 1
+
+
+def test_get_deck_duel_pair_lang_filter(sa_conn):
+    """mig-free per-channel language routing: ``lang`` filters on payload_json.lang
+    (dialect-portable). ``include_untagged_lang`` admits null-lang rows for the default
+    channel; the zh channel (False) serves only tagged-zh cards. Each org is seeded so
+    the eligible set is <=2 (the picker's RANDOM LIMIT 2 can't hide it)."""
+    _seed(sa_conn, "zhorg", "enorg", "untorg", "kindorg"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        # zhorg: 2 zh + 1 en → lang='zh' must return exactly the 2 zh, never the en
+        z1 = _mk(sa_conn, org="zhorg", kind="community_tweet", payload='{"text":"a","lang":"zh"}')
+        z2 = _mk(sa_conn, org="zhorg", kind="community_tweet", payload='{"text":"b","lang":"zh"}')
+        _mk(sa_conn, org="zhorg", kind="community_tweet", payload='{"text":"c","lang":"en"}')
+        # enorg: 1 en + 1 zh + 1 untagged → lang='en' (no untagged) returns only the en
+        e1 = _mk(sa_conn, org="enorg", kind="community_tweet", payload='{"text":"d","lang":"en"}')
+        _mk(sa_conn, org="enorg", kind="community_tweet", payload='{"text":"e","lang":"zh"}')
+        _mk(sa_conn, org="enorg", kind="community_tweet", payload='{"text":"f"}')
+        # untorg: 1 en + 1 untagged → lang='en' include_untagged returns BOTH (never lost)
+        u_en = _mk(sa_conn, org="untorg", kind="community_tweet", payload='{"text":"g","lang":"en"}')
+        u_un = _mk(sa_conn, org="untorg", kind="community_tweet", payload='{"text":"h"}')
+        # kindorg: lang composes with kinds + reuse exclusion
+        k1 = _mk(sa_conn, org="kindorg", kind="community_tweet", payload='{"text":"i","lang":"zh"}')
+        k2 = _mk(sa_conn, org="kindorg", kind="community_tweet", payload='{"text":"j","lang":"zh"}')
+        _mk(sa_conn, org="kindorg", kind="meme", payload='{"text":"k","lang":"zh"}')
+    sa_conn.commit()
+
+    assert {r["id"] for r in cd.get_deck_duel_pair(sa_conn, "zhorg", lang="zh")} == {z1, z2}
+    assert {r["id"] for r in cd.get_deck_duel_pair(sa_conn, "enorg", lang="en")} == {e1}
+    assert {r["id"] for r in cd.get_deck_duel_pair(
+        sa_conn, "untorg", lang="en", include_untagged_lang=True)} == {u_en, u_un}
+    # no lang filter → whole pool (backwards compatible)
+    assert len(cd.get_deck_duel_pair(sa_conn, "zhorg")) == 2
+    # lang + kinds: only the two zh community_tweet cards, never the zh meme
+    assert {r["id"] for r in cd.get_deck_duel_pair(
+        sa_conn, "kindorg", kinds=("community_tweet",), lang="zh")} == {k1, k2}
