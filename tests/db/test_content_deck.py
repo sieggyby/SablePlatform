@@ -718,13 +718,18 @@ def test_get_deck_duel_pair_require_terms(sa_conn):
     got = cd.get_deck_duel_pair(sa_conn, "porg", require_terms=("prometheus",))
     assert {r["id"] for r in got} == {p1, p2}  # case-insensitive, off-topic excluded
 
-    # multiple terms OR together
+    # multiple terms OR together — a fresh 2-card org (one per term) so LIMIT 2 shows both
+    _seed(sa_conn, "torg"); sa_conn.commit()
     with immediate_txn(sa_conn):
-        s1 = _mk(sa_conn, org="porg", kind="community_tweet",
-                 payload='{"text":"the swarm event","lang":"en"}')
+        t_prom = _mk(sa_conn, org="torg", kind="community_tweet",
+                     payload='{"text":"Prometheus dropped","lang":"en"}')
+        t_swarm = _mk(sa_conn, org="torg", kind="community_tweet",
+                      payload='{"text":"the swarm event","lang":"en"}')
+        _mk(sa_conn, org="torg", kind="community_tweet",
+            payload='{"text":"unrelated $tig post","lang":"en"}')
     sa_conn.commit()
-    two = cd.get_deck_duel_pair(sa_conn, "porg", require_terms=("prometheus", "swarm"))
-    assert s1 in {r["id"] for r in two}  # 'swarm' matches the new card too
+    two = cd.get_deck_duel_pair(sa_conn, "torg", require_terms=("prometheus", "swarm"))
+    assert {r["id"] for r in two} == {t_prom, t_swarm}  # both terms match, off-topic excluded
 
     # composes with lang (zh Prometheus tweet only)
     _seed(sa_conn, "morg"); sa_conn.commit()

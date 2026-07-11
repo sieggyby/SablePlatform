@@ -2984,6 +2984,28 @@ content_candidates = Table(
     Index("content_candidates_by_dedupe", "org_id", "dedupe_key"),
 )
 
+# mig 084 — durable registry of OPEN community duels so a 24h duel survives a bot restart
+# (persistent-view rebind by message_id + a background close-sweep). card_*_json are render
+# snapshots so the close reveal never needs the content_candidates rows to still exist; the
+# VOTES stay in content_deck_decisions (tally counted from there since opened_at).
+content_duels = Table(
+    "content_duels",
+    metadata,
+    Column("message_id", Text, primary_key=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("card_a_json", Text, nullable=False),
+    Column("card_b_json", Text, nullable=False),
+    Column("opened_at", Text, nullable=False),
+    Column("deadline", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="open"),
+    Column("closed_at", Text),
+    CheckConstraint("status IN ('open','closed')", name="ck_content_duels_status"),
+    Index("content_duels_due", "status", "deadline"),
+    Index("content_duels_by_channel", "channel_id", "status"),
+)
+
 content_deck_decisions = Table(
     "content_deck_decisions",
     metadata,

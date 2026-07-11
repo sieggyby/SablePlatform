@@ -245,6 +245,9 @@ TABLE_LOAD_ORDER: list[str] = [
     # PK (org_id, subject_kind, subject_key) -> NOT in SEQUENCE_TABLES. (content_deck_decisions.applied
     # rides its existing create above.)
     "content_quality",                   # no FKs (composite TEXT PK, no sequence)
+    # Migration 084: durable open-duel registry. FK -> orgs (which precedes this whole
+    # block); message_id is a TEXT PK (Discord snowflake) -> NOT in SEQUENCE_TABLES.
+    "content_duels",                     # FK -> orgs (TEXT PK message_id, no sequence)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
