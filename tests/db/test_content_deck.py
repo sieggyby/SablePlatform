@@ -699,3 +699,40 @@ def test_get_deck_duel_pair_lang_filter(sa_conn):
     # lang + kinds: only the two zh community_tweet cards, never the zh meme
     assert {r["id"] for r in cd.get_deck_duel_pair(
         sa_conn, "kindorg", kinds=("community_tweet",), lang="zh")} == {k1, k2}
+
+
+def test_get_deck_duel_pair_require_terms(sa_conn):
+    """Topic routing: require_terms restricts to candidates whose payload text contains at
+    least one term (case-insensitive), composing with kinds/lang. Backs a Prometheus
+    channel (require_terms=('prometheus',))."""
+    _seed(sa_conn, "porg"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        p1 = _mk(sa_conn, org="porg", kind="community_tweet",
+                 payload='{"text":"the Prometheus swarm beta was wild","lang":"en"}')
+        p2 = _mk(sa_conn, org="porg", kind="community_tweet",
+                 payload='{"text":"PROMETHEUS public release soon","lang":"en"}')
+        _mk(sa_conn, org="porg", kind="community_tweet",
+            payload='{"text":"just bought more $tig","lang":"en"}')  # no term
+    sa_conn.commit()
+
+    got = cd.get_deck_duel_pair(sa_conn, "porg", require_terms=("prometheus",))
+    assert {r["id"] for r in got} == {p1, p2}  # case-insensitive, off-topic excluded
+
+    # multiple terms OR together
+    with immediate_txn(sa_conn):
+        s1 = _mk(sa_conn, org="porg", kind="community_tweet",
+                 payload='{"text":"the swarm event","lang":"en"}')
+    sa_conn.commit()
+    two = cd.get_deck_duel_pair(sa_conn, "porg", require_terms=("prometheus", "swarm"))
+    assert s1 in {r["id"] for r in two}  # 'swarm' matches the new card too
+
+    # composes with lang (zh Prometheus tweet only)
+    _seed(sa_conn, "morg"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        zh = _mk(sa_conn, org="morg", kind="community_tweet",
+                 payload='{"text":"Prometheus 蜂群 很强","lang":"zh"}')
+        _mk(sa_conn, org="morg", kind="community_tweet",
+            payload='{"text":"Prometheus swarm","lang":"en"}')  # right topic, wrong lang
+    sa_conn.commit()
+    zh_prom = cd.get_deck_duel_pair(sa_conn, "morg", lang="zh", require_terms=("prometheus",))
+    assert {r["id"] for r in zh_prom} == {zh}

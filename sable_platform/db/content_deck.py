@@ -230,6 +230,7 @@ def get_deck_duel_pair(
     kinds: tuple[str, ...] | None = None,
     lang: str | None = None,
     include_untagged_lang: bool = False,
+    require_terms: tuple[str, ...] | None = None,
     now: str | None = None,
 ) -> list[dict]:
     """Pick up to TWO status='pending' candidates for a COMMUNITY A/B duel (Phase 5) —
@@ -237,16 +238,14 @@ def get_deck_duel_pair(
     already appeared in a duel on this ``surface`` within ``window_hours`` (org-level —
     one Discord duel serves MANY voters, so the exclusion is per-surface, not per-actor,
     stopping the same pair from re-posting all day while still letting a card collect
-    more votes later). ``kinds`` restricts the pool to those candidate kinds (the
-    per-org ``duel_kinds`` config — e.g. community-tweet-only duels for TIG); ``None``
-    means no kind filter (the pre-083 behavior, byte-identical SQL). ``lang`` restricts
-    to candidates whose ``payload_json.lang`` matches (the per-channel language routing —
-    e.g. a Chinese-channel duel serves ``lang='zh'`` cards only); ``include_untagged_lang``
-    ALSO admits rows with no ``lang`` field (used for the DEFAULT-language channel so a
-    hypothetically untagged card is never silently lost — the zh channel passes False so
-    only tagged-zh cards appear). ``None`` lang = no language filter. RANDOM order so
-    pairs vary. Returns 0/1/2 rows (the caller degrades to "not enough cards").
-    Read-only; never flips status; no cost column."""
+    more votes later). The three filters implement per-channel content routing (see the
+    bot's ``duel_channels`` config): ``kinds`` restricts to those candidate kinds (e.g. a
+    meme channel → ``('meme',)``); ``lang`` restricts to ``payload_json.lang`` (a Chinese
+    channel → ``'zh'``), with ``include_untagged_lang`` also admitting null-lang rows for
+    the default bucket; ``require_terms`` restricts to candidates whose ``payload_json.text``
+    contains AT LEAST ONE term, case-insensitive (a Prometheus channel → ``('prometheus',)``).
+    All ``None`` = no filter (byte-identical pre-filter SQL). RANDOM order so pairs vary.
+    Returns 0/1/2 rows (the caller degrades to "not enough cards"). Read-only; no cost."""
     if now is None:
         now = _utc_now_iso()
     try:
@@ -270,12 +269,24 @@ def get_deck_duel_pair(
         else:
             lang_clause = f"  AND {lang_expr} = :lang "
         params["lang"] = lang
+    term_clause = ""
+    if require_terms:
+        # topic routing — the tweet TEXT must contain at least one term (case-insensitive
+        # LIKE, OR'd). Dialect-portable text extraction; terms are bound params (never
+        # interpolated) so a channel-config term can't smuggle SQL.
+        text_expr = json_extract_text("payload_json", "text", get_dialect(conn))
+        ors = []
+        for i, term in enumerate(require_terms):
+            ors.append(f"LOWER({text_expr}) LIKE :term_{i}")
+            params[f"term_{i}"] = f"%{str(term).lower()}%"
+        term_clause = "  AND (" + " OR ".join(ors) + ") "
     rows = conn.execute(
         _sa_text(
             f"SELECT {_CAND_COLS} FROM content_candidates c "
             "WHERE c.org_id = :org AND c.status = 'pending' "
             f"{kind_clause}"
             f"{lang_clause}"
+            f"{term_clause}"
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM content_deck_decisions d "
             "     WHERE d.org_id = c.org_id AND d.surface = :surface "
