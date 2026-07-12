@@ -233,6 +233,7 @@ def get_deck_duel_pair(
     lang: str | None = None,
     include_untagged_lang: bool = False,
     require_terms: tuple[str, ...] | None = None,
+    require_image: bool = False,
     now: str | None = None,
 ) -> list[dict]:
     """Pick up to TWO status='pending' candidates for a COMMUNITY A/B duel (Phase 5) —
@@ -246,7 +247,9 @@ def get_deck_duel_pair(
     channel → ``'zh'``), with ``include_untagged_lang`` also admitting null-lang rows for
     the default bucket; ``require_terms`` restricts to candidates whose ``payload_json.text``
     contains AT LEAST ONE term, case-insensitive (a Prometheus channel → ``('prometheus',)``).
-    All ``None`` = no filter (byte-identical pre-filter SQL). RANDOM order so pairs vary.
+    ``require_image`` restricts to candidates whose ``payload_json.image_url`` is non-empty (a
+    meme channel serving image tweets). All ``None``/``False`` = no filter (byte-identical
+    pre-filter SQL). RANDOM order so pairs vary.
     Returns 0/1/2 rows (the caller degrades to "not enough cards"). Read-only; no cost."""
     if now is None:
         now = _utc_now_iso()
@@ -282,6 +285,12 @@ def get_deck_duel_pair(
             ors.append(f"LOWER({text_expr}) LIKE :term_{i}")
             params[f"term_{i}"] = f"%{str(term).lower()}%"
         term_clause = "  AND (" + " OR ".join(ors) + ") "
+    image_clause = ""
+    if require_image:
+        # image routing — the memes channel serves ONLY image-bearing community cards (a
+        # card whose payload carries a non-empty image_url). Dialect-portable extraction.
+        img_expr = json_extract_text("payload_json", "image_url", get_dialect(conn))
+        image_clause = f"  AND {img_expr} IS NOT NULL AND {img_expr} <> '' "
     # Fetch a random slice of the eligible pool (bounded) and pick a LENGTH-MATCHED pair in
     # Python — a one-line tweet should duel another short one, a 300-char thesis another long
     # one, not each other (fairer + better UX). LIMIT 200 bounds the read while keeping enough
@@ -293,6 +302,7 @@ def get_deck_duel_pair(
             f"{kind_clause}"
             f"{lang_clause}"
             f"{term_clause}"
+            f"{image_clause}"
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM content_deck_decisions d "
             "     WHERE d.org_id = c.org_id AND d.surface = :surface "

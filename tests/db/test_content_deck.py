@@ -743,6 +743,29 @@ def test_get_deck_duel_pair_require_terms(sa_conn):
     assert {r["id"] for r in zh_prom} == {zh}
 
 
+def test_get_deck_duel_pair_require_image(sa_conn):
+    """Image routing: require_image restricts to candidates whose payload carries a
+    non-empty image_url. Backs the meme channel (serves image tweets only)."""
+    _seed(sa_conn, "iorg"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        m1 = _mk(sa_conn, org="iorg", kind="community_tweet",
+                 payload='{"text":"meme a","image_url":"https://pbs.twimg.com/media/A.jpg"}')
+        m2 = _mk(sa_conn, org="iorg", kind="community_tweet",
+                 payload='{"text":"meme b","image_url":"https://pbs.twimg.com/media/B.jpg"}')
+        _mk(sa_conn, org="iorg", kind="community_tweet",
+            payload='{"text":"just text, no image"}')                       # no image_url
+        _mk(sa_conn, org="iorg", kind="community_tweet",
+            payload='{"text":"empty image","image_url":""}')               # empty image_url
+    sa_conn.commit()
+
+    got = cd.get_deck_duel_pair(sa_conn, "iorg", require_image=True)
+    assert {r["id"] for r in got} == {m1, m2}  # only image-bearing cards, empties excluded
+
+    # default (require_image=False) still returns any pending card
+    allc = cd.get_deck_duel_pair(sa_conn, "iorg")
+    assert len(allc) == 2  # length-matched pair from the full pool of 4
+
+
 def test_get_deck_duel_pair_length_matched(sa_conn):
     """Similar-length cards pair together: a one-liner never duels a wall-of-text. With a
     short-heavy pool + one long card, repeated draws never pair the long card with a short
