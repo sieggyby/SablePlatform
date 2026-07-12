@@ -248,6 +248,9 @@ TABLE_LOAD_ORDER: list[str] = [
     # Migration 084: durable open-duel registry. FK -> orgs (which precedes this whole
     # block); message_id is a TEXT PK (Discord snowflake) -> NOT in SEQUENCE_TABLES.
     "content_duels",                     # FK -> orgs (TEXT PK message_id, no sequence)
+    # Migration 085: Conversation Watcher flags. FK -> orgs (precedes this block).
+    # Integer autoincrement PK -> also in SEQUENCE_TABLES.
+    "community_conversation_flags",      # FK -> orgs (Integer autoincrement PK)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -372,6 +375,8 @@ SEQUENCE_TABLES: dict[str, str] = {
     "content_deck_decisions": "id",
     # Migration 077: Content Deck Phase 4 release substrate (Integer autoincrement id PK).
     "content_publish_jobs": "id",
+    # Migration 086: Conversation Watcher flags (Integer autoincrement id PK).
+    "community_conversation_flags": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

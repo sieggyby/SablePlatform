@@ -170,7 +170,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 84
+    assert row["version"] == 86
 
 
 def test_all_tables_exist():
@@ -189,7 +189,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 84
+    assert row["version"] == 86
 
 
 def test_workflow_tables_columns():
@@ -1303,7 +1303,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 84
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 86
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1480,7 +1480,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 84
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 86
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
@@ -1676,3 +1676,44 @@ def test_migration_083_fk_cascade_and_indexes_survive_rebuild():
         "VALUES ('tig', 'tweet', '{\"text\":\"fresh\"}', 'test')"
     )
     assert cur.lastrowid > 12
+
+
+def test_migration_085_quality_media_reply_on_fresh_db():
+    """Migration 085: relay_quality_tweets gains three NULLABLE K1-instrumentation
+    columns. Pins the SQL file itself (a column-name typo would pass every
+    metadata-built test in both repos and surface only on SQL-migrated SQLite)."""
+    conn = _make_conn()
+    ensure_schema(conn)
+
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(relay_quality_tweets)").fetchall()}
+    for name, decl_type in (("media_kinds", "TEXT"), ("is_reply", "INTEGER"),
+                            ("in_reply_to_x_id", "TEXT")):
+        assert name in cols, f"migration 085 must add relay_quality_tweets.{name}"
+        assert cols[name][2].upper() == decl_type, f"{name} must be {decl_type}"
+        assert cols[name][3] == 0, f"{name} must be NULLABLE (pre-085 rows = unparsed)"
+
+    # Three-valued semantics survive a round-trip: parsed-photo-reply, parsed-bare,
+    # and a legacy row whose columns stay NULL.
+    conn.execute(
+        "INSERT INTO relay_quality_tweets "
+        "(tweet_x_id, author_handle, posted_at, text, band, first_seen_at, "
+        " media_kinds, is_reply, in_reply_to_x_id) "
+        "VALUES ('851', 'alice', '2026-07-12T00:00:00Z', 'gm', 'core', "
+        "        '2026-07-12T01:00:00Z', 'photo', 1, '850')")
+    conn.execute(
+        "INSERT INTO relay_quality_tweets "
+        "(tweet_x_id, author_handle, posted_at, text, band, first_seen_at, "
+        " media_kinds, is_reply, in_reply_to_x_id) "
+        "VALUES ('852', 'alice', '2026-07-12T00:00:00Z', 'gm', 'core', "
+        "        '2026-07-12T01:00:00Z', '', 0, NULL)")
+    conn.execute(
+        "INSERT INTO relay_quality_tweets "
+        "(tweet_x_id, author_handle, posted_at, text, band, first_seen_at) "
+        "VALUES ('853', 'alice', '2026-07-12T00:00:00Z', 'gm', 'core', "
+        "        '2026-07-12T01:00:00Z')")
+    rows = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+        "SELECT tweet_x_id, media_kinds, is_reply, in_reply_to_x_id "
+        "FROM relay_quality_tweets WHERE tweet_x_id IN ('851','852','853')").fetchall()}
+    assert rows["851"] == ("photo", 1, "850")
+    assert rows["852"] == ("", 0, None)
+    assert rows["853"] == (None, None, None)  # legacy = unparsed, distinguishable

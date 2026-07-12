@@ -2233,6 +2233,12 @@ relay_quality_tweets = Table(
     Column("text", Text),
     Column("band", Text),
     Column("first_seen_at", Text, nullable=False, server_default=func.now()),
+    # Migration 085 — K1 instrumentation, parsed from the SocialData raw object.
+    # Three-valued: NULL = not yet parsed (pre-backfill row); media_kinds '' = parsed,
+    # NO media, else a sorted comma list of entity types ('photo', 'animated_gif,video').
+    Column("media_kinds", Text),
+    Column("is_reply", Integer),
+    Column("in_reply_to_x_id", Text),
     Index("ix_relay_quality_tweets_posted", "posted_at"),
 )
 
@@ -3004,6 +3010,44 @@ content_duels = Table(
     CheckConstraint("status IN ('open','closed')", name="ck_content_duels_status"),
     Index("content_duels_due", "status", "deadline"),
     Index("content_duels_by_channel", "channel_id", "status"),
+)
+
+# mig 086 — the Conversation Watcher's output. One flagged moment in a moderated community
+# chat (Discord/TG) a heuristic scorer judged worth pitching into, posted to the client's TG
+# topic. kind='opportunity' vs 'brand_risk' (member asserted a guardrails forbidden_claim --
+# own cooldown, bypasses the burst gate). signals_json is the reason vector so the flag
+# explains itself with NO LLM. Dedupe is APP-LEVEL over non-terminal rows (no UNIQUE): the
+# writer scopes a per-(platform,channel_id) cooldown inside serialized_txn. feedback is the
+# operator verdict the precision gate reads. No cost column -- the scorer is zero-LLM.
+community_conversation_flags = Table(
+    "community_conversation_flags",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
+    Column("platform", Text, nullable=False),
+    Column("space_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("anchor_message_id", Text, nullable=False),
+    Column("window_start", Text, nullable=False),
+    Column("window_end", Text, nullable=False),
+    Column("score", Float, nullable=False),
+    Column("kind", Text, nullable=False, server_default="opportunity"),
+    Column("signals_json", Text, nullable=False, server_default="{}"),
+    Column("reason", Text),
+    Column("status", Text, nullable=False, server_default="active"),
+    Column("feedback", Text),
+    Column("delivered_at", Text),
+    Column("expires_at", Text),
+    Column("created_at", Text, nullable=False),
+    CheckConstraint("platform IN ('discord','telegram')", name="ck_ccf_platform"),
+    CheckConstraint("kind IN ('opportunity','brand_risk')", name="ck_ccf_kind"),
+    CheckConstraint(
+        "status IN ('active','delivered','handled','noise','expired')",
+        name="ck_ccf_status",
+    ),
+    Index("ix_ccf_feed", "org_id", "status", "created_at"),
+    Index("ix_ccf_cooldown", "platform", "channel_id", "created_at"),
+    Index("ix_ccf_expiry", "expires_at"),
 )
 
 content_deck_decisions = Table(

@@ -103,6 +103,8 @@ _MIGRATIONS = [
     ("082_shared_tweet_cache.sql", 82),
     ("083_community_tweet_kind.sql", 83),
     ("084_content_duels.sql", 84),
+    ("085_quality_media_reply.sql", 85),
+    ("086_conversation_flags.sql", 86),
 ]
 
 
