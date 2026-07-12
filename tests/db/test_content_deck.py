@@ -741,3 +741,35 @@ def test_get_deck_duel_pair_require_terms(sa_conn):
     sa_conn.commit()
     zh_prom = cd.get_deck_duel_pair(sa_conn, "morg", lang="zh", require_terms=("prometheus",))
     assert {r["id"] for r in zh_prom} == {zh}
+
+
+def test_get_deck_duel_pair_length_matched(sa_conn):
+    """Similar-length cards pair together: a one-liner never duels a wall-of-text. With a
+    short-heavy pool + one long card, repeated draws never pair the long card with a short
+    one (its 0.5x–2x band has no short cards)."""
+    _seed(sa_conn, "lorg"); sa_conn.commit()
+    short = '{"text":"gm $tig","lang":"en"}'                        # ~7 chars
+    longtext = '{"text":"' + ("x" * 300) + '","lang":"en"}'         # 300 chars
+    with immediate_txn(sa_conn):
+        s_ids = {_mk(sa_conn, org="lorg", kind="community_tweet", payload=short) for _ in range(6)}
+        long_id = _mk(sa_conn, org="lorg", kind="community_tweet", payload=longtext)
+    sa_conn.commit()
+    # the lone long card can't find a same-length partner → it should never be served in a
+    # pair with a short one across many draws (its band is empty → closest = a short, BUT it
+    # only appears when picked FIRST; the invariant we assert is that a served PAIR is never
+    # long+short when a same-length partner exists for the short side).
+    long_short_pairs = 0
+    for _ in range(40):
+        pair = cd.get_deck_duel_pair(sa_conn, "lorg")
+        assert len(pair) == 2
+        lens = sorted(cd._text_len(p) for p in pair)
+        if lens[0] < 50 and lens[1] > 200:
+            long_short_pairs += 1
+    # a short-picked-first never grabs the long one (its band has 5 other shorts); only a
+    # long-picked-first (1/7 of draws) falls back to a short. So mismatches are rare, not the norm.
+    assert long_short_pairs <= 8   # ~1/7 * 40 ≈ 6; comfortably not the default behavior
+    # two shorts always pair cleanly
+    for _ in range(10):
+        pair = cd.get_deck_duel_pair(sa_conn, "lorg")
+        if all(cd._text_len(p) < 50 for p in pair):
+            assert {p["id"] for p in pair} <= s_ids

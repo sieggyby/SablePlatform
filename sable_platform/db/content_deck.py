@@ -23,6 +23,8 @@ LOAD-BEARING SAFETY (from the audit):
 """
 from __future__ import annotations
 
+import json
+import random
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text as _sa_text
@@ -280,6 +282,10 @@ def get_deck_duel_pair(
             ors.append(f"LOWER({text_expr}) LIKE :term_{i}")
             params[f"term_{i}"] = f"%{str(term).lower()}%"
         term_clause = "  AND (" + " OR ".join(ors) + ") "
+    # Fetch a random slice of the eligible pool (bounded) and pick a LENGTH-MATCHED pair in
+    # Python — a one-line tweet should duel another short one, a 300-char thesis another long
+    # one, not each other (fairer + better UX). LIMIT 200 bounds the read while keeping enough
+    # of the length distribution to match against.
     rows = conn.execute(
         _sa_text(
             f"SELECT {_CAND_COLS} FROM content_candidates c "
@@ -294,11 +300,33 @@ def get_deck_duel_pair(
             "       AND (d.candidate_id = c.id OR d.pair_loser_id = c.id) "
             "       AND d.created_at > :since"
             "  ) "
-            "ORDER BY RANDOM() LIMIT 2"
+            "ORDER BY RANDOM() LIMIT 200"
         ),
         params,
     ).fetchall()
-    return [dict(r._mapping) for r in rows]
+    return _length_matched_pair([dict(r._mapping) for r in rows])
+
+
+def _text_len(card: dict) -> int:
+    try:
+        return len((json.loads(card.get("payload_json") or "{}") or {}).get("text") or "")
+    except (ValueError, TypeError):
+        return 0
+
+
+def _length_matched_pair(cards: list[dict]) -> list[dict]:
+    """Pick two SIMILAR-LENGTH cards so a one-liner never duels a wall-of-text (unfair + odd
+    UX). The first is random; the second is a random card whose text length is within 0.5×–2×
+    of the first, falling back to the single closest-length card if that band is empty (a
+    unique-length outlier). Returns 0/1/2 (fewer than 2 eligible → as-is)."""
+    if len(cards) < 2:
+        return cards
+    first = random.choice(cards)
+    rest = [c for c in cards if c["id"] != first["id"]]
+    fl = _text_len(first)
+    band = [c for c in rest if fl and 0.5 * fl <= _text_len(c) <= 2.0 * fl]
+    second = random.choice(band) if band else min(rest, key=lambda c: abs(_text_len(c) - fl))
+    return [first, second]
 
 
 def has_recent_duel_vote(
