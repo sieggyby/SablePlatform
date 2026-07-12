@@ -27,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text as _sa_text
 
 from sable_platform.db.content_deck import upsert_candidate
-from sable_platform.relay.bot.txn import immediate_txn
 
 # X handle shape — a candidate whose author isn't handle-shaped is dropped by the bot's
 # render whitelist, so don't even promote it.
@@ -116,7 +115,7 @@ def enrich_duel_pool(
             "SELECT x_id, x_author_handle, text, engagement_json, lang, posted_at, raw "
             "FROM relay_tweets "
             f"WHERE {where_rel} AND text IS NOT NULL AND text <> '' "
-            "  AND (is_reply IS NULL OR is_reply = false)"
+            "  AND COALESCE(is_reply, 0) = 0"  # exclude replies; is_reply is INTEGER 0/1
         ),
         params,
     ).fetchall()
@@ -162,15 +161,17 @@ def enrich_duel_pool(
         }
         candidates.append((popped, payload, x_id))
 
-    # highest-engagement first, capped — the best of the eligible pool enters this run
+    # highest-engagement first, capped — the best of the eligible pool enters this run.
+    # Plain execute + commit (NOT immediate_txn): prod's get_db() yields a CompatConnection
+    # that immediate_txn can't drive, and a batch promote isn't write-lock-critical.
     candidates.sort(key=lambda c: -c[0])
-    with immediate_txn(conn):
-        for popped, payload, x_id in candidates[: max(0, max_add)]:
-            upsert_candidate(
-                conn, org_id=org_id, kind="community_tweet",
-                payload_json=json.dumps(payload), source=source_tag,
-                dedupe_key=f"ct:{x_id}", score=float(popped), now=now_iso,
-            )
-            seen.add(x_id)
-            summary["added"] += 1
+    for popped, payload, x_id in candidates[: max(0, max_add)]:
+        upsert_candidate(
+            conn, org_id=org_id, kind="community_tweet",
+            payload_json=json.dumps(payload), source=source_tag,
+            dedupe_key=f"ct:{x_id}", score=float(popped), now=now_iso,
+        )
+        seen.add(x_id)
+        summary["added"] += 1
+    conn.commit()
     return summary

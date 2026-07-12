@@ -743,6 +743,25 @@ def test_get_deck_duel_pair_require_terms(sa_conn):
     assert {r["id"] for r in zh_prom} == {zh}
 
 
+def test_get_duel_submitter_leaderboard(sa_conn):
+    """Per submitter (source='duel_submit:<uid>'): submissions, duel entries, and wins —
+    the raw counts the bot folds into the Signal Index. Non-submitted cards are excluded."""
+    _seed(sa_conn, "tig"); sa_conn.commit()
+    with immediate_txn(sa_conn):
+        c1 = _mk(sa_conn, org="tig", kind="community_tweet", payload='{"x_id":"1"}', source="duel_submit:60")
+        c2 = _mk(sa_conn, org="tig", kind="community_tweet", payload='{"x_id":"2"}', source="duel_submit:60")
+        c3 = _mk(sa_conn, org="tig", kind="community_tweet", payload='{"x_id":"3"}', source="duel_submit:70")
+        c4 = _mk(sa_conn, org="tig", kind="community_tweet", payload='{"x_id":"4"}', source="duel_enrich")
+        cd.record_deck_decision(sa_conn, candidate_id=c1, org_id="tig", actor="discord:user:9",
+                                actor_kind="community", decision="keep", surface="discord", pair_loser_id=c3)
+        cd.record_deck_decision(sa_conn, candidate_id=c4, org_id="tig", actor="discord:user:8",
+                                actor_kind="community", decision="keep", surface="discord", pair_loser_id=c2)
+    board = {r["submitter"]: r for r in cd.get_duel_submitter_leaderboard(sa_conn, "tig")}
+    assert set(board) == {"60", "70"}                 # the duel_enrich card is NOT a submission
+    assert board["60"] == {"submitter": "60", "submissions": 2, "wins": 1, "entries": 2}
+    assert board["70"] == {"submitter": "70", "submissions": 1, "wins": 0, "entries": 1}
+
+
 def test_get_deck_duel_pair_require_image(sa_conn):
     """Image routing: require_image restricts to candidates whose payload carries a
     non-empty image_url. Backs the meme channel (serves image tweets only)."""

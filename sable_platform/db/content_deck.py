@@ -398,6 +398,52 @@ def get_community_duel_leaderboard(
     ]
 
 
+def get_duel_submitter_leaderboard(
+    conn: Connection,
+    org_id: str,
+    *,
+    source_prefix: str = "duel_submit:",
+    limit: int = 15,
+) -> list[dict]:
+    """Per community SUBMITTER (a member who entered a tweet via /duel-submit — the
+    submitter id is encoded in ``content_candidates.source`` as ``duel_submit:<uid>``),
+    how their submissions have fared in duels: how many they submitted, how many duel
+    appearances those got, and how many they WON. The bot folds these into the opaque
+    'Signal Index'. Read-only; interpretive; no cost column.
+
+    wins/entries come from the duel decision log (candidate_id = the winner, pair_loser_id
+    = the loser of that pairwise duel). A submission that never dueled counts only toward
+    ``submissions``. Most-submitted first (the bot re-sorts by the computed index)."""
+    rows = conn.execute(
+        _sa_text(
+            "SELECT c.source AS submitter, "
+            "  COUNT(DISTINCT c.id) AS submissions, "
+            "  COALESCE(SUM(CASE WHEN d.candidate_id = c.id THEN 1 ELSE 0 END), 0) AS wins, "
+            "  COALESCE(SUM(CASE WHEN d.candidate_id = c.id OR d.pair_loser_id = c.id "
+            "                    THEN 1 ELSE 0 END), 0) AS entries "
+            "FROM content_candidates c "
+            "LEFT JOIN content_deck_decisions d "
+            "  ON d.org_id = c.org_id AND d.actor_kind = 'community' "
+            "     AND d.decision = 'keep' AND d.pair_loser_id IS NOT NULL "
+            "     AND (d.candidate_id = c.id OR d.pair_loser_id = c.id) "
+            "WHERE c.org_id = :org AND c.kind = 'community_tweet' "
+            "  AND c.source LIKE :pfx "
+            "GROUP BY c.source ORDER BY submissions DESC LIMIT :limit"
+        ),
+        {"org": org_id, "pfx": source_prefix + "%", "limit": int(limit)},
+    ).fetchall()
+    out = []
+    for r in rows:
+        src = str(r[0])
+        out.append({
+            "submitter": src[len(source_prefix):] if src.startswith(source_prefix) else src,
+            "submissions": int(r[1] or 0),
+            "wins": int(r[2] or 0),
+            "entries": int(r[3] or 0),
+        })
+    return out
+
+
 def count_pending_candidates(conn: Connection, org_id: str, *, kind: str | None = None) -> int:
     """How many status='pending' candidates ``org_id`` has, optionally for one ``kind``.
     Read-only. The ambient producer's per-kind backlog gate: an org whose deck is not being
