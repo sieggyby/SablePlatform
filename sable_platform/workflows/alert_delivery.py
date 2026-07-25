@@ -128,10 +128,20 @@ def _deliver(
             mark_delivered(conn, dedup_key)
 
 
-def _send_telegram(token: str, chat_id: str, text: str) -> str | None:
-    """Send message via Telegram. Returns error string on failure, None on success."""
+def _send_telegram(
+    token: str, chat_id: str, text: str, message_thread_id: str | int | None = None
+) -> str | None:
+    """Send message via Telegram. Returns error string on failure, None on success.
+
+    ``message_thread_id`` targets a forum TOPIC inside ``chat_id`` (the Conversation
+    Watcher posts one topic per client). ``None`` omits the field entirely, so every
+    existing caller keeps byte-identical request bodies.
+    """
     try:
-        data = _json.dumps({"chat_id": chat_id, "text": text}).encode()
+        payload: dict = {"chat_id": chat_id, "text": text}
+        if message_thread_id is not None:
+            payload["message_thread_id"] = int(message_thread_id)
+        data = _json.dumps(payload).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
             data=data,

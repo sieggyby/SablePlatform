@@ -44,15 +44,22 @@ def _utc_now_iso() -> str:
 def find_active_flag_in_window(
     conn: Connection,
     *,
+    org_id: str,
     platform: str,
     channel_id: str,
     kind: str,
     cooldown_minutes: int,
     now: str | None = None,
 ) -> dict | None:
-    """The most recent NON-TERMINAL flag of this ``kind`` in this channel whose ``created_at``
-    is within ``cooldown_minutes`` of ``now`` — the dedupe/cooldown probe. None if the channel
-    is clear to flag again. Read-only, but call it inside the same txn as the insert.
+    """The most recent NON-TERMINAL flag of this ``kind`` in this org's channel whose
+    ``created_at`` is within ``cooldown_minutes`` of ``now`` — the dedupe/cooldown probe.
+    None if the channel is clear to flag again. Read-only, but call it inside the same txn
+    as the insert.
+
+    ORG-SCOPED on purpose. The suite-wide dedup convention is "always include org_id; never
+    collide across orgs" — without it, two orgs watching the same chat (a shared community,
+    or an org-id migration running both ids in parallel) would silently suppress each
+    other's flags, and the second org would look like a quiet room rather than a broken one.
 
     A delivered-but-not-yet-adjudicated flag ('active'/'delivered') still suppresses; a
     terminal flag ('handled'/'noise'/'expired') does not (the conversation moved on)."""
@@ -64,12 +71,12 @@ def find_active_flag_in_window(
     row = conn.execute(
         _sa_text(
             f"SELECT {_COLS} FROM community_conversation_flags "
-            "WHERE platform = :p AND channel_id = :ch AND kind = :k "
+            "WHERE org_id = :org AND platform = :p AND channel_id = :ch AND kind = :k "
             "  AND status NOT IN ('handled', 'noise', 'expired') "
             "  AND created_at >= :cutoff "
             "ORDER BY created_at DESC LIMIT 1"
         ),
-        {"p": platform, "ch": str(channel_id), "k": kind, "cutoff": cutoff},
+        {"org": org_id, "p": platform, "ch": str(channel_id), "k": kind, "cutoff": cutoff},
     ).fetchone()
     return dict(row._mapping) if row is not None else None
 
@@ -92,7 +99,7 @@ def insert_flag(
     expires_at: str | None = None,
     now: str | None = None,
 ) -> int | None:
-    """Write a flag unless the per-(platform, channel_id, kind) cooldown suppresses it.
+    """Write a flag unless the per-(org_id, platform, channel_id, kind) cooldown suppresses it.
 
     Returns the new flag id, or None if a non-terminal flag of the same kind already sits in
     the cooldown window (the dedupe path — not an error). Caller MUST be inside
@@ -100,6 +107,7 @@ def insert_flag(
     now = now or _utc_now_iso()
     if find_active_flag_in_window(
         conn,
+        org_id=org_id,
         platform=platform,
         channel_id=channel_id,
         kind=kind,
@@ -176,6 +184,26 @@ def list_deliverable_flags(
     return [dict(r._mapping) for r in rows]
 
 
+def count_delivered_since(
+    conn: Connection, org_id: str, *, since: str
+) -> int:
+    """How many of one org's flags were DELIVERED since ``since`` (ISO-Z) — the per-org daily
+    cap's counter (plan §7 brake #2: a mistuned heuristic must not be able to spam a client's
+    topic, however many flags the scorer writes).
+
+    Counts on ``delivered_at``, not ``created_at``, and deliberately ignores ``status`` so a
+    flag delivered and then thumbed 'noise' (status -> 'noise') still counts against the day's
+    budget — otherwise marking noise would BUY more noise. Read-only."""
+    row = conn.execute(
+        _sa_text(
+            "SELECT COUNT(*) FROM community_conversation_flags "
+            "WHERE org_id = :org AND delivered_at IS NOT NULL AND delivered_at >= :since"
+        ),
+        {"org": org_id, "since": since},
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def mark_delivered(
     conn: Connection, flag_id: int, *, now: str | None = None
 ) -> bool:
@@ -190,6 +218,25 @@ def mark_delivered(
             "WHERE id = :id AND status = 'active'"
         ),
         {"id": int(flag_id), "now": now},
+    )
+    return (result.rowcount or 0) > 0
+
+
+def release_delivery_claim(conn: Connection, flag_id: int) -> bool:
+    """Undo a ``mark_delivered`` claim that never actually reached Telegram.
+
+    The deliverer CLAIMS before it sends (so two overlapping ticks can't both post the same
+    flag), which means a send failure must put the flag back or it is silently lost — the
+    one failure mode a "never miss the moment" tool cannot have. Only a 'delivered' row
+    reverts, so this can never resurrect a flag an operator already terminated with
+    feedback. Returns True iff this call released it. Caller in txn."""
+    result = conn.execute(
+        _sa_text(
+            "UPDATE community_conversation_flags "
+            "SET status = 'active', delivered_at = NULL "
+            "WHERE id = :id AND status = 'delivered'"
+        ),
+        {"id": int(flag_id)},
     )
     return (result.rowcount or 0) > 0
 

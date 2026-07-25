@@ -121,3 +121,72 @@ def test_gc_expires_past_ttl(sa_conn):
     assert n == 1
     assert cf.list_active_flags(sa_conn, "tig", status="active") == []
     assert cf.list_active_flags(sa_conn, "tig", status="expired")[0]["anchor_message_id"] == "m1"
+
+
+# ---- delivery-cap + claim-release (the deliverer's substrate) --------------------
+
+
+def test_count_delivered_since_counts_on_delivered_at(sa_conn):
+    _seed(sa_conn)
+    early = _insert(sa_conn, channel="c1", now="2026-07-25T01:00:00Z")
+    late = _insert(sa_conn, channel="c2", now="2026-07-25T13:00:00Z")
+    with immediate_txn(sa_conn):
+        cf.mark_delivered(sa_conn, early, now="2026-07-24T23:30:00Z")   # yesterday
+        cf.mark_delivered(sa_conn, late, now="2026-07-25T13:05:00Z")    # today
+    assert cf.count_delivered_since(sa_conn, "tig", since="2026-07-25T00:00:00Z") == 1
+    assert cf.count_delivered_since(sa_conn, "tig", since="2026-07-24T00:00:00Z") == 2
+
+
+def test_count_delivered_is_org_scoped(sa_conn):
+    _seed(sa_conn, "tig", "solstitch")
+    a = _insert(sa_conn, org="tig", channel="c1")
+    b = _insert(sa_conn, org="solstitch", channel="c1")
+    with immediate_txn(sa_conn):
+        cf.mark_delivered(sa_conn, a, now="2026-07-25T10:00:00Z")
+        cf.mark_delivered(sa_conn, b, now="2026-07-25T10:00:00Z")
+    assert cf.count_delivered_since(sa_conn, "tig", since="2026-07-25T00:00:00Z") == 1
+
+
+def test_noise_feedback_still_counts_against_the_daily_cap(sa_conn):
+    """Marking a delivered flag 'noise' must not BUY more delivery budget."""
+    _seed(sa_conn)
+    fid = _insert(sa_conn)
+    with immediate_txn(sa_conn):
+        cf.mark_delivered(sa_conn, fid, now="2026-07-25T10:00:00Z")
+        cf.record_feedback(sa_conn, fid, verdict="noise")
+    assert cf.count_delivered_since(sa_conn, "tig", since="2026-07-25T00:00:00Z") == 1
+
+
+def test_release_delivery_claim_restores_active(sa_conn):
+    _seed(sa_conn)
+    fid = _insert(sa_conn)
+    with immediate_txn(sa_conn):
+        assert cf.mark_delivered(sa_conn, fid, now="2026-07-25T10:00:00Z") is True
+    with immediate_txn(sa_conn):
+        assert cf.release_delivery_claim(sa_conn, fid) is True
+    r = cf.list_active_flags(sa_conn, "tig", status="active")[0]
+    assert r["id"] == fid and r["delivered_at"] is None
+    assert cf.count_delivered_since(sa_conn, "tig", since="2026-07-25T00:00:00Z") == 0
+
+
+def test_release_cannot_resurrect_a_flag_the_operator_terminated(sa_conn):
+    _seed(sa_conn)
+    fid = _insert(sa_conn)
+    with immediate_txn(sa_conn):
+        cf.mark_delivered(sa_conn, fid, now="2026-07-25T10:00:00Z")
+        cf.record_feedback(sa_conn, fid, verdict="pitched")
+    with immediate_txn(sa_conn):
+        assert cf.release_delivery_claim(sa_conn, fid) is False
+    assert cf.list_active_flags(sa_conn, "tig", status="handled")[0]["id"] == fid
+
+
+def test_dedupe_is_org_scoped(sa_conn):
+    """Two orgs watching the same channel id must not suppress each other (the suite-wide
+    'always include org_id' dedup convention)."""
+    _seed(sa_conn, "tig", "solstitch")
+    a = _insert(sa_conn, org="tig", channel="c1", now="2026-07-25T00:00:00Z")
+    b = _insert(sa_conn, org="solstitch", channel="c1", now="2026-07-25T00:05:00Z")
+    assert a is not None and b is not None and a != b
+    # ...while the SAME org is still deduped inside the cooldown window.
+    again = _insert(sa_conn, org="tig", channel="c1", now="2026-07-25T00:10:00Z")
+    assert again is None
