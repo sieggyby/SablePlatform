@@ -352,6 +352,73 @@ def list_member_activity(conn, guild_id: str) -> list[dict]:
     ]
 
 
+def get_run(conn, run_id: int) -> dict | None:
+    """One audit run by id (kind/status/grades/coverage). Read side of `create_run`
+    + `finish_run` — lets a caller re-render a completed run from persisted truth
+    rather than holding the in-memory AuditOutput."""
+    row = conn.execute(
+        text(
+            "SELECT id, guild_id, kind, status, overall_grade, category_grades_json, "
+            "messages_analyzed, channels_active, channels_dead, span_start, finished_at "
+            "FROM community_audit_runs WHERE id = :run_id"
+        ),
+        {"run_id": run_id},
+    ).fetchone()
+    if row is None:
+        return None
+    # Rows iterate as column NAMES on CompatConnection — index positionally.
+    return {
+        "id": row[0],
+        "guild_id": row[1],
+        "kind": row[2],
+        "status": row[3],
+        "overall_grade": row[4],
+        "category_grades_json": row[5],
+        "messages_analyzed": int(row[6] or 0),
+        "channels_active": int(row[7] or 0),
+        "channels_dead": int(row[8] or 0),
+        "span_start": row[9],
+        "finished_at": row[10],
+    }
+
+
+def list_findings(conn, run_id: int) -> list[dict]:
+    """All findings for a run. `message_ref` is a jump-link only — never verbatim
+    message text (R4)."""
+    rows = conn.execute(
+        text(
+            "SELECT category, type, title, severity, plain_detail, message_ref, confidence "
+            "FROM community_audit_findings WHERE run_id = :run_id"
+        ),
+        {"run_id": run_id},
+    ).fetchall()
+    return [
+        {
+            "category": r[0],
+            "type": r[1],
+            "title": r[2],
+            "severity": r[3],
+            "plain_detail": r[4],
+            "message_ref": r[5],
+            "confidence": r[6],
+        }
+        for r in rows
+    ]
+
+
+def list_guilds_awaiting_consent(conn, invited_by: str) -> list[str]:
+    """Guild ids this user invited the bot to that have NOT yet consented. Powers the
+    DM-reply consent path, where the message carries no guild context."""
+    rows = conn.execute(
+        text(
+            "SELECT guild_id FROM community_audit_guilds "
+            "WHERE invited_by = :invited_by AND consent_at IS NULL"
+        ),
+        {"invited_by": str(invited_by)},
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def record_member_activity(
     conn, guild_id: str, member_id: str, period: str, message_count: int
 ) -> None:
