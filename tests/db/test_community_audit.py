@@ -333,3 +333,32 @@ def test_list_guilds_awaiting_consent_excludes_consented(in_memory_db):
     pending = ca.list_guilds_awaiting_consent(in_memory_db, "inviter-1")
     assert pending == ["g-pending"], "consented + other inviters must be excluded"
     assert ca.list_guilds_awaiting_consent(in_memory_db, "nobody") == []
+
+
+def test_update_run_progress_and_get_active_run(in_memory_db):
+    """A deep crawl runs for hours; the page needs live progress off a 'running' row."""
+    ca.record_guild_join(in_memory_db, "g-prog", invited_by="u1")
+    run_id = ca.create_run(in_memory_db, "g-prog", kind="deep")
+
+    assert ca.get_active_run(in_memory_db, "g-prog")["messages_analyzed"] == 0
+
+    ca.update_run_progress(in_memory_db, run_id, 12_500)
+    active = ca.get_active_run(in_memory_db, "g-prog")
+    assert active["id"] == run_id
+    assert active["messages_analyzed"] == 12_500
+    assert active["started_at"]
+
+
+def test_progress_write_cannot_mutate_a_finished_run(in_memory_db):
+    """Guarded on status='running' — a late in-flight write must not rewrite history."""
+    ca.record_guild_join(in_memory_db, "g-done2", invited_by="u1")
+    run_id = ca.create_run(in_memory_db, "g-done2", kind="deep")
+    ca.finish_run(in_memory_db, run_id, status="ok", messages_analyzed=900)
+
+    ca.update_run_progress(in_memory_db, run_id, 999_999)  # straggler
+    assert ca.get_run(in_memory_db, run_id)["messages_analyzed"] == 900
+    assert ca.get_active_run(in_memory_db, "g-done2") is None, "finished run is not active"
+
+
+def test_get_active_run_ignores_metadata_and_absent(in_memory_db):
+    assert ca.get_active_run(in_memory_db, "never-seen") is None
