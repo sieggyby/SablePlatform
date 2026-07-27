@@ -352,6 +352,46 @@ def list_member_activity(conn, guild_id: str) -> list[dict]:
     ]
 
 
+def update_run_progress(conn, run_id: int, messages_analyzed: int) -> None:
+    """Heartbeat a still-'running' deep crawl so the report page can show live
+    progress instead of a dead link.
+
+    A real history crawl takes hours; without this the run row does not exist until
+    the very end, so a prospect who consents sees nothing at all until it lands.
+    Deliberately guarded on `status = 'running'` so a late in-flight write can never
+    mutate the counts of an already-finished run.
+    """
+    conn.execute(
+        text(
+            "UPDATE community_audit_runs SET messages_analyzed = :n "
+            "WHERE id = :run_id AND status = 'running'"
+        ),
+        {"n": int(messages_analyzed), "run_id": run_id},
+    )
+    conn.commit()
+
+
+def get_active_run(conn, guild_id: str) -> dict | None:
+    """The in-flight ('running') run for a guild, if any — the progress read.
+    Callers that want a COMPLETED audit must keep filtering on status='ok'."""
+    row = conn.execute(
+        text(
+            "SELECT id, kind, messages_analyzed, started_at FROM community_audit_runs "
+            "WHERE guild_id = :guild_id AND status = 'running' "
+            "ORDER BY started_at DESC LIMIT 1"
+        ),
+        {"guild_id": guild_id},
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "kind": row[1],
+        "messages_analyzed": int(row[2] or 0),
+        "started_at": row[3],
+    }
+
+
 def get_run(conn, run_id: int) -> dict | None:
     """One audit run by id (kind/status/grades/coverage). Read side of `create_run`
     + `finish_run` — lets a caller re-render a completed run from persisted truth
