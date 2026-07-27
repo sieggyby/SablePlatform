@@ -289,3 +289,47 @@ def test_community_audit_tables_present_with_key_columns(in_memory_db):
         }
         missing = cols - present
         assert not missing, f"{table} missing columns {missing}"
+
+
+# --- read helpers backing the deep-run DM + DM-consent path -------------------
+
+
+def test_get_run_and_list_findings_round_trip(in_memory_db):
+    ca.record_guild_join(in_memory_db, "g-read", invited_by="u1")
+    run_id = ca.create_run(in_memory_db, "g-read", kind="deep")
+    ca.add_finding(
+        in_memory_db, run_id, category="safety", type="mfa", title="2FA off",
+        severity="warn", plain_detail="Turn it on", message_ref="https://x/1",
+    )
+    ca.finish_run(
+        in_memory_db, run_id, status="ok", overall_grade="B",
+        category_grades_json='{"safety": "A"}',
+        messages_analyzed=500, channels_active=4, channels_dead=2,
+    )
+
+    run = ca.get_run(in_memory_db, run_id)
+    assert run["kind"] == "deep" and run["status"] == "ok"
+    assert run["overall_grade"] == "B"
+    assert run["messages_analyzed"] == 500
+    assert run["channels_active"] == 4 and run["channels_dead"] == 2
+
+    findings = ca.list_findings(in_memory_db, run_id)
+    assert len(findings) == 1
+    assert findings[0]["title"] == "2FA off"
+    assert findings[0]["message_ref"] == "https://x/1"
+
+
+def test_get_run_missing_returns_none(in_memory_db):
+    assert ca.get_run(in_memory_db, 987654) is None
+
+
+def test_list_guilds_awaiting_consent_excludes_consented(in_memory_db):
+    ca.record_guild_join(in_memory_db, "g-pending", invited_by="inviter-1")
+    ca.record_guild_join(in_memory_db, "g-done", invited_by="inviter-1")
+    ca.record_guild_join(in_memory_db, "g-other", invited_by="inviter-2")
+    upsert_prospect_org(in_memory_db, org_id="prospect:g-done", display_name="g-done")
+    ca.set_consent(in_memory_db, "g-done", "prospect:g-done")
+
+    pending = ca.list_guilds_awaiting_consent(in_memory_db, "inviter-1")
+    assert pending == ["g-pending"], "consented + other inviters must be excluded"
+    assert ca.list_guilds_awaiting_consent(in_memory_db, "nobody") == []
