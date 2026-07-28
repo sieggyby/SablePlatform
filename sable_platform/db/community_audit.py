@@ -566,3 +566,80 @@ def record_lead(
     lead_id = result.fetchone()[0]
     conn.commit()
     return int(lead_id)
+
+
+# ---------------------------------------------------------------------------
+# Vocabulary corpus (mig 087) — the background corpus for cross-community
+# contrast, which is what eventually replaces the LLM "is this coined?" judge.
+# ---------------------------------------------------------------------------
+def record_vocab_candidates(conn, guild_id: str, run_id: int | None, terms) -> int:
+    """Persist one audit's vocabulary candidates. Phrases + counts ONLY (R4).
+
+    `terms` is any iterable with `.phrase` / `.unique_users` / `.spread_velocity` /
+    `.first_seen_week`, and optionally `.judged` (the LLM's verdict). Idempotent per
+    (guild, phrase, run) so a retry cannot inflate a phrase's cross-community breadth.
+    """
+    n = 0
+    for t in terms:
+        phrase = (getattr(t, "phrase", "") or "").strip().lower()
+        if not phrase:
+            continue
+        judged = getattr(t, "judged", None)
+        conn.execute(
+            text(
+                "INSERT INTO community_audit_vocab_corpus "
+                "(guild_id, run_id, phrase, unique_users, occurrences, "
+                " spread_velocity, first_seen_week, judged_coined, created_at) "
+                "VALUES (:g, :r, :p, :u, :o, :s, :w, :j, :now) "
+                "ON CONFLICT (guild_id, phrase, run_id) DO NOTHING"
+            ),
+            {
+                "g": guild_id, "r": run_id, "p": phrase,
+                "u": int(getattr(t, "unique_users", 0) or 0),
+                "o": int(getattr(t, "occurrences", 0) or 0),
+                "s": float(getattr(t, "spread_velocity", 0.0) or 0.0),
+                "w": getattr(t, "first_seen_week", "") or "",
+                "j": (1 if judged else 0) if judged is not None else None,
+                "now": _iso_z(),
+            },
+        )
+        n += 1
+    conn.commit()
+    return n
+
+
+def phrase_community_breadth(conn, phrases: list[str]) -> dict[str, int]:
+    """How many DISTINCT guilds have used each phrase — the contrast signal.
+
+    A phrase seen across many communities is ordinary language; one seen in a single
+    community is that community's own. This is the measurement that lets the LLM judge
+    be retired, and it only becomes useful once ~10-20 audits have contributed (at n=2
+    it separated almost nothing).
+    """
+    if not phrases:
+        return {}
+    wanted = [p.strip().lower() for p in phrases if p and p.strip()]
+    if not wanted:
+        return {}
+    keys = {f"p{i}": v for i, v in enumerate(wanted)}
+    placeholders = ", ".join(f":{k}" for k in keys)
+    rows = conn.execute(
+        text(
+            "SELECT phrase, COUNT(DISTINCT guild_id) AS n "
+            f"FROM community_audit_vocab_corpus WHERE phrase IN ({placeholders}) "
+            "GROUP BY phrase"
+        ),
+        keys,
+    ).fetchall()
+    return {r[0]: int(r[1]) for r in rows}
+
+
+def vocab_corpus_size(conn) -> tuple[int, int]:
+    """(distinct guilds, distinct phrases) — how close the corpus is to being usable."""
+    row = conn.execute(
+        text(
+            "SELECT COUNT(DISTINCT guild_id), COUNT(DISTINCT phrase) "
+            "FROM community_audit_vocab_corpus"
+        )
+    ).fetchone()
+    return (int(row[0] or 0), int(row[1] or 0)) if row else (0, 0)

@@ -3019,6 +3019,25 @@ content_duels = Table(
 # explains itself with NO LLM. Dedupe is APP-LEVEL over non-terminal rows (no UNIQUE): the
 # writer scopes a per-(platform,channel_id) cooldown inside serialized_txn. feedback is the
 # operator verdict the precision gate reads. No cost column -- the scorer is zero-LLM.
+community_audit_vocab_corpus = Table(
+    "community_audit_vocab_corpus",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("guild_id", Text, ForeignKey("community_audit_guilds.guild_id"), nullable=False),
+    Column("run_id", Integer),
+    Column("phrase", Text, nullable=False),
+    Column("unique_users", Integer, nullable=False, server_default="0"),
+    Column("occurrences", Integer, nullable=False, server_default="0"),
+    Column("spread_velocity", Float),
+    Column("first_seen_week", Text),
+    Column("judged_coined", Integer),
+    Column("created_at", Text, nullable=False),
+    Index("idx_vocab_corpus_phrase", "phrase"),
+    Index("idx_vocab_corpus_guild", "guild_id"),
+    Index("idx_vocab_corpus_unique", "guild_id", "phrase", "run_id", unique=True),
+)
+
+
 community_conversation_flags = Table(
     "community_conversation_flags",
     metadata,

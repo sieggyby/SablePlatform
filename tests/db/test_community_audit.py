@@ -362,3 +362,50 @@ def test_progress_write_cannot_mutate_a_finished_run(in_memory_db):
 
 def test_get_active_run_ignores_metadata_and_absent(in_memory_db):
     assert ca.get_active_run(in_memory_db, "never-seen") is None
+
+
+# --- vocabulary corpus (mig 087) -------------------------------------------
+
+
+class _T:
+    def __init__(self, phrase, users=10, spread=1.0, week="2025-W10", judged=None):
+        self.phrase, self.unique_users, self.spread_velocity = phrase, users, spread
+        self.first_seen_week, self.occurrences, self.judged = week, users * 2, judged
+
+
+def test_vocab_candidates_persist_and_count(in_memory_db):
+    ca.record_guild_join(in_memory_db, "g-v1", invited_by="u1")
+    n = ca.record_vocab_candidates(in_memory_db, "g-v1", 1,
+                                   [_T("synq key", 204, judged=True), _T("the price", 90)])
+    assert n == 2
+    assert ca.vocab_corpus_size(in_memory_db) == (1, 2)
+
+
+def test_a_reaudit_cannot_inflate_a_phrases_breadth(in_memory_db):
+    """Double-counting one community would make its OWN vocabulary look generic."""
+    ca.record_guild_join(in_memory_db, "g-v2", invited_by="u1")
+    ca.record_vocab_candidates(in_memory_db, "g-v2", 1, [_T("synq key")])
+    ca.record_vocab_candidates(in_memory_db, "g-v2", 1, [_T("synq key")])  # retry
+    assert ca.phrase_community_breadth(in_memory_db, ["synq key"]) == {"synq key": 1}
+
+
+def test_breadth_counts_DISTINCT_communities(in_memory_db):
+    """The whole contrast signal: shared across communities => generic."""
+    for g in ("g-a", "g-b", "g-c"):
+        ca.record_guild_join(in_memory_db, g, invited_by="u1")
+        ca.record_vocab_candidates(in_memory_db, g, 1, [_T("to get"), _T(f"{g} term")])
+    breadth = ca.phrase_community_breadth(in_memory_db, ["to get", "g-a term"])
+    assert breadth["to get"] == 3, "seen everywhere => ordinary language"
+    assert breadth["g-a term"] == 1, "seen once => that community's own"
+
+
+def test_phrases_are_normalised_so_case_does_not_split_the_corpus(in_memory_db):
+    ca.record_guild_join(in_memory_db, "g-v3", invited_by="u1")
+    ca.record_vocab_candidates(in_memory_db, "g-v3", 1, [_T("Synq Key")])
+    assert ca.phrase_community_breadth(in_memory_db, ["synq key"]) == {"synq key": 1}
+
+
+def test_empty_inputs_are_safe(in_memory_db):
+    assert ca.record_vocab_candidates(in_memory_db, "g", None, []) == 0
+    assert ca.phrase_community_breadth(in_memory_db, []) == {}
+    assert ca.vocab_corpus_size(in_memory_db) == (0, 0)

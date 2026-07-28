@@ -251,6 +251,7 @@ TABLE_LOAD_ORDER: list[str] = [
     # Migration 085: Conversation Watcher flags. FK -> orgs (precedes this block).
     # Integer autoincrement PK -> also in SEQUENCE_TABLES.
     "community_conversation_flags",      # FK -> orgs (Integer autoincrement PK)
+    "community_audit_vocab_corpus",      # FK -> community_audit_guilds (Integer autoincrement PK)
 ]
 
 # Tables with Integer autoincrement PKs that need Postgres sequence resets.
@@ -377,6 +378,7 @@ SEQUENCE_TABLES: dict[str, str] = {
     "content_publish_jobs": "id",
     # Migration 086: Conversation Watcher flags (Integer autoincrement id PK).
     "community_conversation_flags": "id",
+    "community_audit_vocab_corpus": "id",
 }
 
 # Tables with Text primary keys that SQLite allowed to be NULL.

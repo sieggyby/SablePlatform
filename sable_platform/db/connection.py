@@ -105,6 +105,7 @@ _MIGRATIONS = [
     ("084_content_duels.sql", 84),
     ("085_quality_media_reply.sql", 85),
     ("086_conversation_flags.sql", 86),
+    ("087_community_audit_vocab.sql", 87),
 ]
 
 
