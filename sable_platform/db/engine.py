@@ -40,7 +40,25 @@ def get_engine(url: str | None = None) -> Engine:
         if db_url in _engine_cache:
             return _engine_cache[db_url]
 
-        engine = create_engine(db_url)
+        # pool_pre_ping: check a pooled connection is still alive before handing it
+        # out, and transparently reconnect if not.
+        #
+        # Without it, every long-lived resident service (the audit bot, sable-roles,
+        # sable-recon, the workflow runners) keeps connections to a Postgres process
+        # that may no longer exist, and breaks until the SERVICE is restarted. Observed
+        # 2026-07-29: Postgres restarted at 06:32, the audit bot had been up since the
+        # previous evening, and the next audit died instantly on
+        # "server closed the connection unexpectedly" — a two-hour job refused at the
+        # first query, ten hours after the actual event.
+        #
+        # pool_recycle discards connections older than 30 min, which also covers
+        # idle-timeout kills by firewalls/middleboxes between the container and the
+        # host. Cheap: one lightweight round-trip per checkout of a stale connection.
+        engine_kwargs: dict = {"pool_pre_ping": True}
+        if not db_url.startswith("sqlite"):
+            engine_kwargs["pool_recycle"] = 1800
+
+        engine = create_engine(db_url, **engine_kwargs)
 
         if engine.dialect.name == "sqlite":
             _register_sqlite_pragmas(engine)
