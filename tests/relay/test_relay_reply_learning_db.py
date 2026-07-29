@@ -289,3 +289,143 @@ def test_quality_dashboard_empty_org(sa_conn):
     assert agg["pick_rate_by_source"] == {}
     assert agg["suggestion_thumbs"] == {"up": 0, "down": 0}
     assert all(v == 0 for v in agg["tell_score_buckets"].values())
+
+
+# ==========================================================================
+# edited_reply_pairs (mig 088 — the edit-diff learning signal)
+# ==========================================================================
+def _seed_suggestion_with_variants(conn, sid, *, org_id="orgA", variants):
+    conn.execute(
+        text(
+            "INSERT INTO reply_suggestions "
+            "(id, operator_handle, org_id, source_tweet_id, source_text, variants_json) "
+            "VALUES (:id, '@op', :org, '1', 'the target tweet', :vj)"
+        ),
+        {"id": sid, "org": org_id, "vj": json.dumps(variants)},
+    )
+
+
+def _seed_outcome(conn, oid, sid, *, was_edited=1, posted_text="posted!",
+                  chosen_variant_idx=None, recorded_at=None):
+    conn.execute(
+        text(
+            "INSERT INTO reply_outcomes "
+            "(id, suggestion_id, posted_tweet_id, chosen_variant_idx, was_edited, "
+            " posted_text, recorded_at) "
+            "VALUES (:id, :sid, :ptid, :idx, :we, :pt, :ra)"
+        ),
+        {"id": oid, "sid": sid, "ptid": f"p{oid}", "idx": chosen_variant_idx,
+         "we": was_edited, "pt": posted_text, "ra": recorded_at or _now_iso()},
+    )
+
+
+def test_edited_pairs_kinds_and_content(sa_conn):
+    _seed(sa_conn)
+    sa_conn.commit()
+    variants = [{"text": "draft zero"}, {"text": "draft one"}]
+    _seed_suggestion_with_variants(sa_conn, "sA", variants=variants)
+    _seed_suggestion_with_variants(sa_conn, "sB", variants=variants)
+    # idx set -> 'edited', draft is THAT variant
+    _seed_outcome(sa_conn, "o1", "sA", chosen_variant_idx=1,
+                  posted_text="draft one but sharper", recorded_at="2026-07-28T02:00:00Z")
+    # idx NULL -> 'replaced', draft is the FIRST variant (what we led with)
+    _seed_outcome(sa_conn, "o2", "sB", chosen_variant_idx=None,
+                  posted_text="something entirely their own", recorded_at="2026-07-28T01:00:00Z")
+    sa_conn.commit()
+
+    pairs = relay_db.edited_reply_pairs(sa_conn, "orgA")
+    assert len(pairs) == 2
+    assert pairs[0]["kind"] == "edited"
+    assert pairs[0]["draft_text"] == "draft one"
+    assert pairs[0]["posted_text"] == "draft one but sharper"
+    assert pairs[0]["source_text"] == "the target tweet"
+    assert pairs[1]["kind"] == "replaced"
+    assert pairs[1]["draft_text"] == "draft zero"
+
+
+def test_edited_pairs_org_scoped_and_filtered(sa_conn):
+    _seed(sa_conn)
+    _seed(sa_conn, org_id="orgB")
+    sa_conn.commit()
+    variants = [{"text": "d"}]
+    _seed_suggestion_with_variants(sa_conn, "s1", variants=variants)
+    _seed_suggestion_with_variants(sa_conn, "s2", variants=variants)
+    _seed_suggestion_with_variants(sa_conn, "s3", variants=variants)
+    _seed_suggestion_with_variants(sa_conn, "sX", org_id="orgB", variants=variants)
+    _seed_outcome(sa_conn, "o1", "s1", was_edited=0)                 # unedited — excluded
+    _seed_outcome(sa_conn, "o2", "s2", posted_text=None)             # no captured text — excluded
+    _seed_outcome(sa_conn, "o3", "s3", posted_text="")               # empty text — excluded
+    _seed_outcome(sa_conn, "oX", "sX", posted_text="other org")      # wrong org — excluded
+    sa_conn.commit()
+
+    assert relay_db.edited_reply_pairs(sa_conn, "orgA") == []
+    other = relay_db.edited_reply_pairs(sa_conn, "orgB")
+    assert len(other) == 1 and other[0]["posted_text"] == "other org"
+
+
+def test_edited_pairs_malformed_variants_skipped(sa_conn):
+    _seed(sa_conn)
+    sa_conn.commit()
+    sa_conn.execute(
+        text(
+            "INSERT INTO reply_suggestions "
+            "(id, operator_handle, org_id, source_tweet_id, variants_json) "
+            "VALUES ('sBad', '@op', 'orgA', '1', 'not json'),"
+            "       ('sEmpty', '@op', 'orgA', '1', '[]'),"
+            "       ('sBlank', '@op', 'orgA', '1', :blank)"
+        ),
+        {"blank": json.dumps([{"text": "   "}])},
+    )
+    _seed_outcome(sa_conn, "o1", "sBad")
+    _seed_outcome(sa_conn, "o2", "sEmpty")
+    _seed_outcome(sa_conn, "o3", "sBlank")
+    sa_conn.commit()
+    # Bad JSON / no variants / blank draft text: skipped, never raises.
+    assert relay_db.edited_reply_pairs(sa_conn, "orgA") == []
+
+
+def test_edited_pairs_limit_and_order(sa_conn):
+    _seed(sa_conn)
+    sa_conn.commit()
+    variants = [{"text": "d"}]
+    for i in range(4):
+        _seed_suggestion_with_variants(sa_conn, f"s{i}", variants=variants)
+        _seed_outcome(sa_conn, f"o{i}", f"s{i}", posted_text=f"post {i}",
+                      recorded_at=f"2026-07-2{i}T00:00:00Z")
+    sa_conn.commit()
+    pairs = relay_db.edited_reply_pairs(sa_conn, "orgA", limit=2)
+    assert [p["posted_text"] for p in pairs] == ["post 3", "post 2"]
+
+
+def test_edited_pairs_invalid_idx_skipped_not_mislabeled(sa_conn):
+    """A NON-NULL chosen_variant_idx that isn't a valid index means we cannot know
+    which draft was edited — the row is SKIPPED, never mislabeled 'replaced'
+    (which would pair the posted text against a draft the operator never chose)."""
+    _seed(sa_conn)
+    sa_conn.commit()
+    _seed_suggestion_with_variants(sa_conn, "sOne", variants=[{"text": "only draft"}])
+    _seed_suggestion_with_variants(sa_conn, "sTwo", variants=[{"text": "only draft"}])
+    _seed_outcome(sa_conn, "o1", "sOne", chosen_variant_idx=3, posted_text="posted A")
+    _seed_outcome(sa_conn, "o2", "sTwo", chosen_variant_idx=-1, posted_text="posted B")
+    sa_conn.commit()
+    assert relay_db.edited_reply_pairs(sa_conn, "orgA") == []
+
+
+def test_edited_pairs_whitespace_only_posted_text_excluded(sa_conn):
+    _seed(sa_conn)
+    sa_conn.commit()
+    _seed_suggestion_with_variants(sa_conn, "sWs", variants=[{"text": "d"}])
+    _seed_outcome(sa_conn, "oWs", "sWs", posted_text="   ")
+    sa_conn.commit()
+    assert relay_db.edited_reply_pairs(sa_conn, "orgA") == []
+
+
+def test_edited_pairs_float_idx_skipped_not_truncated(sa_conn):
+    """SQLite can hold a malformed float idx; int(0.5) would truncate to 0 and
+    pair the wrong draft — a non-integral idx must skip the row entirely."""
+    _seed(sa_conn)
+    sa_conn.commit()
+    _seed_suggestion_with_variants(sa_conn, "sF", variants=[{"text": "a"}, {"text": "b"}])
+    _seed_outcome(sa_conn, "oF", "sF", chosen_variant_idx=0.5, posted_text="posted")
+    sa_conn.commit()
+    assert relay_db.edited_reply_pairs(sa_conn, "orgA") == []

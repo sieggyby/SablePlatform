@@ -170,7 +170,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 87
+    assert row["version"] == 88
 
 
 def test_all_tables_exist():
@@ -189,7 +189,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 87
+    assert row["version"] == 88
 
 
 def test_workflow_tables_columns():
@@ -1303,7 +1303,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 87
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 88
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1480,7 +1480,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 87
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 88
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
@@ -1717,3 +1717,42 @@ def test_migration_085_quality_media_reply_on_fresh_db():
     assert rows["851"] == ("photo", 1, "850")
     assert rows["852"] == ("", 0, None)
     assert rows["853"] == (None, None, None)  # legacy = unparsed, distinguishable
+
+
+# ---------------------------------------------------------------------------
+# Migration 088 — reply_outcomes.posted_text (the edit-diff learning capture).
+# Additive ADD COLUMN, nullable; legacy rows stay NULL.
+# ---------------------------------------------------------------------------
+
+def test_migration_088_posted_text_on_fresh_db():
+    """Migration 088: reply_outcomes gains a NULLABLE posted_text column; a linked
+    outcome can carry the operator's actual posted text or stay NULL (legacy /
+    text unavailable at link time)."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 88
+
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
+    assert "posted_text" in cols, "migration 088 must add reply_outcomes.posted_text"
+    assert cols["posted_text"][3] == 0, "posted_text must be NULLABLE (notnull flag 0)"
+
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('tig', 'TIG', 'active')")
+    conn.execute(
+        "INSERT INTO reply_suggestions "
+        "(id, operator_handle, org_id, source_tweet_id, variants_json) "
+        "VALUES ('sug-88', '@CahitArf11', 'tig', '777', '[{\"text\":\"gm\"}]')"
+    )
+    conn.execute(
+        "INSERT INTO reply_outcomes (id, suggestion_id, posted_tweet_id, posted_text) "
+        "VALUES ('o-88a', 'sug-88', '888', 'what they actually posted')"
+    )
+    conn.execute(
+        "INSERT INTO reply_outcomes (id, suggestion_id, posted_tweet_id) "
+        "VALUES ('o-88b', 'sug-88', '889')"
+    )
+    rows = dict(conn.execute(
+        "SELECT id, posted_text FROM reply_outcomes ORDER BY id"
+    ).fetchall())
+    assert rows["o-88a"] == "what they actually posted"
+    assert rows["o-88b"] is None
+    conn.close()
