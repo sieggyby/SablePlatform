@@ -277,6 +277,7 @@ def record_outcome(
     was_edited: bool = False,
     engagement: dict[str, Any] | None = None,
     detected_via: str | None = None,
+    posted_text: str | None = None,
     now: datetime | None = None,
 ) -> bool:
     """Idempotently map an actual posted reply to a suggestion (lift tracking).
@@ -289,7 +290,16 @@ def record_outcome(
     captured. It is stamped on INSERT only — the re-reconciliation UPDATE path leaves
     it untouched, so the FIRST writer's provenance wins (an auto-detected row stays
     'auto' even if a later manual reconcile updates its engagement).
+
+    ``posted_text`` (mig 088) is the reply text the operator actually posted — the
+    grounding for the edit-diff learning loop. Stamped on INSERT; on the UPDATE path
+    it FILLS a NULL but never overwrites (the posted text is a fact, so the first
+    captured value stands — a later writer without the text must not blank it, and
+    a later writer with it may backfill a row linked before mig 088 shipped).
+    Blank/whitespace text normalizes to NULL at this boundary, so '' can never be
+    stored and permanently block the COALESCE backfill.
     """
+    posted_text = (posted_text or "").strip() or None
     stamp = (now or _utc_now()).strftime("%Y-%m-%dT%H:%M:%SZ")
     existing = conn.execute(
         text(
@@ -300,25 +310,45 @@ def record_outcome(
     ).fetchone()
     if existing:
         # Update engagement on re-reconciliation (the metrics drift as the
-        # tweet ages) without creating a duplicate row.
-        conn.execute(
-            text(
-                "UPDATE reply_outcomes SET engagement_json = :ej, posted_at = COALESCE(:pat, posted_at)"
-                " WHERE suggestion_id = :sid AND posted_tweet_id = :ptid"
-            ),
-            {"ej": json.dumps(engagement or {}), "pat": posted_at, "sid": suggestion_id, "ptid": posted_tweet_id},
-        )
+        # tweet ages) without creating a duplicate row. engagement=None means
+        # "this caller has no reading" (e.g. a mig-088 text-only backfill) —
+        # it must PRESERVE the stored engagement, never reset it to {}.
+        if engagement is None:
+            conn.execute(
+                text(
+                    "UPDATE reply_outcomes SET posted_at = COALESCE(:pat, posted_at),"
+                    " posted_text = COALESCE(posted_text, :ptext)"
+                    " WHERE suggestion_id = :sid AND posted_tweet_id = :ptid"
+                ),
+                {"pat": posted_at, "ptext": posted_text,
+                 "sid": suggestion_id, "ptid": posted_tweet_id},
+            )
+        else:
+            conn.execute(
+                text(
+                    "UPDATE reply_outcomes SET engagement_json = :ej, posted_at = COALESCE(:pat, posted_at),"
+                    " posted_text = COALESCE(posted_text, :ptext)"
+                    " WHERE suggestion_id = :sid AND posted_tweet_id = :ptid"
+                ),
+                {"ej": json.dumps(engagement), "pat": posted_at, "ptext": posted_text,
+                 "sid": suggestion_id, "ptid": posted_tweet_id},
+            )
         return False
 
     # The unique index still guards against a concurrent racer between the
-    # SELECT and the INSERT — DO NOTHING keeps that case a safe no-op.
+    # SELECT and the INSERT. The conflict action fills posted_text-if-NULL instead
+    # of DO NOTHING (mig 088): if the manual Mark-posted INSERT (no text) lands in
+    # the race window, the detector's in-hand text must not be silently discarded —
+    # there is no later rescan of a linked suggestion to repair it. Everything else
+    # keeps first-writer-wins (detected_via, idx) exactly as before.
     conn.execute(
         text(
             "INSERT INTO reply_outcomes"
             " (id, suggestion_id, posted_tweet_id, posted_at, chosen_variant_idx,"
-            "  was_edited, engagement_json, recorded_at, detected_via)"
-            " VALUES (:id, :sid, :ptid, :pat, :idx, :edited, :ej, :now, :dv)"
-            " ON CONFLICT(suggestion_id, posted_tweet_id) DO NOTHING"
+            "  was_edited, engagement_json, recorded_at, detected_via, posted_text)"
+            " VALUES (:id, :sid, :ptid, :pat, :idx, :edited, :ej, :now, :dv, :ptext)"
+            " ON CONFLICT(suggestion_id, posted_tweet_id) DO UPDATE SET"
+            "  posted_text = COALESCE(reply_outcomes.posted_text, excluded.posted_text)"
         ),
         {
             "id": uuid.uuid4().hex,
@@ -330,6 +360,7 @@ def record_outcome(
             "ej": json.dumps(engagement or {}),
             "now": stamp,
             "dv": detected_via,
+            "ptext": posted_text,
         },
     )
     return True

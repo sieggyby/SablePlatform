@@ -3507,6 +3507,85 @@ def low_quality_suggestions(
     return [dict(r._mapping) for r in rows]
 
 
+def edited_reply_pairs(
+    conn: Connection,
+    org_id: str,
+    limit: int = 10,
+) -> list[dict]:
+    """Return recent (our draft → what the operator ACTUALLY posted) pairs.
+
+    The edit-diff learning signal (mig 088): outcomes where the operator changed
+    our draft before posting (``was_edited = 1``) and the posted text was captured
+    at link time (``posted_text IS NOT NULL``). Each pair carries:
+
+      * ``kind`` — ``'edited'`` (a variant was recognizably adopted then changed:
+        ``chosen_variant_idx`` set → ``draft_text`` is THAT variant) or
+        ``'replaced'`` (the operator discarded every draft and wrote their own:
+        idx NULL → ``draft_text`` is the FIRST variant, what we led with).
+      * ``draft_text`` / ``posted_text`` — the before/after.
+      * ``source_text`` — the tweet being replied to (context for the lesson).
+
+    ORG-SCOPED (via ``reply_suggestions.org_id``), read-only, NO cost column.
+    Newest-first, capped at ``limit``. A row whose ``variants_json`` is malformed
+    or empty is SKIPPED (no draft to compare against), and so is a NON-NULL
+    ``chosen_variant_idx`` that is not a valid index into the variants (we cannot
+    know WHICH draft was edited — mislabeling it 'replaced' would fabricate
+    learning data). The function may therefore return fewer than ``limit`` rows —
+    it never pads and never raises on bad data. Ties inside one ``recorded_at``
+    second break on the uuid ``id`` (arbitrary but stable); acceptable because
+    the rows only ground a prompt, recency order between them isn't load-bearing.
+    """
+    import json as _json
+
+    rows = conn.execute(
+        text(
+            "SELECT s.source_text, s.variants_json, "
+            "       o.chosen_variant_idx, o.posted_text, o.posted_at, o.recorded_at "
+            "FROM reply_outcomes o "
+            "JOIN reply_suggestions s ON s.id = o.suggestion_id "
+            "WHERE s.org_id = :org_id "
+            "  AND o.was_edited = 1 "
+            "  AND o.posted_text IS NOT NULL AND TRIM(o.posted_text) != '' "
+            "ORDER BY o.recorded_at DESC, o.id DESC "
+            "LIMIT :limit"
+        ),
+        {"org_id": org_id, "limit": int(limit)},
+    ).fetchall()
+
+    pairs: list[dict] = []
+    for r in rows:
+        m = r._mapping
+        try:
+            variants = _json.loads(m["variants_json"] or "[]")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(variants, list) or not variants:
+            continue
+        idx = m["chosen_variant_idx"]
+        if idx is None:
+            draft, kind = variants[0], "replaced"
+        else:
+            # STRICT integral check — int(0.5) would silently truncate to 0 and
+            # pair the posted text against a draft the operator never chose
+            # (SQLite stores whatever a buggy writer sent; PG enforces INTEGER).
+            if isinstance(idx, bool) or not isinstance(idx, int):
+                continue
+            if not (0 <= idx < len(variants)):
+                continue
+            draft, kind = variants[idx], "edited"
+        draft_text = str((draft or {}).get("text") or "") if isinstance(draft, dict) else str(draft or "")
+        if not draft_text.strip():
+            continue
+        pairs.append({
+            "kind": kind,
+            "draft_text": draft_text,
+            "posted_text": str(m["posted_text"]),
+            "source_text": str(m["source_text"] or ""),
+            "posted_at": m["posted_at"],
+        })
+    return pairs
+
+
 def quality_dashboard_aggregates(conn: Connection, org_id: str) -> dict:
     """Return the §8 P3 quality-dashboard rollup for an org. Read-only, NO cost.
 

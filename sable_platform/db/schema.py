@@ -1574,6 +1574,10 @@ reply_outcomes = Table(
     # Migration 069: provenance — 'auto' (the scheduled persona-timeline detection
     # job) vs 'operator' (manual Mark-posted). NULL on rows written before mig 069.
     Column("detected_via", Text),
+    # Migration 088: the reply text the operator ACTUALLY posted (was_edited says
+    # THAT they changed our draft, this says WHAT to) — captured at link time by
+    # detect/reconcile, which already hold it. NULL on rows written before mig 088.
+    Column("posted_text", Text),
 )
 
 # Named unique index (NOT a UniqueConstraint — must match the SQL migration's

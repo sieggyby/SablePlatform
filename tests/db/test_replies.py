@@ -348,3 +348,110 @@ def test_record_outcome_updates_engagement_on_rerun(conn):
     assert again is False
     s = get_outcomes_summary(conn, "tig")
     assert s["assisted_count"] == 1 and s["mean_engagement"] == 42.0
+
+
+def test_record_outcome_posted_text_fill_if_null_never_overwrite(conn):
+    """posted_text (mig 088): stamped on INSERT; the re-reconciliation UPDATE path
+    FILLS a NULL (backfill for rows linked before capture shipped) but never
+    overwrites a captured value — the first captured text is the fact of record."""
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="123", variants=[{"text": "our draft"}],
+    )
+    conn.commit()
+
+    # Insert WITHOUT text (e.g. a pre-088 style caller) -> NULL.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="999", was_edited=True)
+    conn.commit()
+    row = conn.execute(
+        "SELECT posted_text FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "999"),
+    ).fetchone()
+    assert row[0] is None
+
+    # Re-run WITH the text -> fills the NULL.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="999",
+                   posted_text="what they actually posted")
+    conn.commit()
+    row = conn.execute(
+        "SELECT posted_text FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "999"),
+    ).fetchone()
+    assert row[0] == "what they actually posted"
+
+    # A later re-run with DIFFERENT text must not overwrite.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="999",
+                   posted_text="revisionist history")
+    conn.commit()
+    row = conn.execute(
+        "SELECT posted_text FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "999"),
+    ).fetchone()
+    assert row[0] == "what they actually posted"
+
+    # And a fresh INSERT with text stamps it directly.
+    sid2 = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="124", variants=[{"text": "x"}],
+    )
+    conn.commit()
+    record_outcome(conn, suggestion_id=sid2, posted_tweet_id="1000",
+                   was_edited=True, posted_text="fresh capture")
+    conn.commit()
+    row = conn.execute(
+        "SELECT posted_text FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid2, "1000"),
+    ).fetchone()
+    assert row[0] == "fresh capture"
+
+
+def test_record_outcome_blank_posted_text_normalizes_to_null(conn):
+    """'' / whitespace posted_text normalizes to NULL at the write boundary, so a
+    blank first write can never permanently block the COALESCE backfill."""
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="125", variants=[{"text": "x"}],
+    )
+    conn.commit()
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="1001", posted_text="   ")
+    conn.commit()
+    row = conn.execute(
+        "SELECT posted_text FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "1001"),
+    ).fetchone()
+    assert row[0] is None
+
+    # The later writer WITH real text backfills it.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="1001", posted_text="real text")
+    conn.commit()
+    row = conn.execute(
+        "SELECT posted_text FROM reply_outcomes WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "1001"),
+    ).fetchone()
+    assert row[0] == "real text"
+
+
+def test_record_outcome_text_backfill_preserves_engagement(conn):
+    """A text-only backfill (engagement=None) must PRESERVE stored engagement —
+    the UPDATE path may never reset a real reading to {}."""
+    import json as _json
+
+    sid = log_suggestion(
+        conn, operator_handle="@arf", org_id="tig",
+        source_tweet_id="126", variants=[{"text": "x"}],
+    )
+    conn.commit()
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="1002",
+                   engagement={"total": 42})
+    conn.commit()
+    # Later text-only backfill: no engagement supplied.
+    record_outcome(conn, suggestion_id=sid, posted_tweet_id="1002",
+                   posted_text="the actual words")
+    conn.commit()
+    row = conn.execute(
+        "SELECT engagement_json, posted_text FROM reply_outcomes "
+        "WHERE suggestion_id=? AND posted_tweet_id=?",
+        (sid, "1002"),
+    ).fetchone()
+    assert _json.loads(row[0]) == {"total": 42}   # preserved, not wiped
+    assert row[1] == "the actual words"           # and the text landed
