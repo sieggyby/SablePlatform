@@ -53,6 +53,42 @@ def test_log_cost_stamps_operator_id(in_memory_db):
     assert row["cost_usd"] == pytest.approx(0.02)
 
 
+def test_log_cost_vendor_units(in_memory_db):
+    """Mig 089: a credits-billed vendor row keeps raw credits + rate + note, and a
+    backfill can backdate created_at. Token rows leave all three NULL."""
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org1', 'Org One')")
+    conn.commit()
+
+    log_cost(
+        conn, "org1", "higgsfield_kling_video_edit", 22 * 0.049,
+        model="kling_video_edit",
+        credits=22.0, credit_rate_usd=0.049,
+        note="hf:22841284 athena money-printer swap",
+        created_at="2026-07-29 23:14:47",
+    )
+
+    row = conn.execute(
+        "SELECT credits, credit_rate_usd, note, cost_usd, created_at, input_tokens"
+        " FROM cost_events WHERE org_id='org1'"
+    ).fetchone()
+    assert row["credits"] == pytest.approx(22.0)
+    assert row["credit_rate_usd"] == pytest.approx(0.049)
+    assert row["cost_usd"] == pytest.approx(22 * 0.049)
+    assert row["note"] == "hf:22841284 athena money-printer swap"
+    assert row["created_at"] == "2026-07-29 23:14:47"
+    assert row["input_tokens"] == 0
+
+    log_cost(conn, "org1", "llm_call", 0.01, model="claude-3")
+    tok = conn.execute(
+        "SELECT credits, credit_rate_usd, note FROM cost_events"
+        " WHERE org_id='org1' AND call_type='llm_call'"
+    ).fetchone()
+    assert tok["credits"] is None
+    assert tok["credit_rate_usd"] is None
+    assert tok["note"] is None
+
+
 def test_get_weekly_spend_sums_current_week(in_memory_db):
     conn = in_memory_db
     conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org2', 'Org Two')")

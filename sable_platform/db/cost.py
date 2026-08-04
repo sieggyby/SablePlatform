@@ -38,6 +38,10 @@ def log_cost(
     call_status: str = "success",
     job_id: str | None = None,
     operator_id: str | None = None,
+    credits: float | None = None,
+    credit_rate_usd: float | None = None,
+    note: str | None = None,
+    created_at: str | None = None,
 ) -> None:
     """Append one billed call to the ``cost_events`` ledger.
 
@@ -45,26 +49,45 @@ def log_cost(
     identity (``operator_arf`` …), stamped only when a logged-in human initiated
     the spend — NOT the persona X-handle (personas are shared across humans).
     None = unattributed (system paths: workflows, ambient producers, timers).
+
+    ``credits`` / ``credit_rate_usd`` / ``note`` (mig 089) carry non-token vendor
+    spend (Higgsfield first): the raw vendor credits and the USD-per-credit rate
+    used at log time — so ``cost_usd`` (= credits x rate) is recomputable when the
+    plan changes — plus free-text operator context (vendor job id, what the job
+    was for). All None on token-based rows.
+
+    ``created_at`` (``YYYY-MM-DD HH:MM:SS`` UTC) backdates a row for ledger
+    backfills of spend that happened before it could be logged. None = now.
     """
+    params = {
+        "org_id": org_id,
+        "job_id": job_id,
+        "call_type": call_type,
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cost_usd": cost_usd,
+        "call_status": call_status,
+        "operator_id": operator_id,
+        "credits": credits,
+        "credit_rate_usd": credit_rate_usd,
+        "note": note,
+    }
+    columns = (
+        "org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd,"
+        " call_status, operator_id, credits, credit_rate_usd, note"
+    )
+    values = (
+        ":org_id, :job_id, :call_type, :model, :input_tokens, :output_tokens,"
+        " :cost_usd, :call_status, :operator_id, :credits, :credit_rate_usd, :note"
+    )
+    if created_at is not None:
+        columns += ", created_at"
+        values += ", :created_at"
+        params["created_at"] = created_at
     conn.execute(
-        text(
-            "INSERT INTO cost_events"
-            " (org_id, job_id, call_type, model, input_tokens, output_tokens, cost_usd,"
-            " call_status, operator_id)"
-            " VALUES (:org_id, :job_id, :call_type, :model, :input_tokens, :output_tokens,"
-            " :cost_usd, :call_status, :operator_id)"
-        ),
-        {
-            "org_id": org_id,
-            "job_id": job_id,
-            "call_type": call_type,
-            "model": model,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cost_usd": cost_usd,
-            "call_status": call_status,
-            "operator_id": operator_id,
-        },
+        text(f"INSERT INTO cost_events ({columns}) VALUES ({values})"),
+        params,
     )
     conn.commit()
 

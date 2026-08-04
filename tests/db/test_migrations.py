@@ -170,7 +170,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 88
+    assert row["version"] == 89
 
 
 def test_all_tables_exist():
@@ -189,7 +189,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 88
+    assert row["version"] == 89
 
 
 def test_workflow_tables_columns():
@@ -1303,7 +1303,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 88
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1480,7 +1480,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 88
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
@@ -1730,7 +1730,7 @@ def test_migration_088_posted_text_on_fresh_db():
     text unavailable at link time)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 88
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "posted_text" in cols, "migration 088 must add reply_outcomes.posted_text"
@@ -1755,4 +1755,48 @@ def test_migration_088_posted_text_on_fresh_db():
     ).fetchall())
     assert rows["o-88a"] == "what they actually posted"
     assert rows["o-88b"] is None
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Migration 089 — cost_events vendor units (credits / credit_rate_usd / note).
+# Additive ADD COLUMN x3, all nullable; token-based and pre-089 rows stay NULL.
+# ---------------------------------------------------------------------------
+
+def test_migration_089_cost_events_vendor_units_on_fresh_db():
+    """Migration 089: cost_events gains NULLABLE credits / credit_rate_usd / note
+    columns so credits-billed vendor spend (Higgsfield) keeps its raw units and
+    cost_usd stays recomputable when the plan rate changes. Token rows stay NULL."""
+    conn = _make_conn()
+    ensure_schema(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
+
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(cost_events)").fetchall()}
+    for col in ("credits", "credit_rate_usd", "note"):
+        assert col in cols, f"migration 089 must add cost_events.{col}"
+        assert cols[col][3] == 0, f"{col} must be NULLABLE (notnull flag 0)"
+
+    conn.execute("INSERT INTO orgs (org_id, display_name, status) VALUES ('rm', 'RM', 'active')")
+    conn.execute(
+        "INSERT INTO cost_events (org_id, call_type, model, cost_usd, credits, credit_rate_usd, note) "
+        "VALUES ('rm', 'higgsfield_kling_video_edit', 'kling_video_edit', 1.078, 22.0, 0.049, "
+        "'hf:22841284 athena swap')"
+    )
+    conn.execute(
+        "INSERT INTO cost_events (org_id, call_type, model, cost_usd) "
+        "VALUES ('rm', 'meme_ideate', 'claude-opus-4-8', 0.05)"
+    )
+    vendor = conn.execute(
+        "SELECT credits, credit_rate_usd, note FROM cost_events "
+        "WHERE call_type='higgsfield_kling_video_edit'"
+    ).fetchone()
+    assert vendor["credits"] == 22.0
+    assert vendor["credit_rate_usd"] == 0.049
+    assert vendor["note"] == "hf:22841284 athena swap"
+    token = conn.execute(
+        "SELECT credits, credit_rate_usd, note FROM cost_events WHERE call_type='meme_ideate'"
+    ).fetchone()
+    assert token["credits"] is None
+    assert token["credit_rate_usd"] is None
+    assert token["note"] is None
     conn.close()

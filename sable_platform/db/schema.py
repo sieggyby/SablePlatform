@@ -296,6 +296,13 @@ cost_events = Table(
     # Migration 081 — the acting operator's SableWeb SESSION identity (operator_arf …),
     # NOT the persona X-handle. NULL = unattributed (pre-081 rows / system paths).
     Column("operator_id", Text),
+    # Migration 089 — non-token vendor spend (Higgsfield first): raw credits + the
+    # USD-per-credit rate used at log time (so cost_usd is recomputable on a plan
+    # change) + free-text operator note (vendor job id / what the job was for).
+    # NULL = token-based or pre-089 row.
+    Column("credits", Float),
+    Column("credit_rate_usd", Float),
+    Column("note", Text),
     Index("idx_cost_org", "org_id"),
     Index("idx_cost_created", "created_at"),
     # Migration 030
