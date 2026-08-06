@@ -129,18 +129,25 @@ def _deliver(
 
 
 def _send_telegram(
-    token: str, chat_id: str, text: str, message_thread_id: str | int | None = None
+    token: str,
+    chat_id: str,
+    text: str,
+    message_thread_id: str | int | None = None,
+    reply_markup: dict | None = None,
 ) -> str | None:
     """Send message via Telegram. Returns error string on failure, None on success.
 
     ``message_thread_id`` targets a forum TOPIC inside ``chat_id`` (the Conversation
-    Watcher posts one topic per client). ``None`` omits the field entirely, so every
-    existing caller keeps byte-identical request bodies.
+    Watcher posts one topic per client). ``reply_markup`` attaches an inline keyboard
+    (the watcher's pitched/noise feedback buttons). Both default to None and are omitted
+    from the payload entirely, so every existing caller keeps byte-identical request bodies.
     """
     try:
         payload: dict = {"chat_id": chat_id, "text": text}
         if message_thread_id is not None:
             payload["message_thread_id"] = int(message_thread_id)
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
         data = _json.dumps(payload).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage",
