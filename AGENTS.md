@@ -3,6 +3,35 @@
 ## Purpose
 Use Codex in this repo primarily as a skeptical maintainer and QA layer for Claude Code output.
 
+## Writing standard (applies to everything you write here)
+
+Sieggy set a global writing standard on 2026-08-10. It lives in `~/.claude/CLAUDE.md`, which
+Codex does **not** read, so the load-bearing rules are restated here. They govern your review
+prose, your commit messages, your `TODO(codex)` notes, and any doc or comment you touch.
+
+- **Answer first.** The finding, the verdict, or the number goes in line one. No preamble, no
+  restating the task, no announcing what you are about to do.
+- **An answer is not a deliverable.** A review comment states its point and stops. A document
+  you were asked to produce runs as long as the work needs, and must carry **every element the
+  request named**. Cutting a requested section is an omission, not brevity.
+- **Brevity governs the output, never the analysis.** Think as long as the problem needs.
+- Sentences: **20 words max when instructing, 25 when describing.** One idea per sentence.
+  Active voice. One term per concept; never vary a term for elegance.
+- **Never use an em-dash or en-dash.** Write `--`, a comma, or a period.
+- **Never hedge inline.** State the claim flat, then give the evidence and its limit in the next
+  sentence. Not "this is probably a leak"; instead "This leaks. I traced one path. I did not
+  check the retry branch."
+- **Removing a hedge is not free.** If you cut "probably", you must add the limit sentence.
+  Never write *cannot*, *always*, *never*, or *rules out* about something you have not verified.
+  Never assert a mechanism you have not checked. "I did not test this" is a complete sentence.
+- Plain word over the impressive one. Gloss an unavoidable term in five words or fewer.
+- **Report faithfully.** If a test failed, say so with the output. If you skipped a step, say
+  that. Do not describe a partial fix as complete.
+
+This standard never overrides a finding. Accuracy first, then this.
+
+---
+
 ## Default stance
 Assume the code may work while still hiding structural problems.
 Prioritize finding production, data integrity, and maintainability risks before proposing broad implementation changes.
