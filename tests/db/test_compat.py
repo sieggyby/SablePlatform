@@ -127,3 +127,78 @@ def test_date_of_iso_text_sqlite_uses_substr():
 def test_date_of_iso_text_postgres_uses_cast():
     result = compat.date_of_iso_text("timestamp", "postgresql")
     assert result == "(timestamp::timestamp)::date"
+
+
+# ---------------------------------------------------------------------------
+# Bind-parameter guard on elapsed-time helpers (round 2)
+# ---------------------------------------------------------------------------
+
+GUARDED_HELPERS = [
+    compat.days_since,
+    compat.days_until,
+    compat.days_since_int,
+    compat.seconds_since,
+]
+
+COLUMN_CASES = [
+    (
+        compat.days_since,
+        "julianday('now') - julianday(run_date)",
+        "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz)) / 86400.0",
+    ),
+    (
+        compat.days_until,
+        "julianday(run_date) - julianday('now')",
+        "EXTRACT(EPOCH FROM (run_date::timestamptz - NOW())) / 86400.0",
+    ),
+    (
+        compat.days_since_int,
+        "CAST(julianday('now') - julianday(run_date) AS INTEGER)",
+        "CAST(EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz)) / 86400.0 AS INTEGER)",
+    ),
+    (
+        compat.seconds_since,
+        "(julianday('now') - julianday(run_date)) * 86400",
+        "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz))",
+    ),
+]
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+@pytest.mark.parametrize(
+    "func", GUARDED_HELPERS, ids=[f.__name__ for f in GUARDED_HELPERS]
+)
+def test_elapsed_helpers_reject_bind_parameter(func, dialect):
+    """A bind parameter never binds here: on Postgres the emitted ``::`` cast
+    collides with the ``:name`` parameter syntax and the query fails silently
+    at runtime."""
+    with pytest.raises(ValueError, match="bind parameter"):
+        func(":ts", dialect)
+
+
+@pytest.mark.parametrize(
+    "func", GUARDED_HELPERS, ids=[f.__name__ for f in GUARDED_HELPERS]
+)
+def test_reject_message_names_argument_and_points_to_python(func):
+    with pytest.raises(ValueError) as excinfo:
+        func(":ts", "postgresql")
+    assert "':ts'" in str(excinfo.value)
+    assert "Python" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "func", GUARDED_HELPERS, ids=[f.__name__ for f in GUARDED_HELPERS]
+)
+def test_reject_checks_stripped_form(func):
+    with pytest.raises(ValueError, match="bind parameter"):
+        func("  :ts ", "sqlite")
+
+
+@pytest.mark.parametrize(
+    "func,sqlite_sql,postgres_sql",
+    COLUMN_CASES,
+    ids=[c[0].__name__ for c in COLUMN_CASES],
+)
+def test_plain_column_sql_unchanged(func, sqlite_sql, postgres_sql):
+    assert func("run_date", "sqlite") == sqlite_sql
+    assert func("run_date", "postgresql") == postgres_sql

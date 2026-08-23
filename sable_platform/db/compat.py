@@ -50,6 +50,18 @@ def _check_dialect(dialect: str) -> None:
         )
 
 
+def _check_column(column: str) -> None:
+    # These helpers string-interpolate *column* into raw SQL, so a bind
+    # parameter can never be substituted by the driver: on PostgreSQL the
+    # emitted ``::timestamptz`` cast collides with the ``:name`` parameter
+    # syntax and the query fails at runtime, silently disabling the alert.
+    if isinstance(column, str) and column.strip().startswith(":"):
+        raise ValueError(
+            f"{column!r} is a bind parameter, not a column name; compute "
+            "the value in Python instead"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Elapsed-time helpers (replace julianday arithmetic)
 # ---------------------------------------------------------------------------
@@ -71,6 +83,7 @@ def seconds_since(column: str, dialect: str) -> str:
     Replaces ``(julianday('now') - julianday(col)) * 86400``.
     """
     _check_dialect(dialect)
+    _check_column(column)
     if dialect == "sqlite":
         return f"(julianday('now') - julianday({column})) * 86400"
     return f"EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz))"
@@ -82,6 +95,7 @@ def days_since(column: str, dialect: str) -> str:
     Replaces ``julianday('now') - julianday(col)``.
     """
     _check_dialect(dialect)
+    _check_column(column)
     if dialect == "sqlite":
         return f"julianday('now') - julianday({column})"
     return f"EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz)) / 86400.0"
@@ -93,6 +107,7 @@ def days_since_int(column: str, dialect: str) -> str:
     Replaces ``CAST(julianday('now') - julianday(col) AS INTEGER)``.
     """
     _check_dialect(dialect)
+    _check_column(column)
     if dialect == "sqlite":
         return f"CAST(julianday('now') - julianday({column}) AS INTEGER)"
     return f"CAST(EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz)) / 86400.0 AS INTEGER)"
@@ -117,6 +132,7 @@ def days_until(column: str, dialect: str) -> str:
     Result is positive when *column* is in the future.
     """
     _check_dialect(dialect)
+    _check_column(column)
     if dialect == "sqlite":
         return f"julianday({column}) - julianday('now')"
     return f"EXTRACT(EPOCH FROM ({column}::timestamptz - NOW())) / 86400.0"
