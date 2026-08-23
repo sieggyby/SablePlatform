@@ -10,7 +10,6 @@ import time
 
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from sable_platform.db.compat import get_dialect, hours_since
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
     complete_workflow_run,
@@ -258,22 +257,36 @@ class WorkflowRunner:
         # Use started_at for running runs, created_at for pending (never-started) runs
         age_reference = row["started_at"] or row["created_at"]
         if age_reference:
-            _dialect = get_dialect(conn)
-            _expr = hours_since(":ts", _dialect)
-            age = conn.execute(
-                f"SELECT {_expr} AS hours_old",
-                {"ts": age_reference},
-            ).fetchone()
-            if age and age["hours_old"] is not None and age["hours_old"] >= _STALE_LOCK_HOURS:
+            # Compute the lock age in Python. The previous
+            # `hours_since(":ts", dialect)` expression broke on Postgres: the
+            # `::timestamptz` cast collides with the `:ts` named parameter, so
+            # stale-lock recovery failed before `fail_workflow_run()` and the
+            # stale active lock blocked every new run.
+            from datetime import datetime, timezone
+
+            try:
+                ts = datetime.fromisoformat(str(age_reference).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+            except (ValueError, TypeError) as e:
+                logger.warning(
+                    "stale-lock recovery: unparseable timestamp %r for run %s: %s",
+                    age_reference,
+                    row["run_id"],
+                    e,
+                )
+                age_hours = None
+            if age_hours is not None and age_hours >= _STALE_LOCK_HOURS:
                 # Auto-fail stale run
                 fail_workflow_run(conn, row["run_id"], "auto-failed: stale lock recovery")
                 emit_workflow_event(
                     conn, row["run_id"], "run_failed", None,
-                    {"reason": "stale_lock_recovery", "age_hours": round(age["hours_old"], 1)},
+                    {"reason": "stale_lock_recovery", "age_hours": round(age_hours, 1)},
                 )
                 logger.warning(
                     "Auto-failed stale run %s (%.1fh old) for %s/%s",
-                    row["run_id"], age["hours_old"], org_id, self.definition.name,
+                    row["run_id"], age_hours, org_id, self.definition.name,
                     extra={"run_id": row["run_id"], "org_id": org_id},
                 )
                 return

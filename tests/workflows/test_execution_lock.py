@@ -158,6 +158,46 @@ class TestStaleLockRecovery:
         assert new_row["status"] == "completed"
 
 
+class TestStaleLockRecoveryPostgresDialect:
+    def test_stale_run_auto_failed_under_postgresql_dialect(self, lock_db, monkeypatch):
+        """Stale-lock recovery must not depend on a dialect SQL helper.
+
+        Regression: with the postgresql dialect, `hours_since(":ts", ...)`
+        emitted `:ts::timestamptz`, whose cast collided with the bind
+        parameter and raised before `fail_workflow_run()` could clear the
+        stale lock.
+        """
+        run_id = create_workflow_run(lock_db, "org_a", "test_lock_wf", "1.0", {})
+        lock_db.execute(
+            "UPDATE workflow_runs SET status='running', started_at=datetime('now', '-5 hours') WHERE run_id=?",
+            (run_id,),
+        )
+        lock_db.commit()
+
+        # Pre-fix code read this symbol to pick the SQL helper's dialect;
+        # post-fix the attribute no longer exists and raising=False makes
+        # this a no-op.
+        monkeypatch.setattr(
+            "sable_platform.workflows.engine.get_dialect",
+            lambda c: "postgresql",
+            raising=False,
+        )
+
+        runner = WorkflowRunner(_TEST_WF)
+        new_run_id = runner.run("org_a", {}, conn=lock_db)
+
+        old_row = lock_db.execute(
+            "SELECT status, error FROM workflow_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        assert old_row["status"] == "failed"
+        assert "stale lock" in old_row["error"]
+
+        new_row = lock_db.execute(
+            "SELECT status FROM workflow_runs WHERE run_id=?", (new_run_id,)
+        ).fetchone()
+        assert new_row["status"] == "completed"
+
+
 class TestResumeRespectLock:
     def test_resume_blocked_by_other_active_run(self, lock_db):
         """Resuming run B while run A is active for same (org, wf) → blocked."""

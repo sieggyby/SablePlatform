@@ -130,7 +130,7 @@ def test_date_of_iso_text_postgres_uses_cast():
 
 
 # ---------------------------------------------------------------------------
-# Bind-parameter guard on elapsed-time helpers (round 2)
+# Bind-parameter guard on elapsed-time helpers (rounds 2 and 3)
 # ---------------------------------------------------------------------------
 
 GUARDED_HELPERS = [
@@ -138,6 +138,7 @@ GUARDED_HELPERS = [
     compat.days_until,
     compat.days_since_int,
     compat.seconds_since,
+    compat.hours_since,
 ]
 
 COLUMN_CASES = [
@@ -160,6 +161,11 @@ COLUMN_CASES = [
         compat.seconds_since,
         "(julianday('now') - julianday(run_date)) * 86400",
         "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz))",
+    ),
+    (
+        compat.hours_since,
+        "(julianday('now') - julianday(run_date)) * 24",
+        "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz)) / 3600.0",
     ),
 ]
 

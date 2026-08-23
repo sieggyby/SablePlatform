@@ -72,6 +72,7 @@ def hours_since(column: str, dialect: str) -> str:
     Replaces ``(julianday('now') - julianday(col)) * 24``.
     """
     _check_dialect(dialect)
+    _check_column(column)
     if dialect == "sqlite":
         return f"(julianday('now') - julianday({column})) * 24"
     return f"EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz)) / 3600.0"

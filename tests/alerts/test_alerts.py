@@ -551,6 +551,48 @@ def test_cooldown_zero_disables(org_db):
         assert mock_urlopen.called
 
 
+def test_cooldown_path_works_under_postgresql_dialect(org_db, monkeypatch):
+    """The cooldown window must be computed without a dialect SQL helper.
+
+    Regression: with the postgresql dialect, `hours_since(":last_ts", ...)`
+    emitted `:last_ts::timestamptz`, whose cast collided with the bind
+    parameter and failed the query before any delivery ran.
+    """
+    conn, org_id = org_db
+    # Pre-fix code read this symbol to pick the SQL helper's dialect; post-fix
+    # the attribute no longer exists and raising=False makes this a no-op.
+    monkeypatch.setattr(
+        "sable_platform.workflows.alert_delivery.get_dialect",
+        lambda c: "postgresql",
+        raising=False,
+    )
+    upsert_alert_config(conn, org_id, discord_webhook_url="https://discord.com/fake", min_severity="info")
+    create_alert(conn, "test_type", "info", "Alert", org_id=org_id, dedup_key="cooldown:pg1")
+    create_alert(conn, "test_type", "info", "Alert", org_id=org_id, dedup_key="cooldown:pg2")
+
+    recent_ts = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=1)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "UPDATE alerts SET last_delivered_at=? WHERE dedup_key='cooldown:pg1'",
+        (recent_ts,),
+    )
+    old_ts = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=5)
+    ).strftime("%Y-%m-%d %H:%M:%S")
+    conn.execute(
+        "UPDATE alerts SET last_delivered_at=? WHERE dedup_key='cooldown:pg2'",
+        (old_ts,),
+    )
+    conn.commit()
+
+    with patch("urllib.request.urlopen") as mock_urlopen:
+        _deliver(conn, org_id, "info", "within window", dedup_key="cooldown:pg1")
+        assert not mock_urlopen.called
+        _deliver(conn, org_id, "info", "past window", dedup_key="cooldown:pg2")
+        assert mock_urlopen.called
+
+
 # ---------------------------------------------------------------------------
 # Discord pulse stale guard
 # ---------------------------------------------------------------------------

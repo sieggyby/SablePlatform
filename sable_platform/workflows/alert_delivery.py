@@ -9,7 +9,6 @@ import urllib.error
 import urllib.request
 
 from sable_platform.db.alerts import get_last_delivered_at, mark_delivered, mark_delivery_failed
-from sable_platform.db.compat import get_dialect, hours_since
 
 log = logging.getLogger(__name__)
 
@@ -80,17 +79,31 @@ def _deliver(
         if cooldown_hours > 0:
             last_ts = get_last_delivered_at(conn, dedup_key)
             if last_ts:
-                _dialect = get_dialect(conn)
-                _expr = hours_since(":last_ts", _dialect)
-                check = conn.execute(
-                    f"SELECT {_expr} AS hours_since",
-                    {"last_ts": last_ts},
-                ).fetchone()
-                if check and check["hours_since"] is not None and check["hours_since"] < cooldown_hours:
+                # Compute the cooldown age in Python. The previous
+                # `hours_since(":last_ts", dialect)` expression broke on
+                # Postgres: the `::timestamptz` cast collides with the
+                # `:last_ts` named parameter, so the bind name was truncated
+                # and the query failed before any delivery.
+                from datetime import datetime, timezone
+
+                try:
+                    ts = datetime.fromisoformat(str(last_ts).replace("Z", "+00:00"))
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    elapsed_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0
+                except (ValueError, TypeError) as e:
+                    log.warning(
+                        "ALERT cooldown: unparseable delivered_at %r for dedup_key=%s: %s",
+                        last_ts,
+                        dedup_key,
+                        e,
+                    )
+                    elapsed_hours = None
+                if elapsed_hours is not None and elapsed_hours < cooldown_hours:
                     log.debug(
                         "ALERT cooldown active for dedup_key=%s (%.1f h remaining)",
                         dedup_key,
-                        cooldown_hours - check["hours_since"],
+                        cooldown_hours - elapsed_hours,
                     )
                     return
 
