@@ -19,7 +19,10 @@ from sable_platform.db.alerts import (
     mark_delivery_failed,
 )
 from sable_platform.workflows.alert_evaluator import evaluate_alerts
-from sable_platform.workflows.alert_checks import _check_discord_pulse_regression
+from sable_platform.workflows.alert_checks import (
+    _check_discord_pulse_regression,
+    _check_discord_pulse_stale,
+)
 from sable_platform.workflows.alert_delivery import _deliver, _send_telegram, _send_discord
 from sable_platform.workflows.engine import WorkflowRunner
 from sable_platform.workflows.builtins.alert_check import ALERT_CHECK
@@ -593,6 +596,36 @@ def test_discord_pulse_stale_fresh_no_alert(org_db):
     rows = [r for r in list_alerts(conn, org_id=org_id, severity="warning")
             if r["alert_type"] == "discord_pulse_stale"]
     assert len(rows) == 0
+
+
+def test_discord_pulse_stale_postgres_dialect_computes_age_without_param_cast(org_db, monkeypatch):
+    """On the Postgres dialect path, age is computed in Python and the alert still fires.
+
+    Regression guard: the old code built `NOW() - :ts::timestamptz` via days_since()
+    and bound run_date to :ts. The `::` cast collides with the named parameter, so
+    execution raised (SQLite: 'unrecognized token' / on Postgres the param never
+    bound) and the check silently errored instead of firing.
+    """
+    conn, org_id = org_db
+    monkeypatch.setattr(
+        "sable_platform.workflows.alert_checks.get_dialect",
+        lambda c: "postgresql",
+    )
+    old_date = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)
+    ).strftime("%Y-%m-%d")
+    conn.execute(
+        "INSERT INTO discord_pulse_runs (org_id, project_slug, run_date, wow_retention_rate) VALUES (?, 'proj', ?, 0.5)",
+        (org_id, old_date),
+    )
+    conn.commit()
+
+    result = _check_discord_pulse_stale(conn, org_id)
+
+    assert len(result) == 1, (
+        "Postgres-dialect stale check must compute age in Python and fire; "
+        "it must not depend on a bound :ts parameter inside a :: cast"
+    )
 
 
 # ---------------------------------------------------------------------------

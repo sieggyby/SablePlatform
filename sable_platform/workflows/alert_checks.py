@@ -334,15 +334,24 @@ def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[st
     if not row:
         is_stale = True
     else:
-        _dialect = get_dialect(conn)
-        _expr = days_since(":ts", _dialect)
-        stale_check = conn.execute(
-            f"SELECT {_expr} AS age_days",
-            {"ts": row["run_date"]},
-        ).fetchone()
-        if stale_check and stale_check["age_days"] is not None:
-            age_days = int(stale_check["age_days"])
+        # Compute age in Python rather than via a SQL dialect helper. The
+        # previous `NOW() - :ts::timestamptz` expression broke on Postgres: the
+        # `::` cast operator collides with `:ts` named-param binding
+        # ("syntax error at or near :"), so the check silently errored and never
+        # fired on the prod Postgres DB. Parsing the ISO timestamp in Python is
+        # dialect-agnostic and removes the second SQL round trip entirely.
+        from datetime import datetime, timezone
+
+        ts_raw = str(row["run_date"])
+        try:
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - ts).days
             is_stale = age_days > stale_days
+        except (ValueError, TypeError) as e:
+            log.warning("discord_pulse_stale: unparseable run_date %r for %s: %s", ts_raw, org_id, e)
+            is_stale = True  # can't parse → treat as stale (fail safe)
 
     if not is_stale:
         return []
