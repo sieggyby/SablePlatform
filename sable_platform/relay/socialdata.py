@@ -49,6 +49,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable, Mapping
 
@@ -69,6 +70,7 @@ logger = logging.getLogger(__name__)
 # simplifying convention. Kept as the per-call cost so the daily-cap arithmetic
 # matches the rest of the suite (and the PLAN §9 ~$0.002/call estimate).
 COST_PER_CALL_USD = 0.002
+SOCIALDATA_ITEM_RATE_USD = 0.0002
 
 # §4: bounded exponential backoff with jitter. Attempt 1..4 wait ~1/4/16/64s
 # nominal; the 5th attempt raises. We expose MAX_RETRIES = 4 (i.e. up to 4
@@ -256,7 +258,8 @@ class SocialDataClient:
             return None
 
         body = resp.json_body or {}
-        self._log_cost(org_id, CALL_TYPE_HYDRATE)
+        item_count = 1 if isinstance(body, dict) and body else 0
+        self._log_cost(org_id, CALL_TYPE_HYDRATE, item_count)
         self._cache_set(cache_key, body)
         return body
 
@@ -306,7 +309,7 @@ class SocialDataClient:
         resp = self._request(path, call_params)
         tweets = _extract_tweets(resp.json_body)
 
-        self._log_cost(org_id, call_type)
+        self._log_cost(org_id, call_type, len(tweets))
         self._cache_set(cache_key, list(tweets))
 
         # Advance the since_id high-water mark to the max id seen this fetch, so a
@@ -425,14 +428,23 @@ class SocialDataClient:
     def _cache_set(self, key: str, value: Any) -> None:
         self._cache[key] = _CacheEntry(value=value, stored_at=time.time())
 
-    def _log_cost(self, org_id: str, call_type: str) -> None:
-        """Log one successful SocialData call to cost_events (PLAN §10)."""
+    def _log_cost(self, org_id: str, call_type: str, item_count: int) -> None:
+        """Log one successful SocialData call to cost_events."""
+        changeover_at = (
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
         log_cost(
             self.conn,
             org_id=org_id,
             call_type=call_type,
-            cost_usd=COST_PER_CALL_USD,
+            cost_usd=item_count * SOCIALDATA_ITEM_RATE_USD,
             call_status="success",
+            credits=float(item_count),
+            credit_rate_usd=SOCIALDATA_ITEM_RATE_USD,
+            note=(
+                "socialdata_meter_basis=item; "
+                f"changeover_at={changeover_at}; items={item_count}"
+            ),
         )
 
 
@@ -491,17 +503,19 @@ def _cache_key_for(path: str, params: Mapping[str, Any], since_id: str | None) -
 # PROACTIVE per-org daily SocialData cap (SableRelay PLAN §10 — OWNED HERE)
 # ---------------------------------------------------------------------------
 def get_daily_socialdata_spend(conn: Connection, org_id: str) -> Decimal:
-    """Sum the org's SocialData spend for the current UTC day.
+    """Sum item-basis SocialData spend for the current UTC day.
 
-    Sums ``cost_events.cost_usd`` for the org where ``call_type LIKE
-    'relay_socialdata.%'`` and ``created_at`` falls inside today's UTC day
+    Sums ``cost_events.cost_usd`` for the org where the call type is
+    ``relay_socialdata.%``, the note states ``socialdata_meter_basis=item``,
+    and ``created_at`` falls inside today's UTC day
     (``[00:00:00, next-00:00:00)``). Mirrors the date-window arithmetic in
     ``db/cost.py::get_weekly_spend`` (``cost_events.created_at`` is stored by
     ``func.now()`` = ``CURRENT_TIMESTAMP`` as ``'YYYY-MM-DD HH:MM:SS'`` UTC), so
     a plain lexicographic string range over ``created_at`` selects the UTC day.
 
-    Only this org's ``relay_socialdata.%`` rows count — AI spend (``checkin.*``,
-    ``autocm.*``) and other orgs are excluded. Returns a :class:`Decimal`.
+    Legacy flat SocialData rows remain in the ledger, but this cap reader
+    excludes them because their cost basis is incompatible with item-metered
+    rows. AI spend and other orgs are also excluded.
     """
     import datetime
 
@@ -516,6 +530,7 @@ def get_daily_socialdata_spend(conn: Connection, org_id: str) -> Decimal:
             "FROM cost_events "
             "WHERE org_id = :org_id "
             "  AND call_type LIKE 'relay_socialdata.%' "
+            "  AND note LIKE '%socialdata_meter_basis=item%' "
             "  AND created_at >= :start "
             "  AND created_at <  :end"
         ),
@@ -607,6 +622,7 @@ __all__ = [
     "get_daily_socialdata_spend",
     "get_daily_cost_cap",
     "COST_PER_CALL_USD",
+    "SOCIALDATA_ITEM_RATE_USD",
     "MAX_RETRIES",
     "DEFAULT_DAILY_COST_CAP_USD",
     "CALL_TYPE_TIMELINE",

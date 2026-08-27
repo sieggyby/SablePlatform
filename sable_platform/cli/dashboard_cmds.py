@@ -12,7 +12,7 @@ import click
 from sable_platform.db.compat import days_since_int, get_dialect, now_offset_param
 from sable_platform.db.connection import get_db
 from sable_platform.db.alerts import list_alerts
-from sable_platform.db.cost import get_weekly_spend
+from sable_platform.db.cost import RECORDED_LEDGER_SPEND_BASIS, get_weekly_spend
 
 
 @click.command("dashboard")
@@ -102,8 +102,12 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
                 "stale_syncs": stale,
                 "stuck_runs": stuck_count,
                 "pending_actions": pending_actions,
-                "budget": {"spend": round(spend, 2), "cap": round(cap, 2),
-                           "pct_used": round(pct_used, 1) if pct_used is not None else None},
+                "budget": {
+                    "spend": round(spend, 2),
+                    "cap": round(cap, 2),
+                    "pct_used": round(pct_used, 1) if pct_used is not None else None,
+                    "spend_basis": RECORDED_LEDGER_SPEND_BASIS,
+                },
                 "at_risk_entities": at_risk,
             })
 
@@ -153,7 +157,10 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
 
         budget = d["budget"]
         pct_str = f"{budget['pct_used']:.0f}%" if budget["pct_used"] is not None else "N/A"
-        click.echo(f"    Budget:     ${budget['spend']:.2f} / ${budget['cap']:.2f} ({pct_str})")
+        click.echo(
+            f"    Budget:     ${budget['spend']:.2f} / ${budget['cap']:.2f} "
+            f"({pct_str}, recorded ledger)"
+        )
 
         if d["at_risk_entities"]:
             click.echo(click.style(f"    Decay risk: {d['at_risk_entities']} entities >= 0.6", fg="yellow"))

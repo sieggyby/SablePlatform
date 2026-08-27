@@ -112,6 +112,57 @@ def _socialdata_cost_rows(conn, org_id: str) -> list:
     ).fetchall()
 
 
+def test_item_metered_success_rows_cover_timeline_replies_hydrate_and_response_shapes(sa_conn) -> None:
+    _seed_org(sa_conn, "orgitems")
+    sa_conn.commit()
+    http = FakeHttp(
+        [
+            sd.HttpResponse(status_code=200, json_body={"tweets": [_tweet(str(i)) for i in range(100, 80, -1)]}),
+            sd.HttpResponse(status_code=200, json_body=[_tweet("201"), _tweet("200")]),
+            sd.HttpResponse(status_code=200, json_body={"tweets": [_tweet("301"), _tweet("300"), _tweet("299")]}),
+            sd.HttpResponse(status_code=200, json_body=[_tweet(str(i)) for i in range(404, 400, -1)]),
+            sd.HttpResponse(
+                status_code=200,
+                json_body={"id_str": "501", "id": 501, "full_text": "hydrated tweet"},
+            ),
+        ]
+    )
+    client = _make_client(sa_conn, http)
+
+    assert len(client.fetch_timeline("orgitems", user_id="1")) == 20
+    assert len(client.fetch_timeline("orgitems", user_id="2")) == 2
+    assert len(client.fetch_conversation_replies("orgitems", "300")) == 3
+    assert len(client.fetch_conversation_replies("orgitems", "400")) == 4
+    assert client.hydrate_tweet("orgitems", "501")["id_str"] == "501"
+
+    rows = [
+        dict(row._mapping)
+        for row in sa_conn.execute(
+            text(
+                "SELECT call_type, cost_usd, credits, credit_rate_usd, note "
+                "FROM cost_events WHERE org_id = :o "
+                "ORDER BY event_id"
+            ),
+            {"o": "orgitems"},
+        ).fetchall()
+    ]
+    expected = [
+        (sd.CALL_TYPE_TIMELINE, 20),
+        (sd.CALL_TYPE_TIMELINE, 2),
+        (sd.CALL_TYPE_REPLIES, 3),
+        (sd.CALL_TYPE_REPLIES, 4),
+        (sd.CALL_TYPE_HYDRATE, 1),
+    ]
+    assert [r["call_type"] for r in rows] == [e[0] for e in expected]
+    for row, (_call_type, items) in zip(rows, expected, strict=True):
+        assert row["credits"] == pytest.approx(items)
+        assert row["credit_rate_usd"] == pytest.approx(0.0002)
+        assert row["cost_usd"] == pytest.approx(items * 0.0002)
+        assert "socialdata_meter_basis=item" in row["note"]
+        assert "changeover_at=" in row["note"]
+        assert f"items={items}" in row["note"]
+
+
 # ===========================================================================
 # Cache hit — returns WITHOUT a network call
 # ===========================================================================
@@ -316,12 +367,25 @@ def test_new_tweets_above_cursor_do_fetch(sa_conn) -> None:
 # PROACTIVE per-org daily cap — fires BEFORE any request
 # ===========================================================================
 def _seed_socialdata_cost(conn, org_id: str, cost: float, *, call_type=None) -> None:
+    rate = 0.0002
+    credits = cost / rate
     conn.execute(
         text(
-            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status) "
-            "VALUES (:o, :ct, :c, 'success')"
+            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status,"
+            " credits, credit_rate_usd, note) VALUES (:o, :ct, :c, 'success',"
+            " :credits, :rate, :note)"
         ),
-        {"o": org_id, "ct": call_type or sd.CALL_TYPE_TIMELINE, "c": cost},
+        {
+            "o": org_id,
+            "ct": call_type or sd.CALL_TYPE_TIMELINE,
+            "c": cost,
+            "credits": credits,
+            "rate": rate,
+            "note": (
+                "socialdata_meter_basis=item; "
+                f"changeover_at=2026-08-26T00:00:00Z; items={int(credits)}"
+            ),
+        },
     )
 
 
@@ -444,6 +508,70 @@ def test_daily_spend_sums_only_socialdata_rows_for_org_and_day(sa_conn) -> None:
     status = sd.check_daily_socialdata_budget(sa_conn, "orgsum")
     assert status.spend == Decimal("0.17")
     assert status.over_cap is False  # 0.17 < 1.00
+
+
+def test_daily_socialdata_budget_defaults_to_item_basis_from_persisted_ledger(sa_conn) -> None:
+    _seed_org(sa_conn, "orgbasis")
+    _seed_org(sa_conn, "orgbasis_other")
+    _seed_relay_client(sa_conn, "orgbasis", config=None)
+    rows = [
+        ("orgbasis", sd.CALL_TYPE_TIMELINE, 0.002, None, None, None),
+        ("orgbasis", sd.CALL_TYPE_REPLIES, 0.006, 30, 0.0002, "changeover_at=2026-08-26T00:00:00Z; items=30"),
+        (
+            "orgbasis",
+            sd.CALL_TYPE_TIMELINE,
+            0.004,
+            20,
+            0.0002,
+            "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=20",
+        ),
+        (
+            "orgbasis",
+            sd.CALL_TYPE_HYDRATE,
+            0.0002,
+            1,
+            0.0002,
+            "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=1",
+        ),
+        (
+            "orgbasis_other",
+            sd.CALL_TYPE_TIMELINE,
+            0.1,
+            500,
+            0.0002,
+            "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=500",
+        ),
+        (
+            "orgbasis",
+            "llm_call",
+            9.99,
+            49950,
+            0.0002,
+            "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=49950",
+        ),
+    ]
+    for org_id, call_type, cost, credits, rate, note in rows:
+        sa_conn.execute(
+            text(
+                "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status,"
+                " credits, credit_rate_usd, note) VALUES (:org_id, :call_type,"
+                " :cost_usd, 'success', :credits, :rate, :note)"
+            ),
+            {
+                "org_id": org_id,
+                "call_type": call_type,
+                "cost_usd": cost,
+                "credits": credits,
+                "rate": rate,
+                "note": note,
+            },
+        )
+    sa_conn.commit()
+
+    assert sd.get_daily_socialdata_spend(sa_conn, "orgbasis") == Decimal("0.0042")
+    status = sd.check_daily_socialdata_budget(sa_conn, "orgbasis")
+    assert status.spend == Decimal("0.0042")
+    assert status.over_cap is False
 
 
 def test_malformed_polling_config_falls_back_to_default_cap(sa_conn) -> None:

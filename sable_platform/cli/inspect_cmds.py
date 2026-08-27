@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 
 from sable_platform.db.connection import get_db
 from sable_platform.db.centrality import list_centrality_scores
-from sable_platform.db.cost import get_weekly_spend
+from sable_platform.db.cost import RECORDED_LEDGER_SPEND_BASIS, get_weekly_spend
 from sable_platform.db.discord_pulse import get_discord_pulse_runs
 from sable_platform.db.decay import list_decay_scores
 from sable_platform.db.interactions import list_interactions
@@ -419,6 +419,7 @@ def inspect_spend(org_id: str | None, as_json: bool) -> None:
                 "budget_cap_usd": round(cap, 2),
                 "headroom_usd": round(headroom, 2),
                 "pct_used": round(pct, 1) if pct is not None else None,
+                "spend_basis": RECORDED_LEDGER_SPEND_BASIS,
             })
 
         # Sort by pct_used descending
@@ -434,13 +435,13 @@ def inspect_spend(org_id: str | None, as_json: bool) -> None:
         click.echo("No active orgs found.")
         return
 
-    click.echo(f"{'ORG_ID':<24}  {'SPEND':>8}  {'CAP':>8}  {'HEADROOM':>8}  PCT_USED")
-    click.echo("-" * 65)
+    click.echo(f"{'ORG_ID':<24}  {'SPEND':>8}  {'CAP':>8}  {'HEADROOM':>8}  PCT_USED  BASIS")
+    click.echo("-" * 82)
     for r in results:
         pct_str = f"{r['pct_used']:.1f}%" if r["pct_used"] is not None else "N/A"
         click.echo(
             f"{r['org_id']:<24}  ${r['weekly_spend_usd']:>7.2f}  ${r['budget_cap_usd']:>7.2f}  "
-            f"${r['headroom_usd']:>7.2f}  {pct_str}"
+            f"${r['headroom_usd']:>7.2f}  {pct_str:<8}  recorded ledger"
         )
 
 

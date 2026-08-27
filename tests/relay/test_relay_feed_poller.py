@@ -50,12 +50,25 @@ def _seed_org(conn, org_id, *, config=None, source_x_id="100"):
 
 
 def _seed_socialdata_cost(conn, org_id, cost):
+    rate = 0.0002
+    credits = cost / rate
     conn.execute(
         text(
-            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status) "
-            "VALUES (:o, :ct, :c, 'success')"
+            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status,"
+            " credits, credit_rate_usd, note) VALUES (:o, :ct, :c, 'success',"
+            " :credits, :rate, :note)"
         ),
-        {"o": org_id, "ct": sd.CALL_TYPE_TIMELINE, "c": cost},
+        {
+            "o": org_id,
+            "ct": sd.CALL_TYPE_TIMELINE,
+            "c": cost,
+            "credits": credits,
+            "rate": rate,
+            "note": (
+                "socialdata_meter_basis=item; "
+                f"changeover_at=2026-08-26T00:00:00Z; items={int(credits)}"
+            ),
+        },
     )
 
 

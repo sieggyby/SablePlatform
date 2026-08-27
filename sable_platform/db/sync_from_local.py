@@ -957,11 +957,13 @@ def _sync_cost_events(source_engine, target_engine, org_id, *, since, dry_run):
     return _sync_append_with_cursor(
         "cost_events",
         "SELECT org_id, job_id, call_type, model, input_tokens, output_tokens,"
-        " cost_usd, call_status, created_at FROM cost_events WHERE org_id=:org_id",
+        " cost_usd, call_status, created_at, credits, credit_rate_usd, note"
+        " FROM cost_events WHERE org_id=:org_id",
         "INSERT INTO cost_events (org_id, job_id, call_type, model, input_tokens,"
-        " output_tokens, cost_usd, call_status, created_at) VALUES (:org_id, :job_id,"
+        " output_tokens, cost_usd, call_status, created_at, credits, credit_rate_usd,"
+        " note) VALUES (:org_id, :job_id,"
         " :call_type, :model, :input_tokens, :output_tokens, :cost_usd, :call_status,"
-        " :created_at)",
+        " :created_at, :credits, :credit_rate_usd, :note)",
         source_engine, target_engine, org_id,
         since=since, dry_run=dry_run, cursor_col="created_at",
         # cost_events.job_id is FK; null it out if the target doesn't know the job.

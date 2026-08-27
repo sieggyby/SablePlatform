@@ -21,6 +21,13 @@ from sable_platform.db.cost import (
 from sable_platform.errors import SableError, BUDGET_EXCEEDED
 
 
+_SOCIALDATA_CALL_TYPES = (
+    "relay_socialdata.timeline",
+    "relay_socialdata.replies",
+    "relay_socialdata.hydrate",
+)
+
+
 def test_log_cost_inserts_row(in_memory_db):
     conn = in_memory_db
     conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('org1', 'Org One')")
@@ -87,6 +94,116 @@ def test_log_cost_vendor_units(in_memory_db):
     assert tok["credits"] is None
     assert tok["credit_rate_usd"] is None
     assert tok["note"] is None
+
+
+@pytest.mark.parametrize("call_type", _SOCIALDATA_CALL_TYPES)
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"credits": None},
+        {"credit_rate_usd": None},
+        {"note": None},
+        {"note": "changeover_at=2026-08-26T00:00:00Z; items=3"},
+        {"note": "socialdata_meter_basis=item; items=3"},
+        {"note": "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z"},
+        {"cost_usd": 0.99},
+    ],
+)
+def test_log_cost_rejects_paid_socialdata_success_without_complete_vendor_units(
+    in_memory_db, call_type, overrides
+):
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('orgsd', 'Org SD')")
+    conn.commit()
+    kwargs = {
+        "credits": 3,
+        "credit_rate_usd": 0.0002,
+        "note": "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=3",
+    }
+    kwargs.update(overrides)
+
+    with pytest.raises(ValueError):
+        log_cost(
+            conn,
+            "orgsd",
+            call_type,
+            kwargs.pop("cost_usd", 0.0006),
+            call_status="success",
+            **kwargs,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM cost_events WHERE org_id='orgsd'").fetchone()[0] == 0
+
+
+def test_log_cost_non_socialdata_still_allows_null_vendor_units(in_memory_db):
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('orgnull', 'Org Null')")
+    conn.commit()
+
+    log_cost(conn, "orgnull", "llm_call", 0.05, call_status="success")
+
+    row = conn.execute(
+        "SELECT credits, credit_rate_usd, note FROM cost_events WHERE org_id='orgnull'"
+    ).fetchone()
+    assert row["credits"] is None
+    assert row["credit_rate_usd"] is None
+    assert row["note"] is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"credits": None},
+        {"credit_rate_usd": None},
+        {"note": None},
+        {"note": "gate=daily_cap"},
+        {"note": "socialdata_meter_basis=item"},
+        {"credits": 1},
+        {"cost_usd": 0.0002},
+    ],
+)
+def test_log_cost_rejects_blocked_socialdata_without_zero_units_and_gate_note(
+    in_memory_db, overrides
+):
+    conn = in_memory_db
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('orgblock', 'Org Block')")
+    conn.commit()
+    kwargs = {
+        "credits": 0,
+        "credit_rate_usd": 0.0002,
+        "note": "socialdata_meter_basis=item; gate=daily_cap",
+    }
+    kwargs.update(overrides)
+
+    with pytest.raises(ValueError):
+        log_cost(
+            conn,
+            "orgblock",
+            "relay_socialdata.timeline",
+            kwargs.pop("cost_usd", 0),
+            call_status="blocked",
+            **kwargs,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM cost_events WHERE org_id='orgblock'").fetchone()[0] == 0
+
+    log_cost(
+        conn,
+        "orgblock",
+        "relay_socialdata.timeline",
+        0,
+        call_status="blocked",
+        credits=0,
+        credit_rate_usd=0.0002,
+        note="socialdata_meter_basis=item; gate=daily_cap",
+    )
+    row = conn.execute(
+        "SELECT cost_usd, credits, credit_rate_usd, note FROM cost_events WHERE org_id='orgblock'"
+    ).fetchone()
+    assert row["cost_usd"] == pytest.approx(0)
+    assert row["credits"] == pytest.approx(0)
+    assert row["credit_rate_usd"] == pytest.approx(0.0002)
+    assert "gate=daily_cap" in row["note"]
 
 
 def test_get_weekly_spend_sums_current_week(in_memory_db):

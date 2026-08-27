@@ -419,6 +419,81 @@ def test_cost_events_scrubs_unknown_job_id():
         assert job_id is None  # scrubbed
 
 
+def test_sync_cost_events_preserves_vendor_units_and_note():
+    src = _make_engine()
+    tgt = _make_engine()
+    _seed_org(src)
+    _seed_org(tgt)
+    with src.begin() as conn:
+        rows = [
+            (
+                "relay_socialdata.timeline",
+                0.004,
+                20,
+                0.0002,
+                "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=20",
+                "2026-08-26T00:00:00",
+            ),
+            (
+                "higgsfield_kling_video_edit",
+                1.078,
+                22,
+                0.049,
+                "hf:22841284 athena money-printer swap",
+                "2026-08-26T00:01:00",
+            ),
+            (
+                "arbitrary_vendor.render",
+                0.75,
+                3,
+                0.25,
+                "vendor=other; job=abc",
+                "2026-08-26T00:02:00",
+            ),
+        ]
+        for row in rows:
+            conn.execute(
+                text(
+                    "INSERT INTO cost_events (org_id, call_type, cost_usd,"
+                    " credits, credit_rate_usd, note, created_at) VALUES"
+                    " ('tig', :call_type, :cost_usd, :credits, :rate,"
+                    " :note, :created_at)"
+                ),
+                {
+                    "call_type": row[0],
+                    "cost_usd": row[1],
+                    "credits": row[2],
+                    "rate": row[3],
+                    "note": row[4],
+                    "created_at": row[5],
+                },
+            )
+
+    sync_org(src, tgt, "tig")
+
+    with tgt.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT call_type, credits, credit_rate_usd, note FROM cost_events"
+                " ORDER BY created_at"
+            )
+        ).fetchall()
+    assert [r._mapping["call_type"] for r in rows] == [
+        "relay_socialdata.timeline",
+        "higgsfield_kling_video_edit",
+        "arbitrary_vendor.render",
+    ]
+    assert rows[0]._mapping["credits"] == 20
+    assert rows[0]._mapping["credit_rate_usd"] == 0.0002
+    assert rows[0]._mapping["note"].startswith("socialdata_meter_basis=item")
+    assert rows[1]._mapping["credits"] == 22
+    assert rows[1]._mapping["credit_rate_usd"] == 0.049
+    assert rows[1]._mapping["note"] == "hf:22841284 athena money-printer swap"
+    assert rows[2]._mapping["credits"] == 3
+    assert rows[2]._mapping["credit_rate_usd"] == 0.25
+    assert rows[2]._mapping["note"] == "vendor=other; job=abc"
+
+
 def test_since_filter_lower_bound():
     src = _make_engine()
     tgt = _make_engine()

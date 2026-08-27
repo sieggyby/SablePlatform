@@ -5,12 +5,22 @@ import datetime
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, BUDGET_EXCEEDED
+
+_SOCIALDATA_CALL_TYPES = {
+    "relay_socialdata.timeline",
+    "relay_socialdata.replies",
+    "relay_socialdata.hydrate",
+}
+_SOCIALDATA_ITEM_RATE_USD = 0.0002
+_SOCIALDATA_BLOCK_GATES = {"daily_cap", "balance_floor"}
+RECORDED_LEDGER_SPEND_BASIS = "recorded_ledger_cost_usd"
 
 
 def _read_platform_config() -> dict:
@@ -59,6 +69,14 @@ def log_cost(
     ``created_at`` (``YYYY-MM-DD HH:MM:SS`` UTC) backdates a row for ledger
     backfills of spend that happened before it could be logged. None = now.
     """
+    _validate_socialdata_cost_event(
+        call_type=call_type,
+        call_status=call_status,
+        cost_usd=cost_usd,
+        credits=credits,
+        credit_rate_usd=credit_rate_usd,
+        note=note,
+    )
     params = {
         "org_id": org_id,
         "job_id": job_id,
@@ -90,6 +108,101 @@ def log_cost(
         params,
     )
     conn.commit()
+
+
+def _validate_socialdata_cost_event(
+    *,
+    call_type: str,
+    call_status: str,
+    cost_usd: float,
+    credits: float | None,
+    credit_rate_usd: float | None,
+    note: str | None,
+) -> None:
+    if call_type not in _SOCIALDATA_CALL_TYPES:
+        return
+    if call_status == "success":
+        _validate_socialdata_success(
+            cost_usd=cost_usd,
+            credits=credits,
+            credit_rate_usd=credit_rate_usd,
+            note=note,
+        )
+    elif call_status == "blocked":
+        _validate_socialdata_blocked(
+            cost_usd=cost_usd,
+            credits=credits,
+            credit_rate_usd=credit_rate_usd,
+            note=note,
+        )
+
+
+def _validate_socialdata_success(
+    *,
+    cost_usd: float,
+    credits: float | None,
+    credit_rate_usd: float | None,
+    note: str | None,
+) -> None:
+    fields = _socialdata_note_fields(note)
+    if credits is None:
+        raise ValueError("SocialData success rows require credits")
+    if credit_rate_usd is None:
+        raise ValueError("SocialData success rows require credit_rate_usd")
+    if fields.get("socialdata_meter_basis") != "item":
+        raise ValueError("SocialData success rows require socialdata_meter_basis=item")
+    if not fields.get("changeover_at"):
+        raise ValueError("SocialData success rows require changeover_at")
+    if "items" not in fields:
+        raise ValueError("SocialData success rows require items")
+    if not _float_close(float(cost_usd), float(credits) * float(credit_rate_usd)):
+        raise ValueError("SocialData success cost_usd must equal credits * credit_rate_usd")
+    try:
+        items = int(fields["items"])
+    except ValueError as exc:
+        raise ValueError("SocialData success items must be an integer") from exc
+    if not _float_close(float(credits), float(items)):
+        raise ValueError("SocialData success items must match credits")
+
+
+def _validate_socialdata_blocked(
+    *,
+    cost_usd: float,
+    credits: float | None,
+    credit_rate_usd: float | None,
+    note: str | None,
+) -> None:
+    fields = _socialdata_note_fields(note)
+    if credits is None:
+        raise ValueError("SocialData blocked rows require credits")
+    if credit_rate_usd is None:
+        raise ValueError("SocialData blocked rows require credit_rate_usd")
+    if fields.get("socialdata_meter_basis") != "item":
+        raise ValueError("SocialData blocked rows require socialdata_meter_basis=item")
+    gate = fields.get("gate")
+    if gate not in _SOCIALDATA_BLOCK_GATES:
+        raise ValueError("SocialData blocked rows require a known gate")
+    if not _float_close(float(credits), 0.0):
+        raise ValueError("SocialData blocked rows require zero credits")
+    if not _float_close(float(cost_usd), 0.0):
+        raise ValueError("SocialData blocked rows require zero cost_usd")
+    if not _float_close(float(credit_rate_usd), _SOCIALDATA_ITEM_RATE_USD):
+        raise ValueError("SocialData blocked rows require the item credit rate")
+
+
+def _socialdata_note_fields(note: str | None) -> dict[str, str]:
+    if note is None:
+        raise ValueError("SocialData rows require note")
+    fields: dict[str, str] = {}
+    for part in note.split(";"):
+        key, sep, value = part.strip().partition("=")
+        if sep and re.fullmatch(r"[A-Za-z0-9_]+", key):
+            fields[key] = value.strip()
+    return fields
+
+
+def _float_close(left: float, right: float) -> bool:
+    return abs(left - right) <= 1e-9
 
 
 def reserve_image_spend(
@@ -133,7 +246,7 @@ def release_image_reservation(conn: Connection, event_id: int) -> None:
 
 
 def get_weekly_spend(conn: Connection, org_id: str) -> float:
-    """Return total cost_usd for org in the current ISO calendar week (Mon–Sun UTC)."""
+    """Return recorded cost_usd for org in the current ISO calendar week."""
     now = datetime.datetime.now(datetime.timezone.utc)
     y, w, _ = now.isocalendar()
     week_start = datetime.datetime.fromisocalendar(y, w, 1).replace(tzinfo=datetime.timezone.utc)
@@ -179,7 +292,7 @@ def get_org_cost_cap(conn: Connection, org_id: str) -> float:
 
 
 def check_budget(conn: Connection, org_id: str) -> tuple[float, float]:
-    """Return (weekly_spend, cap). Raises SableError(BUDGET_EXCEEDED) if over cap."""
+    """Return recorded cost_usd weekly spend and cap. Raise if over cap."""
     spend = get_weekly_spend(conn, org_id)
     cap = get_org_cost_cap(conn, org_id)
     if spend > cap * 0.90:
@@ -202,7 +315,7 @@ def get_daily_spend(
     call_type_prefix: str | None = None,
     now: datetime.datetime | None = None,
 ) -> float:
-    """Total ``cost_usd`` for ``org_id`` in the current UTC calendar day, optionally filtered
+    """Total recorded cost_usd for ``org_id`` in the current UTC calendar day, optionally filtered
     to one ``call_type`` (e.g. ``'meme_image'``) OR to a ``call_type_prefix`` family (e.g.
     ``'ambient.'`` sums every ``ambient.*`` tag — the same dotted-prefix convention the relay's
     ``relay_socialdata.%`` daily cap uses). The two filters are mutually exclusive. ``now`` is

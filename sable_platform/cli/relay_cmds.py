@@ -25,8 +25,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+from decimal import Decimal
 
 import click
+from sqlalchemy import text
 
 from sable_platform.relay import db as relay_db
 from sable_platform.relay.bot.txn import immediate_txn
@@ -58,6 +60,55 @@ def _connect():
 @click.group("relay")
 def relay() -> None:
     """Manage the SableRelay substrate (clients, chat bindings, operators)."""
+
+
+@relay.command("socialdata-reconcile")
+@click.option("--org", "org_id", required=True, help="Org id to reconcile.")
+@click.option("--since", required=True, help="Inclusive UTC ledger lower bound.")
+@click.option("--until", required=True, help="Exclusive UTC ledger upper bound.")
+@click.option("--balance-before-usd", required=True, help="Provider balance before the window.")
+@click.option("--balance-after-usd", required=True, help="Provider balance after the window.")
+def relay_socialdata_reconcile(
+    org_id: str,
+    since: str,
+    until: str,
+    balance_before_usd: str,
+    balance_after_usd: str,
+) -> None:
+    """Compare item-basis SocialData ledger spend with provider balance drawdown."""
+    before = Decimal(balance_before_usd)
+    after = Decimal(balance_after_usd)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            text(
+                "SELECT COALESCE(SUM(cost_usd), 0.0) AS total "
+                "FROM cost_events "
+                "WHERE org_id = :org_id "
+                "  AND call_type LIKE 'relay_socialdata.%' "
+                "  AND note LIKE '%socialdata_meter_basis=item%' "
+                "  AND created_at >= :since "
+                "  AND created_at < :until"
+            ),
+            {"org_id": org_id, "since": since, "until": until},
+        ).fetchone()
+    finally:
+        conn.close()
+
+    ledger = Decimal(str(row[0] if row is not None else 0.0))
+    drawdown = before - after
+    delta = drawdown - ledger
+    click.echo(
+        " ".join(
+            [
+                f"org={org_id}",
+                f"ledger_usd={ledger:.4f}",
+                f"balance_drawdown_usd={drawdown:.4f}",
+                f"delta_usd={delta:+.4f}",
+                "basis=item-ledger",
+            ]
+        )
+    )
 
 
 @relay.command("bind-chat")

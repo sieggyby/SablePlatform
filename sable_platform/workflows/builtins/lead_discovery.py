@@ -264,7 +264,7 @@ def _trigger_cult_grader_for_tier1(ctx) -> StepResult:
 
 def _sync_cult_grader_results(ctx) -> StepResult:
     """Mark workflow complete and log aggregate cost."""
-    from sable_platform.db.cost import get_weekly_spend
+    from sable_platform.db.cost import RECORDED_LEDGER_SPEND_BASIS, get_weekly_spend
 
     spend = get_weekly_spend(ctx.db, ctx.org_id)
     diagnostics_triggered = ctx.input_data.get("diagnostics_triggered", 0)
@@ -273,6 +273,7 @@ def _sync_cult_grader_results(ctx) -> StepResult:
         "workflow_status": "complete",
         "diagnostics_triggered": diagnostics_triggered,
         "weekly_spend_usd": round(spend, 2),
+        "spend_basis": RECORDED_LEDGER_SPEND_BASIS,
     })
 
 

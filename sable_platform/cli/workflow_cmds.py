@@ -274,7 +274,10 @@ def workflow_preflight(org_id: str | None) -> None:
             except Exception as e:
                 log.warning("Failed to parse config_json for org %s: %s", oid, e)
             if cap > 0 and spend >= cap * 0.90:
-                failures.append(f"budget — ${spend:.2f} / ${cap:.2f} ({spend/cap*100:.0f}% used, >= 90%)")
+                failures.append(
+                    f"budget — ${spend:.2f} / ${cap:.2f} "
+                    f"({spend/cap*100:.0f}% used, >= 90%, recorded ledger)"
+                )
 
             # 4. No critical alerts
             crit = conn.execute(
