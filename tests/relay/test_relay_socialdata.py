@@ -622,7 +622,6 @@ def test_all_public_methods_thread_gate_context_into_request(sa_conn) -> None:
         call_type,
         path,
         params,
-        enforce_spend_gate,
         on_unknown,
     ):
         calls.append(
@@ -631,7 +630,6 @@ def test_all_public_methods_thread_gate_context_into_request(sa_conn) -> None:
                 "call_type": call_type,
                 "path": path,
                 "params": dict(params),
-                "enforce_spend_gate": enforce_spend_gate,
                 "on_unknown": on_unknown,
             }
         )
@@ -647,13 +645,13 @@ def test_all_public_methods_thread_gate_context_into_request(sa_conn) -> None:
     client.hydrate_tweet("orgthread", "4", on_unknown="allow")
 
     assert [
-        (c["org_id"], c["call_type"], c["enforce_spend_gate"], c["on_unknown"])
+        (c["org_id"], c["call_type"], c["on_unknown"])
         for c in calls
     ] == [
-        ("orgthread", sd.CALL_TYPE_TIMELINE, True, "block"),
-        ("orgthread", sd.CALL_TYPE_REPLIES, True, "block"),
-        ("orgthread", sd.CALL_TYPE_HYDRATE, True, "block"),
-        ("orgthread", sd.CALL_TYPE_HYDRATE, True, "allow"),
+        ("orgthread", sd.CALL_TYPE_TIMELINE, "block"),
+        ("orgthread", sd.CALL_TYPE_REPLIES, "block"),
+        ("orgthread", sd.CALL_TYPE_HYDRATE, "block"),
+        ("orgthread", sd.CALL_TYPE_HYDRATE, "allow"),
     ]
 
 
@@ -675,7 +673,6 @@ def test_request_gate_blocks_direct_new_caller_before_http(sa_conn) -> None:
             call_type=sd.CALL_TYPE_HYDRATE,
             path="/twitter/tweets/1",
             params={},
-            enforce_spend_gate=True,
             on_unknown="block",
         )
 
@@ -717,7 +714,6 @@ def test_background_and_direct_request_block_when_balance_probe_unknown(
                 call_type=sd.CALL_TYPE_TIMELINE,
                 path="/twitter/user/1/tweets",
                 params={},
-                enforce_spend_gate=True,
                 on_unknown="block",
             )
 

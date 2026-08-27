@@ -634,7 +634,6 @@ def test_publish_time_hydrate_at_cap_is_blocked_by_request_gate_before_http_not_
     entry = client.request_entries[0]
     assert entry["org_id"] == org_id
     assert entry["call_type"] == sd.CALL_TYPE_HYDRATE
-    assert entry["enforce_spend_gate"] is True
     rows = sa_conn.execute(
         text(
             "SELECT cost_usd, credits, credit_rate_usd, note FROM cost_events "

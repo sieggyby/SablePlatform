@@ -201,7 +201,6 @@ class SocialDataClient:
         user_id: str,
         *,
         since_id: str | None = None,
-        enforce_spend_gate: bool = True,
         on_unknown: Literal["block", "allow"] = "block",
     ) -> list[dict]:
         """Fetch an org's source-account timeline (Flow A poll).
@@ -218,7 +217,6 @@ class SocialDataClient:
             path=f"/twitter/user/{user_id}/tweets",
             params={},
             since_id=since_id,
-            enforce_spend_gate=enforce_spend_gate,
             on_unknown=on_unknown,
         )
 
@@ -228,7 +226,6 @@ class SocialDataClient:
         tweet_id: str,
         *,
         since_id: str | None = None,
-        enforce_spend_gate: bool = True,
         on_unknown: Literal["block", "allow"] = "block",
     ) -> list[dict]:
         """Fetch replies in a tweet's conversation (Flow D reply-tracking, §4.6).
@@ -243,7 +240,6 @@ class SocialDataClient:
             path="/twitter/search",
             params={"query": f"conversation_id:{tweet_id}"},
             since_id=since_id,
-            enforce_spend_gate=enforce_spend_gate,
             on_unknown=on_unknown,
         )
 
@@ -252,7 +248,6 @@ class SocialDataClient:
         org_id: str,
         tweet_id: str,
         *,
-        enforce_spend_gate: bool = True,
         on_unknown: Literal["block", "allow"] = "block",
     ) -> dict | None:
         """Hydrate a single tweet by id (§15.1 canonicalization input).
@@ -273,7 +268,6 @@ class SocialDataClient:
                 call_type=CALL_TYPE_HYDRATE,
                 path=f"/twitter/tweets/{tweet_id}",
                 params={},
-                enforce_spend_gate=enforce_spend_gate,
                 on_unknown=on_unknown,
             )
         except SocialDataNotFound:
@@ -300,7 +294,6 @@ class SocialDataClient:
         path: str,
         params: Mapping[str, Any],
         since_id: str | None,
-        enforce_spend_gate: bool,
         on_unknown: Literal["block", "allow"],
     ) -> list[dict]:
         # since_id cursor dedupe (best-practices §10): if we have already seen a
@@ -338,7 +331,6 @@ class SocialDataClient:
             call_type=call_type,
             path=path,
             params=call_params,
-            enforce_spend_gate=enforce_spend_gate,
             on_unknown=on_unknown,
         )
         tweets = _extract_tweets(resp.json_body)
@@ -375,7 +367,6 @@ class SocialDataClient:
         call_type: str,
         path: str,
         params: Mapping[str, Any],
-        enforce_spend_gate: bool = True,
         on_unknown: Literal["block", "allow"] = "block",
     ) -> HttpResponse:
         """Make one logical request through ``http_get`` with 402/429 handling.
@@ -390,12 +381,11 @@ class SocialDataClient:
                 "SocialData balance exhausted (402 latched); skipping request"
             )
 
-        if enforce_spend_gate:
-            self._enforce_spend_gate(
-                org_id=org_id,
-                call_type=call_type,
-                on_unknown=on_unknown,
-            )
+        self._enforce_spend_gate(
+            org_id=org_id,
+            call_type=call_type,
+            on_unknown=on_unknown,
+        )
 
         attempt = 0
         while True:
