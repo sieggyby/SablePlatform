@@ -126,6 +126,18 @@ def poll_org(
         if exc.gate == "daily_cap":
             logger.info("relay poller: org %s over daily cap — skipping, zero calls", org_id)
             return PollResult(org_id=org_id, skipped_over_cap=True, polled=False)
+        if exc.gate == "balance_floor":
+            logger.info("relay poller: org %s hit local balance_floor gate; skipping, zero calls", org_id)
+            with immediate_txn(conn):
+                relay_db.update_poll_cursor(
+                    conn,
+                    org_id,
+                    last_error=f"local spend gate balance_floor: {exc}",
+                )
+            return PollResult(
+                org_id=org_id, skipped_over_cap=False, polled=False,
+                error="local_balance_floor",
+            )
         # Reactive 402 latch fired mid-poll: record the error, no further calls.
         with immediate_txn(conn):
             relay_db.update_poll_cursor(conn, org_id, last_error="socialdata 402 (balance exhausted)")
@@ -296,6 +308,12 @@ def track_reply_followups(
                 result.skipped_over_cap = True
                 logger.info("relay 4.6: org %s over daily cap — skipping reply tracking", org_id)
                 return result
+            if exc.gate == "balance_floor":
+                logger.info(
+                    "relay 4.6: org %s hit local balance_floor gate; halting reply tracking",
+                    org_id,
+                )
+                break
             logger.warning("relay 4.6: org %s socialdata 402 — halting reply tracking", org_id)
             break
         except (SocialDataRateLimited, SocialDataError) as exc:

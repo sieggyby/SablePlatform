@@ -13,8 +13,11 @@ Coverage (per MEGAPLAN C2.4 tests line):
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import text
 
+from sable_platform import socialdata_balance
 from sable_platform.relay import db as relay_db
 from sable_platform.relay import socialdata as sd
 from sable_platform.relay.feed import poller
@@ -138,6 +141,49 @@ def test_over_cap_org_makes_zero_calls_under_cap_org_polls(sa_conn):
     assert all("/twitter/user/22/" in c[0] for c in http.calls)
     assert len(http.calls) == 1
     assert client.http_call_count == 1
+
+
+def test_poll_org_balance_floor_is_local_gate_not_reactive_402(sa_conn, monkeypatch):
+    _seed_org(sa_conn, "orgfloor", source_x_id="11")
+    sa_conn.commit()
+
+    with monkeypatch.context() as m:
+        m.setattr(socialdata_balance, "get_balance_usd", lambda *a, **k: None)
+        floor_http = FakeHttp(lambda path, params: _timeline_resp(["300"]))
+        floor_client = _client(sa_conn, floor_http)
+
+        floor_result = poller.poll_org(
+            sa_conn, floor_client, relay_db.get_relay_client(sa_conn, "orgfloor")
+        )
+
+    assert floor_result.skipped_over_cap is False
+    assert floor_result.polled is False
+    assert floor_result.error == "local_balance_floor"
+    assert floor_http.calls == []
+    floor_error = sa_conn.execute(
+        text("SELECT last_error FROM relay_clients WHERE org_id = 'orgfloor'")
+    ).scalar()
+    assert "local spend gate balance_floor" in floor_error
+    assert "402" not in floor_error
+
+    _seed_org(sa_conn, "org402poll", source_x_id="22")
+    sa_conn.commit()
+    reactive_http = FakeHttp(
+        lambda path, params: sd.HttpResponse(status_code=402, json_body={})
+    )
+    reactive_client = _client(sa_conn, reactive_http)
+
+    reactive_result = poller.poll_org(
+        sa_conn, reactive_client, relay_db.get_relay_client(sa_conn, "org402poll")
+    )
+
+    assert reactive_result.polled is True
+    assert reactive_result.error == "socialdata_402"
+    assert len(reactive_http.calls) == 1
+    reactive_error = sa_conn.execute(
+        text("SELECT last_error FROM relay_clients WHERE org_id = 'org402poll'")
+    ).scalar()
+    assert reactive_error == "socialdata 402 (balance exhausted)"
 
 
 def test_over_cap_threshold_is_inclusive(sa_conn):
@@ -344,6 +390,54 @@ def test_reply_tracking_skipped_when_over_daily_cap(sa_conn):
     assert result.skipped_over_cap is True
     assert result.calls_made == 0
     assert len(http.calls) == 0
+
+
+def test_reply_tracking_balance_floor_log_is_local_gate_not_reactive_402(
+    sa_conn, monkeypatch, caplog
+):
+    _seed_org(sa_conn, "orgreplyfloor", source_x_id="55")
+    _seed_reply_opportunity(
+        sa_conn, "orgreplyfloor", source_x_id="2003", member_x_user_id="987"
+    )
+    sa_conn.commit()
+
+    with monkeypatch.context() as m:
+        m.setattr(socialdata_balance, "get_balance_usd", lambda *a, **k: None)
+        floor_http = FakeHttp(
+            lambda *_: sd.HttpResponse(status_code=200, json_body={"tweets": []})
+        )
+        floor_client = _client(sa_conn, floor_http)
+        with caplog.at_level(logging.INFO, logger=poller.__name__):
+            floor_result = poller.track_reply_followups(
+                sa_conn, floor_client, "orgreplyfloor"
+            )
+
+    assert floor_result.skipped_over_cap is False
+    assert floor_result.calls_made == 0
+    assert floor_http.calls == []
+    assert "local balance_floor gate" in caplog.text
+    assert "socialdata 402" not in caplog.text
+
+    caplog.clear()
+    _seed_org(sa_conn, "orgreply402", source_x_id="55")
+    _seed_reply_opportunity(
+        sa_conn, "orgreply402", source_x_id="2004", member_x_user_id="988"
+    )
+    sa_conn.commit()
+
+    monkeypatch.setattr(socialdata_balance, "get_balance_usd", lambda *a, **k: 100.0)
+    reactive_http = FakeHttp(
+        lambda *_: sd.HttpResponse(status_code=402, json_body={})
+    )
+    reactive_client = _client(sa_conn, reactive_http)
+    with caplog.at_level(logging.WARNING, logger=poller.__name__):
+        reactive_result = poller.track_reply_followups(
+            sa_conn, reactive_client, "orgreply402"
+        )
+
+    assert reactive_result.calls_made == 0
+    assert len(reactive_http.calls) == 1
+    assert "socialdata 402" in caplog.text
 
 
 def test_reply_tracking_skips_member_without_x_identity(sa_conn):
