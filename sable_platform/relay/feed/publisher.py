@@ -56,7 +56,7 @@ from sable_platform.relay import db as relay_db
 from sable_platform.relay.bot import binding as relay_binding
 from sable_platform.relay.bot.txn import immediate_txn
 from sable_platform.relay.feed import canonical
-from sable_platform.relay.socialdata import SocialDataClient
+from sable_platform.relay.socialdata import SocialDataBudgetExhausted, SocialDataClient
 
 logger = logging.getLogger(__name__)
 
@@ -295,9 +295,26 @@ def publish_one_due_job(
     if sd_client is not None and tweet is not None:
         hydrate_id = str(tweet.get("x_id") or "")
         if hydrate_id:
-            hydrated = canonical.hydrate_or_reject(
-                conn, sd_client, job["org_id"], hydrate_id
-            )
+            try:
+                hydrated = canonical.hydrate_or_reject(
+                    conn,
+                    sd_client,
+                    job["org_id"],
+                    hydrate_id,
+                    on_unknown="allow",
+                )
+            except SocialDataBudgetExhausted as exc:
+                if conn.in_transaction():
+                    conn.rollback()
+                with immediate_txn(conn):
+                    relay_db.mark_job_retry(
+                        conn,
+                        job_id,
+                        retry_after_seconds=_backoff_seconds(int(job.get("attempts") or 0)),
+                        last_error=f"socialdata spend gate {exc.gate or 'budget_exhausted'}: {exc}",
+                        now=now(),
+                    )
+                return PublishResult(job_id=job_id, final_state="retry", published=False)
             # hydrate_or_reject's upsert opens an autobegin; clear it before the
             # rejection writes (which open their own immediate_txn) or the send.
             if conn.in_transaction():

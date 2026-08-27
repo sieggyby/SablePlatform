@@ -40,8 +40,8 @@ class FakeClient:
         self._none = none
         self.calls = []
 
-    def hydrate_tweet(self, org_id, tweet_id):
-        self.calls.append((org_id, tweet_id))
+    def hydrate_tweet(self, org_id, tweet_id, *, on_unknown="block"):
+        self.calls.append((org_id, tweet_id, on_unknown))
         if self._not_found:
             raise SocialDataNotFound("404")
         if self._none:

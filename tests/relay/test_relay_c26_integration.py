@@ -72,7 +72,7 @@ class FakeHydrator:
         self._bodies = bodies
         self.calls: list[tuple[str, str]] = []
 
-    def hydrate_tweet(self, org_id, tweet_id):
+    def hydrate_tweet(self, org_id, tweet_id, *, on_unknown="block"):
         self.calls.append((org_id, str(tweet_id)))
         return self._bodies.get(str(tweet_id))
 

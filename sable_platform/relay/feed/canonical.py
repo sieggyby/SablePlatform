@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import urlsplit
 
 from sqlalchemy.engine import Connection
@@ -235,6 +236,7 @@ def hydrate_or_reject(
     tweet_id: str,
     *,
     fallback_handle: str | None = None,
+    on_unknown: Literal["block", "allow"] = "block",
 ) -> Hydrated | Rejection:
     """Hydrate a tweet id and upsert it into ``relay_tweets`` (§15.1).
 
@@ -248,7 +250,7 @@ def hydrate_or_reject(
     the submission ``rejected`` (§15.1 / §15.6).
     """
     try:
-        body = client.hydrate_tweet(org_id, tweet_id)
+        body = client.hydrate_tweet(org_id, tweet_id, on_unknown=on_unknown)
     except SocialDataNotFound:
         # The wrapper normally maps 404 → None, but be defensive if a caller's
         # fake raises directly.

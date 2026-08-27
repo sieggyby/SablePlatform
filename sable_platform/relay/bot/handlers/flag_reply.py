@@ -186,7 +186,12 @@ def _hydrate(
     if isinstance(canon, Rejection):
         return canon
     return canonical.hydrate_or_reject(
-        conn, client, org_id, canon.tweet_id, fallback_handle=canon.handle
+        conn,
+        client,
+        org_id,
+        canon.tweet_id,
+        fallback_handle=canon.handle,
+        on_unknown="allow",
     )
 
 

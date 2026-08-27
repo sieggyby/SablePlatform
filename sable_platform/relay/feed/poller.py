@@ -9,13 +9,12 @@ Two responsibilities, both budget-gated, both consuming the C1.2
      hydrate/upsert new tweets into ``relay_tweets``, and enqueue a
      ``relay_publication_jobs`` row to every active broadcast/community binding.
 
-     **PROACTIVE per-org daily cost gate (PLAN §10):** BEFORE polling each org
-     the loop calls :func:`check_daily_socialdata_budget(conn, org_id)`. An
-     over-cap org (today's UTC-day ``relay_socialdata.%`` spend ≥
-     ``polling.daily_cost_cap_usd``, default $1.00) is SKIPPED with **zero**
-     SocialData HTTP calls until the UTC-midnight window resets; an under-cap org
-     polls normally in the same pass. This is DISTINCT from C1.2's reactive
-     HTTP-402 hard-skip (which only fires after spend is already incurred).
+     **PROACTIVE per-org daily cost gate (PLAN §10):** the C1.2 client checks
+     the org cap inside ``SocialDataClient._request``. An over-cap org skips
+     with **zero** SocialData HTTP calls until the UTC-midnight window resets;
+     an under-cap org polls normally in the same pass. This is DISTINCT from
+     C1.2's reactive HTTP-402 hard-skip, which only fires after spend is
+     already incurred.
 
   2. **Flow D 4.6 — reply follow-through tracking** (:func:`track_reply_followups`).
      For each open reply notification (not yet ``replied_at``, inside the 24h
@@ -49,7 +48,6 @@ from sable_platform.relay.socialdata import (
     SocialDataClient,
     SocialDataError,
     SocialDataRateLimited,
-    check_daily_socialdata_budget,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,27 +102,14 @@ def poll_org(
     """Poll ONE enabled org (Flow A), gated by the proactive daily cost cap.
 
     Steps:
-      1. **Proactive gate**: ``check_daily_socialdata_budget`` — if over cap,
-         return immediately with ``skipped_over_cap=True`` and make ZERO calls.
-      2. Resolve the numeric source X id; if absent, skip (cannot poll).
-      3. Fetch the timeline (``since_id`` = ``last_seen_x_id``) via the C1.2
+      1. Resolve the numeric source X id; if absent, skip (cannot poll).
+      2. Fetch the timeline (``since_id`` = ``last_seen_x_id``) via the C1.2
          client (which applies cursor dedupe + cost logging + 402/429).
-      4. For each new tweet: upsert into ``relay_tweets`` and enqueue a
+      3. For each new tweet: upsert into ``relay_tweets`` and enqueue a
          publication job to every active broadcast/community binding.
-      5. Advance the ``last_seen_x_id`` cursor + stamp ``last_polled_at``.
+      4. Advance the ``last_seen_x_id`` cursor + stamp ``last_polled_at``.
     """
     org_id = org_row["org_id"]
-
-    # --- 1. PROACTIVE per-org daily cost gate (BEFORE any fetch) ---
-    status = check_daily_socialdata_budget(conn, org_id)
-    if status.over_cap:
-        logger.info(
-            "relay poller: org %s over daily cap (spend=%s >= cap=%s) — skipping, zero calls",
-            org_id,
-            status.spend,
-            status.cap,
-        )
-        return PollResult(org_id=org_id, skipped_over_cap=True, polled=False)
 
     # --- 2. Resolve the numeric source X id ---
     source_x_id = _resolve_source_x_id(conn, org_id, org_row.get("config"))
@@ -137,7 +122,10 @@ def poll_org(
     # --- 3. External fetch (OUTSIDE any txn) ---
     try:
         tweets = client.fetch_timeline(org_id, source_x_id, since_id=since_id)
-    except SocialDataBudgetExhausted:
+    except SocialDataBudgetExhausted as exc:
+        if exc.gate == "daily_cap":
+            logger.info("relay poller: org %s over daily cap — skipping, zero calls", org_id)
+            return PollResult(org_id=org_id, skipped_over_cap=True, polled=False)
         # Reactive 402 latch fired mid-poll: record the error, no further calls.
         with immediate_txn(conn):
             relay_db.update_poll_cursor(conn, org_id, last_error="socialdata 402 (balance exhausted)")
@@ -280,12 +268,6 @@ def track_reply_followups(
     """
     result = ReplyTrackResult(org_id=org_id, skipped_over_cap=False)
 
-    status = check_daily_socialdata_budget(conn, org_id)
-    if status.over_cap:
-        result.skipped_over_cap = True
-        logger.info("relay 4.6: org %s over daily cap — skipping reply tracking", org_id)
-        return result
-
     cap = _replies_poll_cap(conn, org_id)
     notifications = relay_db.list_open_reply_notifications(
         conn, org_id, within_hours=within_hours
@@ -309,7 +291,11 @@ def track_reply_followups(
         conversation_x_id = notif["conversation_x_id"]
         try:
             replies = client.fetch_conversation_replies(org_id, str(conversation_x_id))
-        except SocialDataBudgetExhausted:
+        except SocialDataBudgetExhausted as exc:
+            if exc.gate == "daily_cap":
+                result.skipped_over_cap = True
+                logger.info("relay 4.6: org %s over daily cap — skipping reply tracking", org_id)
+                return result
             logger.warning("relay 4.6: org %s socialdata 402 — halting reply tracking", org_id)
             break
         except (SocialDataRateLimited, SocialDataError) as exc:

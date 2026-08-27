@@ -32,12 +32,10 @@ transport signal):
 
   1. **REACTIVE** — the HTTP-402 hard-skip above. Fires only AFTER spend would
      have been incurred (the provider rejects the request).
-  2. **PROACTIVE** — :func:`check_daily_socialdata_budget`, the per-org daily
-     cap (SableRelay PLAN §10, default $1.00/org/day, config field
-     ``polling.daily_cost_cap_usd``). The C2.4 poller calls this BEFORE making
-     any request and skips an over-cap org entirely. This is the gate that
-     actually prevents blowing the per-org daily budget — the reactive 402
-     alone does not, because by the time it fires the spend is already done.
+  2. **PROACTIVE** — the per-org daily cap and prepaid-balance floor enforced
+     inside :meth:`SocialDataClient._request`. This is the gate that actually
+     prevents blowing the per-org daily budget — the reactive 402 alone does
+     not, because by the time it fires the spend is already done.
 
 The HTTP client is injectable (``http_get``) so tests drive a deterministic
 fake; no live/paid SocialData call ever happens in tests.
@@ -51,11 +49,12 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform import socialdata_balance
 from sable_platform.db.cost import log_cost
 from sable_platform.relay.db import read_client_config
 
@@ -102,6 +101,10 @@ class SocialDataBudgetExhausted(SocialDataError):
     funds. Once raised, the client instance latches and refuses all further
     HTTP calls (returns/raises without touching the wire).
     """
+
+    def __init__(self, message: str, *, gate: str | None = None) -> None:
+        super().__init__(message)
+        self.gate = gate
 
 
 class SocialDataRateLimited(SocialDataError):
@@ -198,6 +201,8 @@ class SocialDataClient:
         user_id: str,
         *,
         since_id: str | None = None,
+        enforce_spend_gate: bool = True,
+        on_unknown: Literal["block", "allow"] = "block",
     ) -> list[dict]:
         """Fetch an org's source-account timeline (Flow A poll).
 
@@ -213,6 +218,8 @@ class SocialDataClient:
             path=f"/twitter/user/{user_id}/tweets",
             params={},
             since_id=since_id,
+            enforce_spend_gate=enforce_spend_gate,
+            on_unknown=on_unknown,
         )
 
     def fetch_conversation_replies(
@@ -221,6 +228,8 @@ class SocialDataClient:
         tweet_id: str,
         *,
         since_id: str | None = None,
+        enforce_spend_gate: bool = True,
+        on_unknown: Literal["block", "allow"] = "block",
     ) -> list[dict]:
         """Fetch replies in a tweet's conversation (Flow D reply-tracking, §4.6).
 
@@ -234,9 +243,18 @@ class SocialDataClient:
             path="/twitter/search",
             params={"query": f"conversation_id:{tweet_id}"},
             since_id=since_id,
+            enforce_spend_gate=enforce_spend_gate,
+            on_unknown=on_unknown,
         )
 
-    def hydrate_tweet(self, org_id: str, tweet_id: str) -> dict | None:
+    def hydrate_tweet(
+        self,
+        org_id: str,
+        tweet_id: str,
+        *,
+        enforce_spend_gate: bool = True,
+        on_unknown: Literal["block", "allow"] = "block",
+    ) -> dict | None:
         """Hydrate a single tweet by id (§15.1 canonicalization input).
 
         Returns the tweet dict, or ``None`` if the provider returns 404
@@ -250,7 +268,14 @@ class SocialDataClient:
             return cached
 
         try:
-            resp = self._request(f"/twitter/tweets/{tweet_id}", {})
+            resp = self._request(
+                org_id=org_id,
+                call_type=CALL_TYPE_HYDRATE,
+                path=f"/twitter/tweets/{tweet_id}",
+                params={},
+                enforce_spend_gate=enforce_spend_gate,
+                on_unknown=on_unknown,
+            )
         except SocialDataNotFound:
             # 404 not charged; cache the negative so a re-hydrate of the same
             # missing id does not re-hit the wire.
@@ -275,6 +300,8 @@ class SocialDataClient:
         path: str,
         params: Mapping[str, Any],
         since_id: str | None,
+        enforce_spend_gate: bool,
+        on_unknown: Literal["block", "allow"],
     ) -> list[dict]:
         # since_id cursor dedupe (best-practices §10): if we have already seen a
         # since_id >= the requested cursor for this (org, kind), the provider has
@@ -306,7 +333,14 @@ class SocialDataClient:
         if since_id is not None:
             call_params["since_id"] = since_id
 
-        resp = self._request(path, call_params)
+        resp = self._request(
+            org_id=org_id,
+            call_type=call_type,
+            path=path,
+            params=call_params,
+            enforce_spend_gate=enforce_spend_gate,
+            on_unknown=on_unknown,
+        )
         tweets = _extract_tweets(resp.json_body)
 
         self._log_cost(org_id, call_type, len(tweets))
@@ -334,7 +368,16 @@ class SocialDataClient:
     # ------------------------------------------------------------------
     # Internal: the single wire chokepoint — 402 latch + 429 bounded retry
     # ------------------------------------------------------------------
-    def _request(self, path: str, params: Mapping[str, Any]) -> HttpResponse:
+    def _request(
+        self,
+        *,
+        org_id: str,
+        call_type: str,
+        path: str,
+        params: Mapping[str, Any],
+        enforce_spend_gate: bool = True,
+        on_unknown: Literal["block", "allow"] = "block",
+    ) -> HttpResponse:
         """Make one logical request through ``http_get`` with 402/429 handling.
 
         Every HTTP call the wrapper ever makes flows through here, so the 402
@@ -345,6 +388,13 @@ class SocialDataClient:
         if self._budget_exhausted:
             raise SocialDataBudgetExhausted(
                 "SocialData balance exhausted (402 latched); skipping request"
+            )
+
+        if enforce_spend_gate:
+            self._enforce_spend_gate(
+                org_id=org_id,
+                call_type=call_type,
+                on_unknown=on_unknown,
             )
 
         attempt = 0
@@ -445,6 +495,58 @@ class SocialDataClient:
                 "socialdata_meter_basis=item; "
                 f"changeover_at={changeover_at}; items={item_count}"
             ),
+        )
+
+    def _enforce_spend_gate(
+        self,
+        *,
+        org_id: str,
+        call_type: str,
+        on_unknown: Literal["block", "allow"],
+    ) -> None:
+        status = check_daily_socialdata_budget(self.conn, org_id)
+        if status.over_cap:
+            self._log_blocked(
+                org_id=org_id,
+                call_type=call_type,
+                gate="daily_cap",
+                reason=f"spend={status.spend}; cap={status.cap}",
+            )
+            raise SocialDataBudgetExhausted(
+                f"SocialData spend gate daily_cap for org {org_id}",
+                gate="daily_cap",
+            )
+
+        allowed, reason = socialdata_balance.check_balance_floor(on_unknown=on_unknown)
+        if not allowed:
+            self._log_blocked(
+                org_id=org_id,
+                call_type=call_type,
+                gate="balance_floor",
+                reason=reason,
+            )
+            raise SocialDataBudgetExhausted(
+                f"SocialData spend gate balance_floor for org {org_id}: {reason}",
+                gate="balance_floor",
+            )
+
+    def _log_blocked(
+        self,
+        *,
+        org_id: str,
+        call_type: str,
+        gate: str,
+        reason: str,
+    ) -> None:
+        log_cost(
+            self.conn,
+            org_id=org_id,
+            call_type=call_type,
+            cost_usd=0.0,
+            call_status="blocked",
+            credits=0.0,
+            credit_rate_usd=SOCIALDATA_ITEM_RATE_USD,
+            note=f"socialdata_meter_basis=item; gate={gate}; reason={reason}",
         )
 
 

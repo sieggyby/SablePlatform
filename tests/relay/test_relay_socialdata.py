@@ -23,7 +23,13 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import text
 
+from sable_platform import socialdata_balance
+from sable_platform.relay import db as relay_db
 from sable_platform.relay import socialdata as sd
+from sable_platform.relay.bot.handlers import amplify as amplify_handler
+from sable_platform.relay.bot.handlers import flag_reply as flag_reply_handler
+from sable_platform.relay.bot.txn import immediate_txn
+from sable_platform.relay.feed import canonical, publisher
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +116,20 @@ def _socialdata_cost_rows(conn, org_id: str) -> list:
         ),
         {"o": org_id},
     ).fetchall()
+
+
+def _blocked_socialdata_rows(conn, org_id: str) -> list[dict]:
+    return [
+        dict(row._mapping)
+        for row in conn.execute(
+            text(
+                "SELECT call_type, cost_usd, call_status, credits, credit_rate_usd, note "
+                "FROM cost_events WHERE org_id = :o AND call_status = 'blocked' "
+                "ORDER BY event_id"
+            ),
+            {"o": org_id},
+        ).fetchall()
+    ]
 
 
 def test_item_metered_success_rows_cover_timeline_replies_hydrate_and_response_shapes(sa_conn) -> None:
@@ -587,3 +607,197 @@ def test_unknown_org_falls_back_to_default_cap(sa_conn) -> None:
     status = sd.check_daily_socialdata_budget(sa_conn, "ghost")
     assert status.spend == Decimal("0")
     assert status.over_cap is False
+
+
+def test_all_public_methods_thread_gate_context_into_request(sa_conn) -> None:
+    _seed_org(sa_conn, "orgthread")
+    sa_conn.commit()
+    http = FakeHttp([_ok(["1"])])
+    client = _make_client(sa_conn, http)
+    calls: list[dict] = []
+
+    def fake_request(
+        *,
+        org_id,
+        call_type,
+        path,
+        params,
+        enforce_spend_gate,
+        on_unknown,
+    ):
+        calls.append(
+            {
+                "org_id": org_id,
+                "call_type": call_type,
+                "path": path,
+                "params": dict(params),
+                "enforce_spend_gate": enforce_spend_gate,
+                "on_unknown": on_unknown,
+            }
+        )
+        if call_type == sd.CALL_TYPE_HYDRATE:
+            return sd.HttpResponse(status_code=200, json_body={"id_str": "3"})
+        return _ok(["1"])
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    client.fetch_timeline("orgthread", "1")
+    client.fetch_conversation_replies("orgthread", "2")
+    client.hydrate_tweet("orgthread", "3")
+    client.hydrate_tweet("orgthread", "4", on_unknown="allow")
+
+    assert [
+        (c["org_id"], c["call_type"], c["enforce_spend_gate"], c["on_unknown"])
+        for c in calls
+    ] == [
+        ("orgthread", sd.CALL_TYPE_TIMELINE, True, "block"),
+        ("orgthread", sd.CALL_TYPE_REPLIES, True, "block"),
+        ("orgthread", sd.CALL_TYPE_HYDRATE, True, "block"),
+        ("orgthread", sd.CALL_TYPE_HYDRATE, True, "allow"),
+    ]
+
+
+def test_request_gate_blocks_direct_new_caller_before_http(sa_conn) -> None:
+    _seed_org(sa_conn, "orgdirectcap")
+    _seed_relay_client(
+        sa_conn,
+        "orgdirectcap",
+        config='{"polling": {"daily_cost_cap_usd": 0.0002}}',
+    )
+    _seed_socialdata_cost(sa_conn, "orgdirectcap", 0.0002, call_type=sd.CALL_TYPE_HYDRATE)
+    sa_conn.commit()
+    http = FakeHttp([sd.HttpResponse(status_code=200, json_body={"id_str": "1"})])
+    client = _make_client(sa_conn, http)
+
+    with pytest.raises(sd.SocialDataBudgetExhausted) as exc:
+        client._request(
+            org_id="orgdirectcap",
+            call_type=sd.CALL_TYPE_HYDRATE,
+            path="/twitter/tweets/1",
+            params={},
+            enforce_spend_gate=True,
+            on_unknown="block",
+        )
+
+    assert exc.value.gate == "daily_cap"
+    assert http.calls == []
+    rows = _blocked_socialdata_rows(sa_conn, "orgdirectcap")
+    assert len(rows) == 1
+    assert rows[0]["call_type"] == sd.CALL_TYPE_HYDRATE
+    assert rows[0]["cost_usd"] == 0
+    assert rows[0]["credits"] == 0
+    assert rows[0]["credit_rate_usd"] == pytest.approx(0.0002)
+    assert "gate=daily_cap" in rows[0]["note"]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["timeline", "replies", "hydrate", "direct"],
+)
+def test_background_and_direct_request_block_when_balance_probe_unknown(
+    sa_conn, monkeypatch, case
+) -> None:
+    monkeypatch.setattr(socialdata_balance, "get_balance_usd", lambda *a, **k: None)
+    _seed_org(sa_conn, f"orgunknown_{case}")
+    _seed_relay_client(sa_conn, f"orgunknown_{case}", config=None)
+    sa_conn.commit()
+    http = FakeHttp([_ok(["1"])])
+    client = _make_client(sa_conn, http)
+
+    with pytest.raises(sd.SocialDataBudgetExhausted) as exc:
+        if case == "timeline":
+            client.fetch_timeline(f"orgunknown_{case}", "1")
+        elif case == "replies":
+            client.fetch_conversation_replies(f"orgunknown_{case}", "1")
+        elif case == "hydrate":
+            client.hydrate_tweet(f"orgunknown_{case}", "1")
+        else:
+            client._request(
+                org_id=f"orgunknown_{case}",
+                call_type=sd.CALL_TYPE_TIMELINE,
+                path="/twitter/user/1/tweets",
+                params={},
+                enforce_spend_gate=True,
+                on_unknown="block",
+            )
+
+    assert exc.value.gate == "balance_floor"
+    assert "balance_floor" in str(exc.value)
+    assert http.calls == []
+    rows = _blocked_socialdata_rows(sa_conn, f"orgunknown_{case}")
+    assert len(rows) == 1
+    assert rows[0]["cost_usd"] == 0
+    assert rows[0]["credits"] == 0
+    assert rows[0]["credit_rate_usd"] == pytest.approx(0.0002)
+    assert "gate=balance_floor" in rows[0]["note"]
+    assert "balance_unknown" in rows[0]["note"]
+
+
+def test_paid_hydrate_unknown_balance_allow_is_threaded_by_paid_paths_and_daily_cap_still_blocks(
+    sa_conn, monkeypatch
+) -> None:
+    monkeypatch.setattr(socialdata_balance, "get_balance_usd", lambda *a, **k: None)
+    _seed_org(sa_conn, "orgpaid")
+    _seed_relay_client(
+        sa_conn,
+        "orgpaid",
+        config='{"polling": {"daily_cost_cap_usd": 0.0002}}',
+    )
+    sa_conn.commit()
+    http = FakeHttp([sd.HttpResponse(status_code=200, json_body={"id_str": "10"})])
+    client = _make_client(sa_conn, http)
+
+    assert client.hydrate_tweet("orgpaid", "10", on_unknown="allow")["id_str"] == "10"
+    assert len(http.calls) == 1
+
+    _seed_socialdata_cost(sa_conn, "orgpaid", 0.0002, call_type=sd.CALL_TYPE_HYDRATE)
+    sa_conn.commit()
+    with pytest.raises(sd.SocialDataBudgetExhausted) as exc:
+        client.hydrate_tweet("orgpaid", "11", on_unknown="allow")
+    assert exc.value.gate == "daily_cap"
+    assert len(http.calls) == 1
+
+    class SpyHydrator:
+        def __init__(self):
+            self.calls: list[tuple[str, str, str]] = []
+
+        def hydrate_tweet(self, org_id, tweet_id, *, on_unknown):
+            self.calls.append((org_id, str(tweet_id), on_unknown))
+            return {
+                "id_str": str(tweet_id),
+                "id": int(tweet_id),
+                "full_text": "paid hydrate",
+                "user": {"id_str": "555", "screen_name": "archerfit"},
+                "conversation_id_str": str(tweet_id),
+            }
+
+    spy = SpyHydrator()
+    canonical.hydrate_or_reject(sa_conn, spy, "orgpaid", "20", on_unknown="allow")
+    amplify_handler._hydrate(
+        sa_conn, spy, "orgpaid", "https://x.com/archerfit/status/21"
+    )
+    flag_reply_handler._hydrate(
+        sa_conn, spy, "orgpaid", "https://x.com/archerfit/status/22"
+    )
+
+    tweet_row = relay_db.upsert_tweet(sa_conn, x_id="23", x_author_handle="archerfit")
+    sa_conn.commit()
+    with immediate_txn(sa_conn):
+        relay_db.enqueue_publication_job(
+            sa_conn,
+            org_id="orgpaid",
+            tweet_id=tweet_row,
+            destination_platform="discord",
+            destination_chat_id="paid-path",
+        )
+
+    class Sender:
+        def send(self, *, org_id, destination_platform, destination_chat_id, tweet, submission_id):
+            return publisher.SendOutcome(external_message_id="sent")
+
+        def find_recent_message(self, *, destination_platform, destination_chat_id, tweet):
+            return None
+
+    publisher.publish_one_due_job(sa_conn, Sender(), sd_client=spy)
+
+    assert [call[2] for call in spy.calls] == ["allow", "allow", "allow", "allow"]

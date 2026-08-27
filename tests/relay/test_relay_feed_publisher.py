@@ -473,6 +473,16 @@ def _sd_client(conn, http):
     return sd.SocialDataClient(http_get=http, conn=conn, sleep=lambda *_: None, jitter=lambda: 1.0)
 
 
+class _GateProbeClient(sd.SocialDataClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.request_entries = []
+
+    def _request(self, **kwargs):
+        self.request_entries.append(dict(kwargs))
+        return super()._request(**kwargs)
+
+
 class _RecordingNotifier:
     def __init__(self):
         self.calls = []
@@ -576,3 +586,64 @@ def test_publish_time_hydration_live_tweet_still_sends(sa_conn):
     assert sa_conn.execute(
         text("SELECT COUNT(*) FROM relay_publications WHERE tweet_id=:t"), {"t": tweet_row}
     ).scalar() == 1
+
+
+def test_publish_time_hydrate_at_cap_is_blocked_by_request_gate_before_http_not_claimed(sa_conn):
+    org_id, tweet_row = _seed(sa_conn, org_id="orgpubcap")
+    _enqueue(sa_conn, org_id, tweet_row)
+    rate = 0.0002
+    sa_conn.execute(
+        text(
+            "UPDATE relay_clients SET config = :c WHERE org_id = :o"
+        ),
+        {"o": org_id, "c": '{"polling": {"daily_cost_cap_usd": 0.0002}}'},
+    )
+    sa_conn.execute(
+        text(
+            "INSERT INTO cost_events (org_id, call_type, cost_usd, call_status,"
+            " credits, credit_rate_usd, note) VALUES (:o, :ct, 0.0002, 'success',"
+            " 1, :rate, :note)"
+        ),
+        {
+            "o": org_id,
+            "ct": sd.CALL_TYPE_HYDRATE,
+            "rate": rate,
+            "note": "socialdata_meter_basis=item; changeover_at=2026-08-26T00:00:00Z; items=1",
+        },
+    )
+    sa_conn.commit()
+    http = _FakeHttp([sd.HttpResponse(status_code=200, json_body={"id_str": "900"})])
+    client = _GateProbeClient(
+        http_get=http, conn=sa_conn, sleep=lambda *_: None, jitter=lambda: 1.0
+    )
+    sender = FakeSender(["should-not-send"])
+
+    result = publisher.publish_one_due_job(sa_conn, sender, now=_now, sd_client=client)
+
+    assert result.final_state == "retry"
+    assert sender.sends == []
+    assert http.calls == []
+    job = sa_conn.execute(
+        text("SELECT state, attempts, last_error FROM relay_publication_jobs WHERE tweet_id=:t"),
+        {"t": tweet_row},
+    ).fetchone()
+    assert job[0] == "retry"
+    assert job[1] == 1
+    assert "daily_cap" in job[2]
+    assert len(client.request_entries) == 1
+    entry = client.request_entries[0]
+    assert entry["org_id"] == org_id
+    assert entry["call_type"] == sd.CALL_TYPE_HYDRATE
+    assert entry["enforce_spend_gate"] is True
+    rows = sa_conn.execute(
+        text(
+            "SELECT cost_usd, credits, credit_rate_usd, note FROM cost_events "
+            "WHERE org_id=:o AND call_status='blocked'"
+        ),
+        {"o": org_id},
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 0
+    assert rows[0][1] == 0
+    assert rows[0][2] == 0.0002
+    assert "gate=daily_cap" in rows[0][3]

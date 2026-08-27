@@ -38,6 +38,16 @@ def _client(conn, http):
     return sd.SocialDataClient(http_get=http, conn=conn, sleep=lambda *_: None, jitter=lambda: 1.0)
 
 
+class GateProbeClient(sd.SocialDataClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.request_entries = []
+
+    def _request(self, **kwargs):
+        self.request_entries.append(dict(kwargs))
+        return super()._request(**kwargs)
+
+
 def _seed_org(conn, org_id, *, config=None, source_x_id="100"):
     conn.execute(text("INSERT INTO orgs (org_id, display_name) VALUES (:o, :o)"), {"o": org_id})
     if config is None:
@@ -364,3 +374,70 @@ def test_reply_tracking_skips_member_without_x_identity(sa_conn):
     result = poller.track_reply_followups(sa_conn, client, "orgnox")
     assert result.calls_made == 0
     assert len(http.calls) == 0
+
+
+def test_poller_and_reply_tracking_cap_blocks_record_one_client_blocked_row_and_zero_http_calls(sa_conn):
+    _seed_org(
+        sa_conn,
+        "orggatepoll",
+        config='{"polling": {"daily_cost_cap_usd": 0.0002, "source_x_user_id": "55"}}',
+    )
+    _seed_socialdata_cost(sa_conn, "orggatepoll", 0.0002)
+    _seed_org(
+        sa_conn,
+        "orggatereply",
+        config='{"polling": {"daily_cost_cap_usd": 0.0002, "source_x_user_id": "66"}}',
+    )
+    sa_conn.execute(
+        text("UPDATE relay_clients SET enabled = 0 WHERE org_id = 'orggatereply'")
+    )
+    _seed_reply_opportunity(
+        sa_conn, "orggatereply", source_x_id="4000", member_x_user_id="987"
+    )
+    _seed_socialdata_cost(sa_conn, "orggatereply", 0.0002)
+    sa_conn.commit()
+
+    http = FakeHttp(lambda *_: sd.HttpResponse(status_code=200, json_body={"tweets": []}))
+    client = GateProbeClient(
+        http_get=http, conn=sa_conn, sleep=lambda *_: None, jitter=lambda: 1.0
+    )
+
+    results = poller.poll_all_enabled(sa_conn, client)
+    by_org = {r.org_id: r for r in results}
+    assert by_org["orggatepoll"].skipped_over_cap is True
+    assert by_org["orggatepoll"].polled is False
+    timeline_entries = [
+        e for e in client.request_entries if e["call_type"] == sd.CALL_TYPE_TIMELINE
+    ]
+    assert len(timeline_entries) == 1
+    assert timeline_entries[0]["org_id"] == "orggatepoll"
+    assert http.calls == []
+
+    reply_result = poller.track_reply_followups(sa_conn, client, "orggatereply")
+    assert reply_result.skipped_over_cap is True
+    assert reply_result.calls_made == 0
+    replies_entries = [
+        e for e in client.request_entries if e["call_type"] == sd.CALL_TYPE_REPLIES
+    ]
+    assert len(replies_entries) == 1
+    assert replies_entries[0]["org_id"] == "orggatereply"
+    assert http.calls == []
+
+    rows = [
+        dict(row._mapping)
+        for row in sa_conn.execute(
+            text(
+                "SELECT org_id, call_type, cost_usd, credits, credit_rate_usd, note "
+                "FROM cost_events WHERE call_status='blocked' ORDER BY event_id"
+            )
+        ).fetchall()
+    ]
+    assert [(r["org_id"], r["call_type"]) for r in rows] == [
+        ("orggatepoll", sd.CALL_TYPE_TIMELINE),
+        ("orggatereply", sd.CALL_TYPE_REPLIES),
+    ]
+    for row in rows:
+        assert row["cost_usd"] == 0
+        assert row["credits"] == 0
+        assert row["credit_rate_usd"] == 0.0002
+        assert "gate=daily_cap" in row["note"]
