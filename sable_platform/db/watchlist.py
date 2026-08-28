@@ -74,12 +74,14 @@ def _take_snapshot(conn: Connection, org_id: str, entity_id: str) -> None:
     ).fetchone()
     decay_score = decay_row["decay_score"] if decay_row else None
 
-    # Active tags (matching _ACTIVE_PREDICATE from tags.py)
+    # Active tags, via the same dialect-aware predicate tags.py uses. A plain text compare
+    # here let an ISO expiry outlive its own expiry time for the rest of the day.
+    _pred = active_predicate(conn.dialect.name)
     tag_rows = conn.execute(
-        text("""
+        text(f"""
         SELECT tag FROM entity_tags
-        WHERE entity_id=:entity_id AND {pred}
-        """.format(pred=active_predicate(conn.dialect.name))),
+        WHERE entity_id=:entity_id AND {_pred}
+        """),
         {"entity_id": entity_id},
     ).fetchall()
     tags = [r["tag"] for r in tag_rows]

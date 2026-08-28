@@ -85,7 +85,7 @@ def _pin_utc_session(engine: Engine) -> None:
     this completely.
     """
     @event.listens_for(engine, "connect")
-    def _set_utc(dbapi_conn, connection_record):  # noqa: ARG001
+    def _set_utc(dbapi_conn, connection_record):
         cur = dbapi_conn.cursor()
         cur.execute("SET TIME ZONE 'UTC'")
         cur.close()
