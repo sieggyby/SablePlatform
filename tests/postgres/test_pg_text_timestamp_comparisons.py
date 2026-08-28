@@ -156,3 +156,41 @@ def test_postgres_sessions_are_pinned_to_utc(postgres_engine, postgres_db_url):
         assert c.execute(text("SHOW timezone")).scalar() == "UTC"
         got = c.execute(text("SELECT ('2026-08-27 12:00:00'::text)::timestamptz")).scalar()
         assert got.utcoffset().total_seconds() == 0
+
+
+def test_an_iso_expires_at_expires_on_the_same_day(postgres_wf_db):
+    """The active-tag predicate compared TEXT to CAST(CURRENT_TIMESTAMP AS TEXT). Stored
+    values mix formats: some code writes "YYYY-MM-DD HH:MM:SS", other code writes ISO with a
+    "T". "T" (0x54) sorts above " " (0x20), so a tag that expired EARLIER the same day
+    compared as LATER and stayed active for the rest of the day. Measured on PostgreSQL 16:
+        '2026-08-27T10:00:00' > '2026-08-27 23:00:00'  ->  true  as text
+        the same two values as timestamps              ->  false
+    """
+    from sable_platform.db.tags import get_active_tags
+
+    postgres_wf_db.execute("INSERT INTO entities (entity_id, org_id, display_name)"
+                           " VALUES (?, ?, ?)", ("e_iso", "wf_org", "E"))
+    postgres_wf_db.execute(
+        "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
+        " VALUES (?, ?, ?, ?)", ("e_iso", "stale", 1, "2020-01-01T10:00:00"))
+    postgres_wf_db.execute(
+        "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
+        " VALUES (?, ?, ?, ?)", ("e_iso", "live", 1, "2099-01-01T10:00:00"))
+    postgres_wf_db.commit()
+    tags = {r["tag"] for r in get_active_tags(postgres_wf_db, "e_iso")}
+    assert "live" in tags
+    assert "stale" not in tags, "an ISO-format expiry outlived its own expiry date"
+
+
+def test_an_empty_expires_at_does_not_kill_the_tag_expiry_alert(postgres_wf_db):
+    """days_until cast expires_at without NULLIF, so ONE tag holding '' raised and the
+    `except` at alert_checks.py swallowed it: the org got no expiry alerts at all."""
+    from sable_platform.workflows.alert_checks import _check_cultist_tag_expiring
+
+    postgres_wf_db.execute("INSERT INTO entities (entity_id, org_id, display_name)"
+                           " VALUES (?, ?, ?)", ("e_empty", "wf_org", "E"))
+    postgres_wf_db.execute(
+        "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
+        " VALUES (?, ?, ?, ?)", ("e_empty", "cultist", 1, ""))
+    postgres_wf_db.commit()
+    assert _check_cultist_tag_expiring(postgres_wf_db, "wf_org") is not None

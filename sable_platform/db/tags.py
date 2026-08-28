@@ -25,7 +25,22 @@ _REPLACE_CURRENT_TAGS: frozenset[str] = frozenset({
     "bridge_node",
 })
 
-_ACTIVE_PREDICATE = "is_current = 1 AND (expires_at IS NULL OR expires_at > CAST(CURRENT_TIMESTAMP AS TEXT))"
+# Was: `expires_at > CAST(CURRENT_TIMESTAMP AS TEXT)`, a LEXICOGRAPHIC compare. Stored values
+# mix formats: `datetime('now')` writes "YYYY-MM-DD HH:MM:SS" and later code writes ISO with a
+# "T". "T" (0x54) sorts above " " (0x20), so an ISO value expiring EARLIER the same day compares
+# as LATER and the tag stays active. Measured on PostgreSQL 16:
+#     '2026-08-27T10:00:00' > '2026-08-27 23:00:00'  ->  true   (text)
+#     the same values as timestamps                  ->  false
+# Compare real timestamps instead, per dialect.
+def active_predicate(dialect: str) -> str:
+    """`is_current` plus a not-yet-expired check that compares TIMESTAMPS, not text."""
+    from sable_platform.db.compat import ts_column
+
+    if dialect == "sqlite":
+        return ("is_current = 1 AND (expires_at IS NULL"
+                " OR julianday(NULLIF(expires_at, '')) > julianday('now'))")
+    return ("is_current = 1 AND (expires_at IS NULL"
+            f" OR {ts_column('expires_at', dialect)} > NOW())")
 
 
 def _record_tag_history(
@@ -82,7 +97,7 @@ def add_tag(
         existing = conn.execute(
             text(f"""
             SELECT confidence, source, expires_at FROM entity_tags
-            WHERE entity_id = :entity_id AND tag = :tag AND {_ACTIVE_PREDICATE}
+            WHERE entity_id = :entity_id AND tag = :tag AND {active_predicate(conn.dialect.name)}
             """),
             {"entity_id": entity_id, "tag": tag},
         ).fetchone()
@@ -97,7 +112,7 @@ def add_tag(
             text(f"""
             UPDATE entity_tags
             SET is_current = 0, deactivated_at = CURRENT_TIMESTAMP
-            WHERE entity_id = :entity_id AND tag = :tag AND {_ACTIVE_PREDICATE}
+            WHERE entity_id = :entity_id AND tag = :tag AND {active_predicate(conn.dialect.name)}
             """),
             {"entity_id": entity_id, "tag": tag},
         )
@@ -138,7 +153,7 @@ def deactivate_tag(
     existing = conn.execute(
         text(f"""
         SELECT confidence, source, expires_at FROM entity_tags
-        WHERE entity_id = :entity_id AND tag = :tag AND {_ACTIVE_PREDICATE}
+        WHERE entity_id = :entity_id AND tag = :tag AND {active_predicate(conn.dialect.name)}
         """),
         {"entity_id": entity_id, "tag": tag},
     ).fetchone()
@@ -157,7 +172,7 @@ def deactivate_tag(
         text(f"""
         UPDATE entity_tags
         SET is_current = 0, deactivated_at = CURRENT_TIMESTAMP
-        WHERE entity_id = :entity_id AND tag = :tag AND {_ACTIVE_PREDICATE}
+        WHERE entity_id = :entity_id AND tag = :tag AND {active_predicate(conn.dialect.name)}
         """),
         {"entity_id": entity_id, "tag": tag},
     )
@@ -176,7 +191,7 @@ def get_active_tags(conn: Connection, entity_id: str) -> list:
     return conn.execute(
         text(f"""
         SELECT * FROM entity_tags
-        WHERE entity_id = :entity_id AND {_ACTIVE_PREDICATE}
+        WHERE entity_id = :entity_id AND {active_predicate(conn.dialect.name)}
         ORDER BY added_at
         """),
         {"entity_id": entity_id},
@@ -195,7 +210,7 @@ def get_entities_by_tag(
         JOIN entity_tags t ON e.entity_id = t.entity_id
         WHERE e.org_id = :org_id
           AND t.tag = :tag
-          AND {_ACTIVE_PREDICATE.replace('is_current', 't.is_current')
+          AND {active_predicate(conn.dialect.name).replace('is_current', 't.is_current')
                .replace('expires_at', 't.expires_at')}
           AND e.status != 'archived'
         """),

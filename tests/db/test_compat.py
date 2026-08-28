@@ -141,31 +141,35 @@ GUARDED_HELPERS = [
     compat.hours_since,
 ]
 
+# The PostgreSQL expectations carry NULLIF: one row holding '' makes
+# ``''::timestamptz`` raise and takes the whole query down, which is the same class of
+# silent failure these helpers exist to prevent. The SQLite expectations are unchanged,
+# because julianday('') already returns NULL there.
 COLUMN_CASES = [
     (
         compat.days_since,
         "julianday('now') - julianday(run_date)",
-        "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz)) / 86400.0",
+        "EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz)) / 86400.0",
     ),
     (
         compat.days_until,
         "julianday(run_date) - julianday('now')",
-        "EXTRACT(EPOCH FROM (run_date::timestamptz - NOW())) / 86400.0",
+        "EXTRACT(EPOCH FROM (NULLIF(run_date, '')::timestamptz - NOW())) / 86400.0",
     ),
     (
         compat.days_since_int,
         "CAST(julianday('now') - julianday(run_date) AS INTEGER)",
-        "CAST(EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz)) / 86400.0 AS INTEGER)",
+        "CAST(EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz)) / 86400.0 AS INTEGER)",
     ),
     (
         compat.seconds_since,
         "(julianday('now') - julianday(run_date)) * 86400",
-        "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz))",
+        "EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz))",
     ),
     (
         compat.hours_since,
         "(julianday('now') - julianday(run_date)) * 24",
-        "EXTRACT(EPOCH FROM (NOW() - run_date::timestamptz)) / 3600.0",
+        "EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz)) / 3600.0",
     ),
 ]
 

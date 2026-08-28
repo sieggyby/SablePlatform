@@ -89,7 +89,7 @@ def hours_since(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"(julianday('now') - julianday({column})) * 24"
-    return f"EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz)) / 3600.0"
+    return f"EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz)) / 3600.0"
 
 
 def seconds_since(column: str, dialect: str) -> str:
@@ -101,7 +101,7 @@ def seconds_since(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"(julianday('now') - julianday({column})) * 86400"
-    return f"EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz))"
+    return f"EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz))"
 
 
 def days_since(column: str, dialect: str) -> str:
@@ -113,7 +113,7 @@ def days_since(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"julianday('now') - julianday({column})"
-    return f"EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz)) / 86400.0"
+    return f"EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz)) / 86400.0"
 
 
 def days_since_int(column: str, dialect: str) -> str:
@@ -125,7 +125,7 @@ def days_since_int(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"CAST(julianday('now') - julianday({column}) AS INTEGER)"
-    return f"CAST(EXTRACT(EPOCH FROM (NOW() - {column}::timestamptz)) / 86400.0 AS INTEGER)"
+    return f"CAST(EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz)) / 86400.0 AS INTEGER)"
 
 
 def days_between(col_a: str, col_b: str, dialect: str) -> str:
@@ -150,7 +150,7 @@ def days_until(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"julianday({column}) - julianday('now')"
-    return f"EXTRACT(EPOCH FROM ({column}::timestamptz - NOW())) / 86400.0"
+    return f"EXTRACT(EPOCH FROM (NULLIF({column}, '')::timestamptz - NOW())) / 86400.0"
 
 
 # ---------------------------------------------------------------------------
