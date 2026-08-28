@@ -265,7 +265,7 @@ class WorkflowRunner:
             from datetime import datetime, timezone
 
             try:
-                ts = datetime.fromisoformat(str(age_reference).replace("Z", "+00:00"))
+                ts = datetime.fromisoformat(str(age_reference))
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0

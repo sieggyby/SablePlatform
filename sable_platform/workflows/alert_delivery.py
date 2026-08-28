@@ -87,7 +87,7 @@ def _deliver(
                 from datetime import datetime, timezone
 
                 try:
-                    ts = datetime.fromisoformat(str(last_ts).replace("Z", "+00:00"))
+                    ts = datetime.fromisoformat(str(last_ts))
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
                     elapsed_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600.0

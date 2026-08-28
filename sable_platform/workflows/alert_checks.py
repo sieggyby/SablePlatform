@@ -55,7 +55,7 @@ def _check_tracking_stale(conn: sqlite3.Connection, org_id: str) -> list[str]:
 
         ts_raw = str(row["completed_at"])
         try:
-            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            ts = datetime.fromisoformat(ts_raw)
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             age_days = (datetime.now(timezone.utc) - ts).days
@@ -346,7 +346,7 @@ def _check_discord_pulse_stale(conn: sqlite3.Connection, org_id: str) -> list[st
 
         ts_raw = str(row["run_date"])
         try:
-            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            ts = datetime.fromisoformat(ts_raw)
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
             age_days = (datetime.now(timezone.utc) - ts).days
