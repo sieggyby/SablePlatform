@@ -172,7 +172,14 @@ def test_an_iso_expires_at_expires_on_the_same_day(postgres_wf_db):
     from sable_platform.db.tags import get_active_tags
 
     now = datetime.now(timezone.utc)
-    expired_iso = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")   # earlier TODAY
+    # The expired value must land EARLIER THE SAME UTC DAY. A flat "now - 1 hour" crosses
+    # midnight between 00:00 and 00:59 UTC and the case stops being same-day, so the test
+    # would fail for an hour a day for the wrong reason. Shrink the delta to fit the day.
+    since_midnight = now - now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if since_midnight <= timedelta(seconds=1):
+        pytest.skip("within 1s of UTC midnight; the same-day case cannot be constructed")
+    expired_iso = (now - min(timedelta(hours=1), since_midnight - timedelta(seconds=1))
+                   ).strftime("%Y-%m-%dT%H:%M:%S")
     future_iso = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
     # the text compare must genuinely get this wrong, or the test is not testing the bug
     assert expired_iso > now.strftime("%Y-%m-%d %H:%M:%S"), "not the same-day case"
