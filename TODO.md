@@ -84,3 +84,56 @@ Source: Sable_Cult_Grader CHANGELOG (four gated features shipped). `run_summary_
 - ACTION: persist `tool_mode`, `coverage`, the two v2 axes (scale/quality) + the gated-blend status into `sable.db` (additive column/blob; `run_summary_json.schema_version` unchanged). Do NOT persist the blend as a score while `status == "gated_directional"`.
 - ACTION (optional, for v2 un-gating): a small operator UI to record ground-truth health judgments that write to Cult Grader's `diagnostics/_health_validation.jsonl` (or a table its `analysis/health_validation.evaluate_v2_validation` can read). Needs ≥12 labels before the v2 blend can un-gate. NEVER feeds back into v2 weights (lesson #13 — validation, not tuning).
 - CONSTRAINT: KOL/v2 fields are descriptive — they do NOT feed `sable_fit_score` and must not be treated as the gating score.
+
+---
+
+## Open after the 2026-08-27 relay work
+
+### The relay poller is scheduled NOWHERE
+
+F1 (SocialData metered by items returned) and F2 (one spend gate inside
+`SocialDataClient._request`) are merged, tested at 3247, and **dormant**. Nothing runs the
+SocialData path on a schedule: not the VPS, not laptop cron.
+
+They start mattering the day the relay poller gets a schedule. Until then no deploy is needed,
+and the code on the VPS at `/opt/sable/platform` is current at `5b97c43`.
+
+**Unverified:** that checkout was updated and its imports confirmed, but the live path was never
+executed. That venv has no pytest, and the one consumer was disabled the same day (below). So
+the update is import-verified, not execution-verified.
+
+### The alerts subsystem serves nobody, and both jobs are OFF
+
+`tig` is the **only** row in `alert_configs`, on production Postgres and on local SQLite. TIG
+was removed as a client on 2026-08-23. Both jobs kept running until 2026-08-27:
+
+- `sable-platform-alerts.timer` on the VPS: `systemctl disable --now` applied. It had delivered
+  nothing ever, because both destination fields are empty in production.
+- `0 */4 * * * sable-platform alerts evaluate` in laptop cron: commented out. It ran against
+  local SQLite where `tig` HAS a Telegram destination, and it **delivered 25 of 25 alerts since
+  Aug 1**, last on 2026-08-23. The destination is "Sable Ops", an internal 3-person group, so
+  this was noise and not a client disclosure.
+
+Before re-enabling either, clear or repoint `alert_configs.telegram_chat_id` for `tig`, and
+decide whether the subsystem should exist at all. Full record:
+`~/sable-workspace/features/megaloop_features_2026-08-26/deploy/TIG_ALERTS_SHUTDOWN.md`.
+
+### Data hygiene
+
+- `orgs` still lists `tig` with status **active**, four days after removal. There is also a
+  second row, `TIG`, status `trial`, created 2026-08-10. Decide what both should be.
+- **A live Telegram bot token sits in `crontab -l` in PLAINTEXT** as
+  `SABLE_TELEGRAM_BOT_TOKEN`. It has been printed to a terminal. Rotate it and move it into a
+  file that cron sources.
+
+### Two traps worth not rediscovering
+
+1. **`status` on an alert row does NOT record delivery.** Delivery sets `last_delivered_at`;
+   `status` stays `new`. Reading `status` alone reports "nothing delivered" when 25 were.
+2. **Read the command, never the `tig:` cron tag.** `backup`, `gc` and the RobotMoney poller
+   carry that tag and are org-agnostic, so they were left running. Only the alerts job was
+   TIG-scoped, and it was scoped by a positional argument, not by the tag.
+
+### Housekeeping
+
+`megafeat/B_F1` and `megafeat/B_F2` are merged into `main` and can be deleted.
