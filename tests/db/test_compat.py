@@ -208,3 +208,18 @@ def test_reject_checks_stripped_form(func):
 def test_plain_column_sql_unchanged(func, sqlite_sql, postgres_sql):
     assert func("run_date", "sqlite") == sqlite_sql
     assert func("run_date", "postgresql") == postgres_sql
+
+
+def test_ts_column_casts_on_postgres_and_never_on_sqlite():
+    """Every timestamp column in schema.py is TEXT, so comparing one against
+    now_offset_param() raises `operator does not exist: text > timestamp with time zone`
+    on PostgreSQL. ts_column casts it. SQLite must NEVER see ::timestamptz."""
+    from sable_platform.db.compat import ts_column
+
+    assert ts_column("started_at", "postgresql") == "NULLIF(started_at, '')::timestamptz"
+    assert ts_column("started_at", "sqlite") == "NULLIF(started_at, '')"
+    # the loop-B guard still applies: a bind parameter is not a column
+    with pytest.raises(ValueError):
+        ts_column(":cutoff", "postgresql")
+    with pytest.raises(ValueError):
+        ts_column(":cutoff", "sqlite")

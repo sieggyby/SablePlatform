@@ -464,7 +464,10 @@ def run_migration(
 
     # 2. Alembic schema creation (Postgres only)
     if is_pg:
-        target_url = str(target_engine.url)
+        # str(URL) renders the password as '***' (SQLAlchemy hides it by default), so
+        # Alembic then authenticates with the literal string '***'. Against any
+        # password-protected Postgres this fails before a single table is created.
+        target_url = target_engine.url.render_as_string(hide_password=False)
         log.info("Running Alembic upgrade head on target...")
         _run_alembic_upgrade(target_url)
 

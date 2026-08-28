@@ -9,7 +9,7 @@ import click
 
 log = logging.getLogger(__name__)
 
-from sable_platform.db.compat import get_dialect, now_offset_param
+from sable_platform.db.compat import get_dialect, now_offset_param, ts_column
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
     cancel_workflow_run,
@@ -253,7 +253,7 @@ def workflow_preflight(org_id: str | None) -> None:
                 f"""
                 SELECT COUNT(*) as cnt FROM workflow_runs
                 WHERE org_id=:oid AND status='running'
-                  AND started_at < {_cutoff}
+                  AND {ts_column('started_at', _dialect)} < {_cutoff}
                 """,
                 {"oid": oid, "offset": "-2 hours"},
             ).fetchone()

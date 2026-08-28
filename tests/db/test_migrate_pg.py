@@ -348,3 +348,30 @@ def test_run_alembic_upgrade_uses_packaged_script_location():
     script_location = cfg.get_main_option("script_location")
     assert script_location is not None
     assert script_location.endswith("sable_platform/alembic")
+
+
+def test_run_migration_passes_the_real_password_to_alembic(monkeypatch):
+    """str(URL) renders the password as '***' (SQLAlchemy hides it by default), so Alembic
+    authenticated with the literal string '***' and every password-protected Postgres
+    migration failed before a single table was created. Regression for migrate_pg.py:467."""
+    from sqlalchemy import create_engine
+
+    import sable_platform.db.migrate_pg as mp
+
+    seen: dict = {}
+    monkeypatch.setattr(mp, "_run_alembic_upgrade", lambda url: seen.setdefault("url", url))
+    monkeypatch.setattr(mp, "_check_target_empty", lambda *a, **k: (_ for _ in ()).throw(
+        _StopAfterAlembic()))
+
+    src = create_engine("sqlite:///:memory:")
+    tgt = create_engine("postgresql://postgres:s3cret@127.0.0.1:5432/db")
+    try:
+        mp.run_migration(src, tgt)
+    except _StopAfterAlembic:
+        pass
+    assert "s3cret" in seen["url"], f"password masked before Alembic: {seen['url']}"
+    assert "***" not in seen["url"]
+
+
+class _StopAfterAlembic(Exception):
+    """Stop run_migration right after the Alembic step; nothing later is under test."""

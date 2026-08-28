@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from sable_platform.db.compat import now_offset_param
+from sable_platform.db.compat import now_offset_param, ts_column
 from sable_platform.errors import (
     redact_error,
     SableError,
@@ -190,7 +190,11 @@ def mark_timed_out_runs(conn: Connection, hours: int = 6) -> list[str]:
         text(
             "SELECT run_id FROM workflow_runs"
             " WHERE status='running'"
-            f"   AND started_at < {_cutoff}"
+            # An empty or NULL started_at on a RUNNING row is a data fault, and NULLIF
+            # alone would make it never time out while idx_workflow_runs_active_lock still
+            # counts it as active, blocking that workflow forever. Treat it as timed out.
+            f"   AND (NULLIF(started_at, '') IS NULL"
+            f"        OR {ts_column('started_at', conn.dialect.name)} < {_cutoff})"
         ),
         {"offset": f"-{hours} hours"},
     ).fetchall()

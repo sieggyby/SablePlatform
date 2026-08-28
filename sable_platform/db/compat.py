@@ -23,6 +23,20 @@ _SUPPORTED_DIALECTS = ("sqlite", "postgresql")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+_COLREF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def _check_column_ref(value: str, kind: str = "column") -> None:
+    """A plain or table-qualified column name, and nothing else.
+
+    ``ts_column`` interpolates its argument into SQL with an f-string, so rejecting bind
+    parameters (``_check_column``) is not a strong enough guard for a future caller.
+    ``journey.py`` legitimately passes ``t.expires_at``, so one dotted qualifier is allowed.
+    """
+    if not isinstance(value, str) or not _COLREF_RE.match(value):
+        raise ValueError(f"{kind} must be a plain or table-qualified column, got {value!r}")
+
+
 def _check_identifier(value: str, kind: str) -> None:
     if not isinstance(value, str) or not _IDENT_RE.match(value):
         raise ValueError(f"{kind} must be a plain SQL identifier, got {value!r}")
@@ -155,6 +169,33 @@ def now_offset(offset: str, dialect: str) -> str:
     if dialect == "sqlite":
         return f"datetime('now', '{offset}')"
     return f"(NOW() + INTERVAL '{offset}')"
+
+
+def ts_column(column: str, dialect: str) -> str:
+    """A TEXT timestamp *column*, made comparable to a real timestamp.
+
+    EVERY timestamp column in ``schema.py`` is declared ``Text``. PostgreSQL has no
+    ``text > timestamp with time zone`` operator, so comparing one against
+    :func:`now_offset_param` raises, and the check it guards never fires. Cast it, exactly
+    as :func:`hours_since` and :func:`seconds_since` already do.
+
+    SQLite compares text lexicographically and must NOT receive ``::timestamptz``, which is
+    not valid there.
+
+    Empty strings are excluded with ``NULLIF``. Verified against a live PostgreSQL 16: a
+    SINGLE row holding ``''`` raises ``invalid input syntax for type timestamp with time
+    zone`` and takes the whole query down, which is the very symptom this function exists to
+    remove. ``NULLIF`` is applied on BOTH dialects so they agree: without it SQLite sorts
+    ``''`` below every real timestamp and reports such a row as arbitrarily old.
+
+    A non-empty but unparseable value still raises. That is deliberate. It is a data-integrity
+    fault and should be loud, not silently treated as NULL.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    if dialect == "sqlite":
+        return f"NULLIF({column}, '')"
+    return f"NULLIF({column}, '')::timestamptz"
 
 
 def now_offset_param(param_name: str, dialect: str) -> str:

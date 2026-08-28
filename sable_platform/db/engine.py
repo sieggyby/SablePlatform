@@ -62,9 +62,33 @@ def get_engine(url: str | None = None) -> Engine:
 
         if engine.dialect.name == "sqlite":
             _register_sqlite_pragmas(engine)
+        else:
+            _pin_utc_session(engine)
 
         _engine_cache[db_url] = engine
         return engine
+
+
+def _pin_utc_session(engine: Engine) -> None:
+    """Force every PostgreSQL session to UTC.
+
+    Timestamps are stored as naive TEXT written in UTC. PostgreSQL resolves a naive string
+    cast to ``timestamptz`` using the SESSION timezone, so the SAME stored value becomes a
+    different instant per session. Measured on PostgreSQL 16 against ``2026-08-27 12:00:00``:
+
+        UTC              -> 2026-08-27 12:00:00+00
+        America/Los_...  -> 2026-08-27 12:00:00-07
+        Asia/Tokyo       -> 2026-08-27 12:00:00+09
+
+    A server defaulting to a non-UTC zone therefore shifts every elapsed-time check, so a
+    stuck-run alert fires hours early or late. The container CI runs in ``Etc/UTC`` and hides
+    this completely.
+    """
+    @event.listens_for(engine, "connect")
+    def _set_utc(dbapi_conn, connection_record):  # noqa: ARG001
+        cur = dbapi_conn.cursor()
+        cur.execute("SET TIME ZONE 'UTC'")
+        cur.close()
 
 
 def _register_sqlite_pragmas(engine: Engine) -> None:

@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
-from sable_platform.db.compat import days_between
+from sable_platform.db.compat import days_between, ts_column
 
 
 def get_entity_journey(conn: Connection, entity_id: str) -> list[dict]:
@@ -142,7 +142,8 @@ def entity_funnel(conn: Connection, org_id: str) -> dict:
             " FROM entities e"
             " JOIN entity_tags t ON e.entity_id = t.entity_id"
             " WHERE e.org_id=:org_id AND t.tag='cultist_candidate'"
-            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > CURRENT_TIMESTAMP)"
+            f"   AND t.is_current=1 AND (t.expires_at IS NULL"
+            f"    OR {ts_column('t.expires_at', conn.dialect.name)} > CURRENT_TIMESTAMP)"
         ),
         {"org_id": org_id},
     ).fetchone()[0]
@@ -153,7 +154,8 @@ def entity_funnel(conn: Connection, org_id: str) -> dict:
             " FROM entities e"
             " JOIN entity_tags t ON e.entity_id = t.entity_id"
             " WHERE e.org_id=:org_id AND t.tag='top_contributor'"
-            "   AND t.is_current=1 AND (t.expires_at IS NULL OR t.expires_at > CURRENT_TIMESTAMP)"
+            f"   AND t.is_current=1 AND (t.expires_at IS NULL"
+            f"    OR {ts_column('t.expires_at', conn.dialect.name)} > CURRENT_TIMESTAMP)"
         ),
         {"org_id": org_id},
     ).fetchone()[0]

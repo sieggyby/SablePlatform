@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, ORG_NOT_FOUND
+from sable_platform.db.compat import ts_column
 
 
 def add_to_watchlist(
@@ -78,8 +79,8 @@ def _take_snapshot(conn: Connection, org_id: str, entity_id: str) -> None:
         text("""
         SELECT tag FROM entity_tags
         WHERE entity_id=:entity_id AND is_current=1
-          AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-        """),
+          AND (expires_at IS NULL OR {ts} > CURRENT_TIMESTAMP)
+        """.format(ts=ts_column("expires_at", conn.dialect.name))),
         {"entity_id": entity_id},
     ).fetchall()
     tags = [r["tag"] for r in tag_rows]

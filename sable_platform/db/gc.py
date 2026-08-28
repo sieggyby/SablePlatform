@@ -8,7 +8,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.compat import now_offset_param
+from sable_platform.db.compat import now_offset_param, ts_column
 
 
 def run_gc(conn: Connection, retention_days: int = 90) -> dict:
@@ -17,7 +17,8 @@ def run_gc(conn: Connection, retention_days: int = 90) -> dict:
     Safe to run on an empty DB (returns all zeros).
     """
     threshold = f"-{retention_days} days"
-    _cutoff = now_offset_param("threshold", conn.dialect.name)
+    _d = conn.dialect.name
+    _cutoff = now_offset_param("threshold", _d)
     counts: dict[str, int] = {}
 
     # Identify terminal runs to purge (need IDs for FK-safe deletion order)
@@ -26,7 +27,7 @@ def run_gc(conn: Connection, retention_days: int = 90) -> dict:
             text(
                 "SELECT run_id FROM workflow_runs"
                 " WHERE status IN ('completed', 'failed', 'cancelled')"
-                f"   AND completed_at < {_cutoff}"
+                f"   AND {ts_column('completed_at', _d)} < {_cutoff}"
             ),
             {"threshold": threshold},
         ).fetchall()
@@ -63,7 +64,7 @@ def run_gc(conn: Connection, retention_days: int = 90) -> dict:
     # Also purge orphan events older than threshold (events for non-terminal runs)
     cur = conn.execute(
         text(
-            f"DELETE FROM workflow_events WHERE created_at < {_cutoff}"
+            f"DELETE FROM workflow_events WHERE {ts_column('created_at', _d)} < {_cutoff}"
             " AND run_id NOT IN (SELECT run_id FROM workflow_runs)"
         ),
         {"threshold": threshold},
@@ -73,7 +74,7 @@ def run_gc(conn: Connection, retention_days: int = 90) -> dict:
 
     # Cost events — all rows older than threshold are deleted (no rollup implemented)
     cur = conn.execute(
-        text(f"DELETE FROM cost_events WHERE created_at < {_cutoff}"),
+        text(f"DELETE FROM cost_events WHERE {ts_column('created_at', _d)} < {_cutoff}"),
         {"threshold": threshold},
     )
     counts["cost_events"] = cur.rowcount
@@ -83,7 +84,7 @@ def run_gc(conn: Connection, retention_days: int = 90) -> dict:
         text(
             "DELETE FROM alerts"
             " WHERE status = 'resolved'"
-            f"   AND created_at < {_cutoff}"
+            f"   AND {ts_column('created_at', _d)} < {_cutoff}"
         ),
         {"threshold": threshold},
     )

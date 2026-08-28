@@ -9,7 +9,8 @@ log = logging.getLogger(__name__)
 
 import click
 
-from sable_platform.db.compat import days_since_int, get_dialect, now_offset_param
+from sable_platform.db.compat import (days_since_int, get_dialect,
+                                      now_offset_param, ts_column)
 from sable_platform.db.connection import get_db
 from sable_platform.db.alerts import list_alerts
 from sable_platform.db.cost import RECORDED_LEDGER_SPEND_BASIS, get_weekly_spend
@@ -62,7 +63,7 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
                 f"""
                 SELECT COUNT(*) as cnt FROM workflow_runs
                 WHERE org_id=:oid AND status='running'
-                  AND started_at < {_cutoff}
+                  AND {ts_column('started_at', _dialect)} < {_cutoff}
                 """,
                 {"oid": oid, "offset": "-2 hours"},
             ).fetchone()
