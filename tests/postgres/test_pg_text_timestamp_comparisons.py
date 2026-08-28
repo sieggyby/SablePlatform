@@ -159,38 +159,70 @@ def test_postgres_sessions_are_pinned_to_utc(postgres_engine, postgres_db_url):
 
 
 def test_an_iso_expires_at_expires_on_the_same_day(postgres_wf_db):
-    """The active-tag predicate compared TEXT to CAST(CURRENT_TIMESTAMP AS TEXT). Stored
-    values mix formats: some code writes "YYYY-MM-DD HH:MM:SS", other code writes ISO with a
-    "T". "T" (0x54) sorts above " " (0x20), so a tag that expired EARLIER the same day
-    compared as LATER and stayed active for the rest of the day. Measured on PostgreSQL 16:
-        '2026-08-27T10:00:00' > '2026-08-27 23:00:00'  ->  true  as text
-        the same two values as timestamps              ->  false
+    """AUDIT CORRECTION. My first version used a 2020 date, which the OLD text compare also
+    rejected, so it passed against broken code and proved nothing. The bug is SAME-DAY only:
+    "T" (0x54) sorts above " " (0x20), so an ISO value expiring earlier today compares as
+    later than a space-separated "now" and the tag stays active for the rest of the day.
+
+        '2026-08-27T10:00:00' > '2026-08-27 23:00:00'   ->  true   as text
+        '2020-01-01T10:00:00' > CAST(NOW() AS TEXT)     ->  false  <- the useless case
     """
+    from datetime import datetime, timedelta, timezone
+
     from sable_platform.db.tags import get_active_tags
+
+    now = datetime.now(timezone.utc)
+    expired_iso = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")   # earlier TODAY
+    future_iso = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    # the text compare must genuinely get this wrong, or the test is not testing the bug
+    assert expired_iso > now.strftime("%Y-%m-%d %H:%M:%S"), "not the same-day case"
 
     postgres_wf_db.execute("INSERT INTO entities (entity_id, org_id, display_name)"
                            " VALUES (?, ?, ?)", ("e_iso", "wf_org", "E"))
-    postgres_wf_db.execute(
-        "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
-        " VALUES (?, ?, ?, ?)", ("e_iso", "stale", 1, "2020-01-01T10:00:00"))
-    postgres_wf_db.execute(
-        "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
-        " VALUES (?, ?, ?, ?)", ("e_iso", "live", 1, "2099-01-01T10:00:00"))
+    for tag, exp in (("stale", expired_iso), ("live", future_iso)):
+        postgres_wf_db.execute(
+            "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
+            " VALUES (?, ?, ?, ?)", ("e_iso", tag, 1, exp))
     postgres_wf_db.commit()
     tags = {r["tag"] for r in get_active_tags(postgres_wf_db, "e_iso")}
     assert "live" in tags
-    assert "stale" not in tags, "an ISO-format expiry outlived its own expiry date"
+    assert "stale" not in tags, "an ISO expiry outlived its own expiry time, same day"
 
 
 def test_an_empty_expires_at_does_not_kill_the_tag_expiry_alert(postgres_wf_db):
-    """days_until cast expires_at without NULLIF, so ONE tag holding '' raised and the
-    `except` at alert_checks.py swallowed it: the org got no expiry alerts at all."""
+    """AUDIT CORRECTION x2. My first version inserted tag='cultist' while the query filters
+    'cultist_candidate', so it never touched the code path, and it asserted `is not None`,
+    which a swallowed failure satisfies because `[] is not None`. Both are rubber stamps.
+
+    days_until cast expires_at without NULLIF, so ONE row holding '' raised, the `except` at
+    alert_checks.py swallowed it, and the org got NO expiry alerts at all -- including for
+    the genuinely expiring tag sitting beside it."""
+    from datetime import datetime, timedelta, timezone
+
     from sable_platform.workflows.alert_checks import _check_cultist_tag_expiring
 
-    postgres_wf_db.execute("INSERT INTO entities (entity_id, org_id, display_name)"
-                           " VALUES (?, ?, ?)", ("e_empty", "wf_org", "E"))
-    postgres_wf_db.execute(
-        "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
-        " VALUES (?, ?, ?, ?)", ("e_empty", "cultist", 1, ""))
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    for eid, exp in (("e_empty", ""), ("e_real", soon)):
+        postgres_wf_db.execute("INSERT INTO entities (entity_id, org_id, display_name)"
+                               " VALUES (?, ?, ?)", (eid, "wf_org", "E"))
+        postgres_wf_db.execute(
+            "INSERT INTO entity_tags (entity_id, tag, is_current, expires_at)"
+            " VALUES (?, ?, ?, ?)", (eid, "cultist_candidate", 1, exp))
     postgres_wf_db.commit()
-    assert _check_cultist_tag_expiring(postgres_wf_db, "wf_org") is not None
+    # assert the alert FIRES for the real row, not merely that a list came back
+    created = _check_cultist_tag_expiring(postgres_wf_db, "wf_org")
+    assert created, "the empty row killed the whole expiry check, alert never fired"
+
+
+def test_days_between_survives_an_empty_completed_at(postgres_wf_db):
+    """days_between cast both columns raw, so a completed action with completed_at=''
+    raised inside `actions summary`."""
+    from sqlalchemy import text
+
+    from sable_platform.db.compat import days_between, get_dialect
+
+    expr = days_between("completed_at", "created_at", get_dialect(postgres_wf_db))
+    row = postgres_wf_db.execute(
+        text(f"SELECT {expr} AS d FROM (SELECT ''::text AS completed_at,"
+             f" '2020-01-01 00:00:00'::text AS created_at) s")).fetchone()
+    assert row["d"] is None          # NULL, not a raise

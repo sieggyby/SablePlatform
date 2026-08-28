@@ -137,7 +137,8 @@ def days_between(col_a: str, col_b: str, dialect: str) -> str:
     _check_dialect(dialect)
     if dialect == "sqlite":
         return f"julianday({col_a}) - julianday({col_b})"
-    return f"EXTRACT(EPOCH FROM ({col_a}::timestamptz - {col_b}::timestamptz)) / 86400.0"
+    return (f"EXTRACT(EPOCH FROM (NULLIF({col_a}, '')::timestamptz"
+            f" - NULLIF({col_b}, '')::timestamptz)) / 86400.0")
 
 
 def days_until(column: str, dialect: str) -> str:
