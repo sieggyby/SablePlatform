@@ -1,0 +1,12 @@
+-- 091_text_timestamp_type_parity.sql
+--
+-- SQLite has nothing to do here, and this file exists to say so rather than leave a gap in
+-- the numbering.
+--
+-- The Alembic peer, c1d2e3f4a091_text_timestamp_type_parity.py, converts 19 columns from
+-- `timestamp with time zone` to TEXT on PostgreSQL. `schema.py` always declared them Text
+-- and SQLite always stored them that way, so PostgreSQL was the outlier. Migration 090
+-- already canonicalized their values on this dialect.
+--
+-- DEFECTS_FOUND item 9.
+UPDATE schema_version SET version = 91 WHERE version < 91;

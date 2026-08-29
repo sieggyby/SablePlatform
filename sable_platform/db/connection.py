@@ -109,6 +109,7 @@ _MIGRATIONS = [
     ("088_reply_outcomes_posted_text.sql", 88),
     ("089_cost_events_vendor_units.sql", 89),
     ("090_canonical_text_timestamps.sql", 90),
+    ("091_text_timestamp_type_parity.sql", 91),
 ]
 
 

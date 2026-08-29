@@ -143,47 +143,81 @@ def test_a_text_max_picks_the_wrong_row_mixed_and_the_right_one_canonical(postgr
     assert canonical_max == "2026-07-30T23:00:00Z"
 
 
-# The 12 columns ``schema.py`` declares as ``Text`` that PostgreSQL actually stores as
-# ``timestamp with time zone``. Measured against a database built by the migration chain.
-_TYPE_DIVERGENCE = {
+# The 19 columns that USED to disagree: ``schema.py`` said ``Text`` and PostgreSQL stored
+# ``timestamp with time zone``. Migration 091 converts them. Kept here so the test names
+# what it is checking against rather than asserting an empty set with no reference point.
+_FORMER_TYPE_DIVERGENCE = {
     ("api_tokens", "created_at"),
+    ("api_tokens", "expires_at"),
+    ("api_tokens", "last_used_at"),
+    ("api_tokens", "revoked_at"),
     ("discord_burn_blocklist", "blocked_at"),
     ("discord_burn_optins", "opted_in_at"),
     ("discord_burn_random_log", "roasted_at"),
     ("discord_invite_snapshot", "captured_at"),
     ("discord_member_admit", "joined_at"),
     ("discord_message_observations", "captured_at"),
+    ("discord_message_observations", "posted_at"),
     ("discord_peer_roast_flags", "flagged_at"),
+    ("discord_peer_roast_tokens", "consumed_at"),
     ("discord_peer_roast_tokens", "granted_at"),
     ("discord_team_inviters", "added_at"),
     ("discord_user_observations", "computed_at"),
+    ("discord_user_observations", "window_end"),
+    ("discord_user_observations", "window_start"),
     ("discord_user_vibes", "inferred_at"),
 }
 
 
-def test_the_schema_py_type_divergence_is_exactly_these_twelve_columns(postgres_engine):
-    """A pin, not a pass. DEFECTS_FOUND item 9.
+def test_schema_py_and_postgresql_agree_on_every_declared_text_column(postgres_engine):
+    """DEFECTS_FOUND item 9, closed by migration 091.
 
     ``schema.py`` opens with "This module is the single source of truth for the platform
-    schema". For these twelve columns that is false: it says ``Text`` and PostgreSQL says
-    ``timestamp with time zone``. A raw ``text()`` read therefore returns ``datetime`` on
-    PostgreSQL and ``str`` on SQLite for the same column, which is a dual-dialect divergence
-    in the RETURN VALUE.
+    schema". It was wrong about 19 columns: it said ``Text`` and PostgreSQL stored
+    ``timestamp with time zone``. Because this codebase reads through raw ``text()``
+    queries, which bypass the SQLAlchemy type system, the same column handed back a ``str``
+    on SQLite and a ``datetime`` on PostgreSQL.
 
-    Migration 090 skips them deliberately: a real timestamp type needs no canonical spelling,
-    and ``SET DEFAULT to_char(...)`` on one is a type error that aborts the migration. This
-    test exists so the set cannot grow without someone seeing it.
+    This reads the SERVER and compares it to ``schema.py``, so it fails whichever side
+    drifts.
     """
+    from sqlalchemy import Text
+
+    from sable_platform.db import schema as sa_schema
+
     with postgres_engine.connect() as conn:
-        rows = conn.execute(text(
-            "SELECT table_name, column_name FROM information_schema.columns"
-            " WHERE table_schema = 'public' AND data_type <> 'text'"
-            "   AND column_default IS NOT NULL AND column_default LIKE '%now()%'"
-        )).fetchall()
-    found = {(r[0], r[1]) for r in rows}
-    assert found == _TYPE_DIVERGENCE, (
-        f"the divergence moved. new: {sorted(found - _TYPE_DIVERGENCE)}, "
-        f"gone: {sorted(_TYPE_DIVERGENCE - found)}")
+        actual = {(r[0], r[1]): r[2] for r in conn.execute(text(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns"
+            " WHERE table_schema = 'public'"))}
+
+    offenders = []
+    declared_text = 0
+    for table in sa_schema.metadata.sorted_tables:
+        for col in table.columns:
+            if not isinstance(col.type, Text):
+                continue
+            key = (table.name, col.name)
+            if key not in actual:
+                continue
+            declared_text += 1
+            if actual[key] != "text":
+                offenders.append(f"{table.name}.{col.name} is {actual[key]}")
+    assert not offenders, f"{len(offenders)} columns disagree with schema.py: {offenders[:5]}"
+    # The power check. Zero offenders also describes a schema with no TEXT columns at all.
+    assert declared_text > 500, f"only {declared_text} TEXT columns compared"
+
+
+def test_every_column_migration_091_names_is_now_text(postgres_engine):
+    """The presence half. The test above passes if the columns were DELETED."""
+    with postgres_engine.connect() as conn:
+        actual = {(r[0], r[1]): r[2] for r in conn.execute(text(
+            "SELECT table_name, column_name, data_type FROM information_schema.columns"
+            " WHERE table_schema = 'public'"))}
+    missing = [f"{t}.{c}" for t, c in _FORMER_TYPE_DIVERGENCE if (t, c) not in actual]
+    assert not missing, f"columns vanished rather than converted: {missing}"
+    wrong = {f"{t}.{c}": actual[(t, c)] for t, c in _FORMER_TYPE_DIVERGENCE
+             if actual[(t, c)] != "text"}
+    assert not wrong, wrong
 
 
 def _upgrade_to(database_url: str, revision: str) -> None:
@@ -366,3 +400,77 @@ def test_the_pre_16_validity_fallback_answers_the_same_as_pg_input_is_valid(post
             assert fallback == builtin, (
                 f"fallback and pg_input_is_valid disagree on {value!r}: "
                 f"{fallback} vs {builtin}")
+
+
+def test_migration_091_preserves_the_instant_under_a_non_utc_session(postgres_db_url):
+    """The known-answer case for the type conversion.
+
+    A `timestamptz` holds an instant, and rendering it to text is where a session timezone
+    can silently move it. The conversion goes through `AT TIME ZONE 'UTC'`, so it must give
+    the same answer whatever the session is set to. Seeded at revision 090, where the column
+    is still `timestamptz`, then converted.
+    """
+    from sqlalchemy import create_engine
+
+    _upgrade_to(postgres_db_url, "b0c1d2e3f090")
+    engine = create_engine(postgres_db_url)
+    with engine.begin() as conn:
+        conn.execute(text("SET TIME ZONE 'Asia/Tokyo'"))
+        stored_type = conn.execute(text(
+            "SELECT data_type FROM information_schema.columns"
+            " WHERE table_name='api_tokens' AND column_name='created_at'")).scalar()
+        assert stored_type == "timestamp with time zone", (
+            f"the column is already {stored_type}; this test is not exercising a conversion")
+        conn.execute(text(
+            "INSERT INTO api_tokens (token_id, token_hash, label, operator_id, created_by,"
+            " created_at, enabled, scopes_json, org_scopes_json)"
+            " VALUES ('t1','h','l','op','cb', TIMESTAMPTZ '2026-07-30 23:00:00+00',"
+            "         1, '[]', '[]')"))
+    engine.dispose()
+
+    _upgrade_to(postgres_db_url, "c1d2e3f4a091")
+
+    engine = create_engine(postgres_db_url)
+    with engine.connect() as conn:
+        conn.execute(text("SET TIME ZONE 'America/Los_Angeles'"))
+        got = conn.execute(text(
+            "SELECT created_at FROM api_tokens WHERE token_id='t1'")).scalar()
+        now_type = conn.execute(text(
+            "SELECT data_type FROM information_schema.columns"
+            " WHERE table_name='api_tokens' AND column_name='created_at'")).scalar()
+    engine.dispose()
+    assert now_type == "text", now_type
+    assert isinstance(got, str), f"still not a str: {type(got).__name__}"
+    assert got == "2026-07-30T23:00:00Z", got
+
+
+def test_token_validation_no_longer_raises_on_postgresql(postgres_conn):
+    """DEFECTS_FOUND item 9, the CRITICAL half, end to end.
+
+    Before migration 091 `expires_at` came back as a `datetime` on PostgreSQL and
+    `validate_token` raised for every token that carried an expiry. The suite never saw it
+    because the suite runs on SQLite. This drives the real function against a real
+    PostgreSQL.
+    """
+    import datetime as _dt
+
+    from sable_platform.api.tokens import issue_token, verify_token
+
+    mint = dict(operator_id="op", created_by="cb", org_scopes=["org1"],
+                scopes=["read_only"])
+    # A CompatConnection, because `verify_token` reads `row["enabled"]` and a bare
+    # SQLAlchemy row is a tuple. `issue_token` commits for itself, so no outer transaction.
+    conn = postgres_conn
+    live_id, live_raw = issue_token(conn, label="live", expires_in_days=7, **mint)
+    gone_id, gone_raw = issue_token(conn, label="expired", expires_in_days=7, **mint)
+    past = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(text("UPDATE api_tokens SET expires_at = :e WHERE token_id = :t"),
+                 {"e": past, "t": gone_id})
+    conn.commit()
+
+    # Pre-091 this RAISED rather than returning either answer. Measured against
+    # PostgreSQL 16: '<=' not supported between instances of 'datetime.datetime' and 'str'.
+    assert verify_token(conn, live_raw) is not None, "a live token was rejected"
+    assert verify_token(conn, gone_raw) is None, "an expired token was accepted"
+    assert live_id and gone_id

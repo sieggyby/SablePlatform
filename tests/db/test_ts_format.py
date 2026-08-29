@@ -206,11 +206,10 @@ def test_migration_090_is_idempotent():
 # ---------------------------------------------------------------------------
 # The drift guard on the WRITE side
 # ---------------------------------------------------------------------------
-# `api_tokens` is the one file that keeps a bare CURRENT_TIMESTAMP, and the reason is in
-# the file: its `created_at`, `last_used_at`, `revoked_at` and `expires_at` are
-# `timestamp with time zone` on PostgreSQL, so writing the canonical TEXT expression into
-# one is a hard error. DEFECTS_FOUND item 9.
-_CURRENT_TIMESTAMP_ALLOWED = {"sable_platform/api/tokens.py"}
+# Nothing is allowed a bare CURRENT_TIMESTAMP any more. `api/tokens.py` was the one
+# exception until migration 091; it now binds a canonical Python timestamp, which is the
+# one form that is correct both before and after that migration.
+_CURRENT_TIMESTAMP_ALLOWED: set[str] = set()
 
 
 def test_no_module_writes_a_bare_current_timestamp():

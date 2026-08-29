@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.ts_format import ISO_Z_FORMAT
+from sable_platform.db.ts_format import ISO_Z_FORMAT, utc_now_iso
 
 
 # Token format constants.
@@ -243,24 +243,27 @@ def _is_expired(value, *, now: _dt.datetime | None = None) -> bool:
     return moment <= now
 
 
-# `api_tokens` keeps its bare CURRENT_TIMESTAMP, deliberately. DEFECTS_FOUND item 9:
-# `created_at`, `last_used_at` and `revoked_at` are `timestamp with time zone` on
-# PostgreSQL while `schema.py` declares them `Text`. Writing the canonical TEXT expression
-# into one is a hard error, measured:
-#     column "ts" is of type timestamp with time zone but expression is of type text
-# CURRENT_TIMESTAMP is the right thing for a real timestamp column. What is wrong here is
-# the type divergence, and that is a schema fix, not a call-site one.
+# `api_tokens` binds a canonical Python timestamp rather than using SQL. That is the one
+# form that is correct BOTH before and after migration 091.
+#
+# DEFECTS_FOUND item 9: these columns are `timestamp with time zone` on PostgreSQL while
+# `schema.py` declares them `Text`. Migration 091 converts them, but the code and the
+# migration ship together and a deployment can run either first.
+#
+#   - `CURRENT_TIMESTAMP` writes the SPACE form, which puts two spellings back in a TEXT
+#     column.
+#   - `to_char(now() ...)` is TEXT and a timestamptz column rejects it outright:
+#         column "ts" is of type timestamp with time zone but expression is of type text
+#   - a canonical `...T...Z` string works on both. PostgreSQL coerces it to the right
+#     instant under any session timezone, measured, and a TEXT column stores it verbatim.
 
 
 def touch_last_used(conn: Connection, token_id: str) -> None:
     """Update last_used_at. Best-effort — failure does not block requests."""
     try:
         conn.execute(
-            text(
-                "UPDATE api_tokens SET last_used_at=CURRENT_TIMESTAMP"
-                " WHERE token_id=:tid"
-            ),
-            {"tid": token_id},
+            text("UPDATE api_tokens SET last_used_at=:now WHERE token_id=:tid"),
+            {"now": utc_now_iso(), "tid": token_id},
         )
         conn.commit()
     except Exception:  # noqa: BLE001
@@ -272,9 +275,9 @@ def revoke_token(conn: Connection, token_id: str) -> bool:
     result = conn.execute(
         text(
             "UPDATE api_tokens SET enabled=0,"
-            " revoked_at=CURRENT_TIMESTAMP WHERE token_id=:tid AND enabled=1"
+            " revoked_at=:now WHERE token_id=:tid AND enabled=1"
         ),
-        {"tid": token_id},
+        {"now": utc_now_iso(), "tid": token_id},
     )
     conn.commit()
     return (result.rowcount or 0) > 0
