@@ -145,9 +145,9 @@ def list_deck_candidates(
     reuses this function."""
     rows = conn.execute(
         _sa_text(
-            f"SELECT c.id, c.org_id, c.kind, c.status, c.target_handle, c.payload_json, "
-            f"  c.media_content_id, c.source, c.score, c.score_reason, c.tell_score, "
-            f"  c.dedupe_key, c.expires_at, c.created_at "
+            "SELECT c.id, c.org_id, c.kind, c.status, c.target_handle, c.payload_json, "
+            "  c.media_content_id, c.source, c.score, c.score_reason, c.tell_score, "
+            "  c.dedupe_key, c.expires_at, c.created_at "
             "FROM content_candidates c "
             "LEFT JOIN content_deck_operator_state s "
             "  ON s.candidate_id = c.id AND s.operator_handle = :op "

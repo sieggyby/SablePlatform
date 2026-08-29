@@ -254,3 +254,82 @@ def date_of_iso_text(column: str, dialect: str) -> str:
     if dialect == "sqlite":
         return f"date(substr({column}, 1, 19))"
     return f"({column}::timestamp)::date"
+
+
+# ---------------------------------------------------------------------------
+# Whole-comparison helpers (both operands, so the two sides cannot disagree)
+# ---------------------------------------------------------------------------
+
+def ts_before(column: str, param_name: str, dialect: str) -> str:
+    """SQL predicate: TEXT timestamp *column* is strictly earlier than now plus an offset.
+
+    ``ts_column`` makes the LEFT side comparable and leaves the right side to the caller.
+    That split is the bug this helper closes. A caller that pairs ``ts_column`` with a
+    Python-formatted cutoff string gets a TEXT comparison on SQLite, and a TEXT comparison
+    is decided by the separator character before it ever reaches the clock.
+
+    Measured on SQLite. Rows at ``'2026-07-30 12:00:00'`` and ``'2026-07-30T12:00:00Z'`` are
+    the same instant, four hours AFTER a ``'2026-07-30T08:00:00Z'`` cutoff, so both must
+    survive. Space (0x20) sorts below ``T`` (0x54), so the space-form row compares below the
+    cutoff and is deleted. Reformatting the cutoff to space-form only swaps the victim: the
+    ``T`` row then sorts above every cutoff and is never deleted. ``julianday`` on both sides
+    returns the right answer for both formats.
+
+    The mixed-format case is not hypothetical. ``relay_tweets.fetched_at`` is written by
+    ``relay/db.py:576`` through the ``func.now()`` server default and by ``relay/db.py:3172``
+    through ``_utc_now_iso()``, so that one column holds both spellings.
+
+    *param_name* binds a SQLite-style offset modifier such as ``'-30 days'``, exactly as
+    :func:`now_offset_param` expects. Pass the offset, never a formatted timestamp.
+
+    ``NULLIF`` keeps an empty string out of the comparison on both dialects: on PostgreSQL a
+    single ``''`` raises and takes the whole query down. A NULL comparison is NULL, so an
+    empty value is neither before nor after the cutoff. Decide that case explicitly at the
+    call site when it matters; :func:`stuck_run_predicate` is the worked example.
+
+    SQLite limit, measured: ``julianday`` parses ``'...T08:00:00Z'``, ``'...+00:00'``, and a
+    fractional part, but returns NULL for a two-digit offset like ``'+00'``. PostgreSQL
+    writes exactly that spelling. A SQLite file never holds a PostgreSQL-written value, so
+    this costs nothing today. It is a real edge and it is written down rather than assumed.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    _check_identifier(param_name, "parameter name")
+    if dialect == "sqlite":
+        return f"julianday(NULLIF({column}, '')) < julianday('now', :{param_name})"
+    return f"NULLIF({column}, '')::timestamptz < (NOW() + (:{param_name})::interval)"
+
+
+def ts_at_or_after(column: str, param_name: str, dialect: str) -> str:
+    """SQL predicate: TEXT timestamp *column* is at or after now plus an offset.
+
+    The mirror of :func:`ts_before`, for a retention window expressed as "still inside".
+    ``gc_orphan_chats`` needs it: the chat survives while one message is newer than the
+    cutoff, so the TEXT-comparison error there deletes a chat that a live message still
+    references rather than merely deleting a message early.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    _check_identifier(param_name, "parameter name")
+    if dialect == "sqlite":
+        return f"julianday(NULLIF({column}, '')) >= julianday('now', :{param_name})"
+    return f"NULLIF({column}, '')::timestamptz >= (NOW() + (:{param_name})::interval)"
+
+
+def stuck_run_predicate(column: str, param_name: str, dialect: str) -> str:
+    """SQL predicate: a run is stuck, counting a missing start time as stuck.
+
+    Four sites ask the same question of ``workflow_runs`` and two of them used to answer it
+    differently. ``mark_timed_out_runs`` and ``_check_stuck_runs`` carried the
+    ``NULLIF(...) IS NULL`` disjunct; ``dashboard_cmds`` and ``workflow_cmds`` did not, so an
+    empty ``started_at`` was reported as stuck by the alert path and hidden by both operator
+    views. One helper, so the four cannot drift again.
+
+    An empty or NULL ``started_at`` on a RUNNING row is a data fault, and treating it as
+    healthy is the dangerous direction: ``idx_workflow_runs_active_lock`` still counts the
+    row as active, so the workflow it belongs to stays blocked with nothing reporting it.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    return (f"(NULLIF({column}, '') IS NULL"
+            f" OR {ts_before(column, param_name, dialect)})")

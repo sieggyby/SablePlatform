@@ -7,7 +7,6 @@ import uuid
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
-from sqlalchemy.exc import IntegrityError as SAIntegrityError
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from sable_platform.db.audit import log_audit

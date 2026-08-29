@@ -46,3 +46,29 @@ filterwarnings = [
     # real relay warning. Drop when discord.py bumps past the fix.
     "ignore:'count' is passed as positional argument:DeprecationWarning:discord.utils",
 ]
+
+[tool.ruff]
+# The lint job ran with NO ruff config and an UNPINNED ruff. Ruff's default rule set is not
+# stable across releases: the same tree reported 59 findings under 0.15.9 and 1421 under
+# 0.16.5, because 0.16 turned on UP, I, BLE, S, RUF and more by default. A dependency
+# release moved the gate, not a commit. Both halves of that are fixed here -- the rule set
+# is written down, and .github/workflows/ci.yml pins the version.
+target-version = "py311"
+exclude = [
+    # Vendored third-party source. Not ours to restyle, and 14 of the original findings
+    # were in this one file.
+    "sable_platform/_vendor",
+]
+
+[tool.ruff.lint]
+# Ruff's own pre-0.16 default, stated explicitly: pyflakes plus the pycodestyle errors that
+# catch real faults. Everything ruff 0.16 added on top is style modernization
+# (UP045/UP006/UP017 alone are 1019 of the 1415) and is separate, opt-in work -- see
+# `ruff check --select UP,I sable_platform/` for the standing list.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Alembic writes `import sqlalchemy as sa` into every revision from its own template,
+# whether or not that revision uses it. Deleting it from one file makes that file differ
+# from the other ninety for no gain.
+"sable_platform/alembic/versions/*.py" = ["F401"]

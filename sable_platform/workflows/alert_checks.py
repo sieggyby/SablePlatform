@@ -8,7 +8,8 @@ import sqlite3
 from sable_platform.db.alerts import create_alert
 from sable_platform.db.centrality import BRIDGE_CENTRALITY_THRESHOLD, BRIDGE_DECAY_THRESHOLD
 from sable_platform.db.compat import (days_since, days_until, get_dialect,
-                                      now_offset_param, ts_column)
+                                      now_offset_param, stuck_run_predicate,
+                                      ts_column)
 from sable_platform.db.decay import DECAY_WARNING_THRESHOLD, DECAY_CRITICAL_THRESHOLD
 from sable_platform.db.watchlist import take_all_snapshots, get_watchlist_changes
 log = logging.getLogger(__name__)
@@ -387,13 +388,11 @@ def _check_stuck_runs(conn: sqlite3.Connection, org_id: str) -> list[str]:
 
     try:
         _dialect = get_dialect(conn)
-        _cutoff = now_offset_param("offset", _dialect)
         rows = conn.execute(
             f"""
             SELECT run_id, workflow_name FROM workflow_runs
             WHERE org_id=:org_id AND status='running'
-              AND (NULLIF(started_at, '') IS NULL
-                   OR {ts_column('started_at', _dialect)} < {_cutoff})
+              AND {stuck_run_predicate('started_at', 'offset', _dialect)}
             """,
             {"org_id": org_id, "offset": f'-{threshold_hours} hours'},
         ).fetchall()

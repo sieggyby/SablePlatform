@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import get_dialect, ts_at_or_after, ts_before
+
 
 def _utc_now_iso() -> str:
     """UTC ISO-8601 ``...Z`` timestamp, matching the relay TEXT timestamp columns.
@@ -1484,12 +1486,10 @@ def gc_processed_updates(conn: Connection, *, older_than_days: int = 7) -> int:
     §15.5 / Open-Q #7: retain 7 days. Uses the ``relay_processed_updates_gc``
     index. Returns the count deleted.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _pred = ts_before("processed_at", "cutoff", get_dialect(conn))
     result = conn.execute(
-        text("DELETE FROM relay_processed_updates WHERE processed_at < :cutoff"),
-        {"cutoff": cutoff},
+        text(f"DELETE FROM relay_processed_updates WHERE {_pred}"),
+        {"cutoff": f"-{older_than_days} days"},
     )
     return int(result.rowcount or 0)
 
@@ -1502,15 +1502,13 @@ def gc_publication_jobs(conn: Connection, *, older_than_days: int = 30) -> int:
     job created >30d ago that is terminal is safely past the window). Live states
     (``pending``/``claimed``/``retry``) are NEVER GC'd. Returns the count deleted.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _pred = ts_before("created_at", "cutoff", get_dialect(conn))
     result = conn.execute(
         text(
             "DELETE FROM relay_publication_jobs "
-            "WHERE state IN ('done','dead') AND created_at < :cutoff"
+            f"WHERE state IN ('done','dead') AND {_pred}"
         ),
-        {"cutoff": cutoff},
+        {"cutoff": f"-{older_than_days} days"},
     )
     return int(result.rowcount or 0)
 
@@ -1521,12 +1519,10 @@ def gc_reply_notifications(conn: Connection, *, older_than_days: int = 90) -> in
     The member-facing inbox is bounded to 90 days; aggregate stats live
     elsewhere. GC by ``notified_at``. Returns the count deleted.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _pred = ts_before("notified_at", "cutoff", get_dialect(conn))
     result = conn.execute(
-        text("DELETE FROM relay_reply_notifications WHERE notified_at < :cutoff"),
-        {"cutoff": cutoff},
+        text(f"DELETE FROM relay_reply_notifications WHERE {_pred}"),
+        {"cutoff": f"-{older_than_days} days"},
     )
     return int(result.rowcount or 0)
 
@@ -1547,16 +1543,14 @@ def gc_tweets_raw_payload(conn: Connection, *, older_than_days: int = 30) -> int
     every future run for the entire window (Codex finding SP-1). Reply/sweep rows
     keep the 30d TTL — a Layer-A miss on those re-heals with ONE cheap fetch.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _pred = ts_before("fetched_at", "cutoff", get_dialect(conn))
     result = conn.execute(
         text(
             "UPDATE relay_tweets SET raw = NULL "
-            "WHERE raw IS NOT NULL AND fetched_at < :cutoff "
+            f"WHERE raw IS NOT NULL AND {_pred} "
             "AND (source IS NULL OR source != 'cult_grader')"
         ),
-        {"cutoff": cutoff},
+        {"cutoff": f"-{older_than_days} days"},
     )
     return int(result.rowcount or 0)
 
@@ -1569,12 +1563,10 @@ def gc_messages(conn: Connection, *, older_than_days: int = 90) -> int:
     pinned in §15.5 for ``relay_messages``). GC by ``received_at`` via the
     ``relay_messages_gc`` index. Returns the count deleted.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=older_than_days)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _pred = ts_before("received_at", "cutoff", get_dialect(conn))
     result = conn.execute(
-        text("DELETE FROM relay_messages WHERE received_at < :cutoff"),
-        {"cutoff": cutoff},
+        text(f"DELETE FROM relay_messages WHERE {_pred}"),
+        {"cutoff": f"-{older_than_days} days"},
     )
     return int(result.rowcount or 0)
 
@@ -1594,9 +1586,9 @@ def gc_orphan_chats(conn: Connection, *, messages_older_than_days: int = 90) -> 
     only an orphan when no message NEWER than the cutoff references it (older
     messages are already gone). Returns the count deleted.
     """
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=messages_older_than_days)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # ">=" is the SURVIVAL side of the window, so a wrong answer here deletes a chat a
+    # live message still points at, not merely a message a day early.
+    _pred = ts_at_or_after("m.received_at", "cutoff", get_dialect(conn))
     result = conn.execute(
         text(
             "DELETE FROM relay_chats WHERE id IN ("
@@ -1606,11 +1598,11 @@ def gc_orphan_chats(conn: Connection, *, messages_older_than_days: int = 90) -> 
             "    WHERE b.platform = c.platform AND b.chat_id = c.chat_id"
             "  ) AND NOT EXISTS ("
             "    SELECT 1 FROM relay_messages m "
-            "    WHERE m.chat_id = c.id AND m.received_at >= :cutoff"
+            f"    WHERE m.chat_id = c.id AND {_pred}"
             "  )"
             ")"
         ),
-        {"cutoff": cutoff},
+        {"cutoff": f"-{messages_older_than_days} days"},
     )
     return int(result.rowcount or 0)
 

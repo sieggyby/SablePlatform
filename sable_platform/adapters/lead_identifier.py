@@ -10,7 +10,6 @@ from sable_platform.adapters.base import SubprocessAdapterMixin
 from sable_platform.contracts.leads import (
     DimensionScores, Lead, PURSUE_THRESHOLD, MONITOR_THRESHOLD,
 )
-from sable_platform.errors import SableError, INVALID_CONFIG
 
 
 def _derive_action(composite: float) -> str:

@@ -23,6 +23,9 @@ from sable_platform.cli.watchlist_cmds import watchlist
 from sable_platform.cli.webhook_cmds import webhooks
 from sable_platform.cli.cron_cmds import cron
 from sable_platform.cli.checkin_cmds import checkin
+from sable_platform.cli.migrate_cmds import migrate
+from sable_platform.cli.sync_cmds import sync_from_local
+from sable_platform.cli.api_cmds import api_serve, api_token
 from sable_platform.cli.relay_cmds import relay
 from sable_platform.cli.deck_cmds import deck
 from sable_platform.cli.onboarding_cmds import onboard, operator
@@ -244,14 +247,8 @@ cli.add_command(onboard)
 cli.add_command(operator)
 cli.add_command(allowlist)
 cli.add_command(entitlements)
-
-from sable_platform.cli.migrate_cmds import migrate
 cli.add_command(migrate)
-
-from sable_platform.cli.sync_cmds import sync_from_local
 cli.add_command(sync_from_local)
-
-from sable_platform.cli.api_cmds import api_serve, api_token
 cli.add_command(api_token)
 cli.add_command(api_serve)
 

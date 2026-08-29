@@ -3,14 +3,11 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
-
-log = logging.getLogger(__name__)
 
 import click
 
 from sable_platform.db.compat import (days_since_int, get_dialect,
-                                      now_offset_param, ts_column)
+                                      stuck_run_predicate)
 from sable_platform.db.connection import get_db
 from sable_platform.db.alerts import list_alerts
 from sable_platform.db.cost import RECORDED_LEDGER_SPEND_BASIS, get_weekly_spend
@@ -58,12 +55,11 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
             stale = {r["sync_type"]: r["age_days"] for r in sync_rows if r["age_days"] and r["age_days"] > 7}
 
             # Stuck runs
-            _cutoff = now_offset_param("offset", _dialect)
             stuck_row = conn.execute(
                 f"""
                 SELECT COUNT(*) as cnt FROM workflow_runs
                 WHERE org_id=:oid AND status='running'
-                  AND {ts_column('started_at', _dialect)} < {_cutoff}
+                  AND {stuck_run_predicate('started_at', 'offset', _dialect)}
                 """,
                 {"oid": oid, "offset": "-2 hours"},
             ).fetchone()
@@ -165,3 +161,5 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
 
         if d["at_risk_entities"]:
             click.echo(click.style(f"    Decay risk: {d['at_risk_entities']} entities >= 0.6", fg="yellow"))
+
+log = logging.getLogger(__name__)

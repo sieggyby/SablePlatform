@@ -24,7 +24,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[dev]" 2>/dev/null || pip install -e .
-          pip install pytest ruff
+          # Pin ruff. Unpinned, a release that broadens the default rule set turns the
+          # lint job red with no commit behind it: 0.15.9 found 59 on the tree that
+          # 0.16.5 found 1421 on. pyproject now states the rule set; this states the
+          # version that reads it.
+          pip install pytest 'ruff==0.16.5'
 
       - name: Lint with ruff
         run: ruff check sable_platform/

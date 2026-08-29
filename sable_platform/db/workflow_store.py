@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
-from sable_platform.db.compat import now_offset_param, ts_column
+from sable_platform.db.compat import stuck_run_predicate
 from sable_platform.errors import (
     redact_error,
     SableError,
@@ -185,16 +185,11 @@ def fail_workflow_step(conn: Connection, step_id: str, error: str) -> None:
 
 def mark_timed_out_runs(conn: Connection, hours: int = 6) -> list[str]:
     """Mark workflow_runs stuck in 'running' for >hours as 'timed_out'."""
-    _cutoff = now_offset_param("offset", conn.dialect.name)
     rows = conn.execute(
         text(
             "SELECT run_id FROM workflow_runs"
             " WHERE status='running'"
-            # An empty or NULL started_at on a RUNNING row is a data fault, and NULLIF
-            # alone would make it never time out while idx_workflow_runs_active_lock still
-            # counts it as active, blocking that workflow forever. Treat it as timed out.
-            f"   AND (NULLIF(started_at, '') IS NULL"
-            f"        OR {ts_column('started_at', conn.dialect.name)} < {_cutoff})"
+            f"   AND {stuck_run_predicate('started_at', 'offset', conn.dialect.name)}"
         ),
         {"offset": f"-{hours} hours"},
     ).fetchall()

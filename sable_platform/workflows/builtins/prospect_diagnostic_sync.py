@@ -9,7 +9,6 @@ Answers for any completed run:
 from __future__ import annotations
 
 import json
-import uuid
 from pathlib import Path
 
 from sable_platform.errors import SableError, INVALID_CONFIG

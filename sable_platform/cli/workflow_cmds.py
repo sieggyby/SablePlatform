@@ -7,13 +7,10 @@ import sys
 
 import click
 
-log = logging.getLogger(__name__)
-
-from sable_platform.db.compat import get_dialect, now_offset_param, ts_column
+from sable_platform.db.compat import get_dialect, stuck_run_predicate
 from sable_platform.db.connection import get_db
 from sable_platform.db.workflow_store import (
     cancel_workflow_run,
-    get_latest_run,
     get_workflow_events,
     get_workflow_run,
     get_workflow_steps,
@@ -248,12 +245,11 @@ def workflow_preflight(org_id: str | None) -> None:
 
             # 2. No stuck runs
             _dialect = get_dialect(conn)
-            _cutoff = now_offset_param("offset", _dialect)
             stuck = conn.execute(
                 f"""
                 SELECT COUNT(*) as cnt FROM workflow_runs
                 WHERE org_id=:oid AND status='running'
-                  AND {ts_column('started_at', _dialect)} < {_cutoff}
+                  AND {stuck_run_predicate('started_at', 'offset', _dialect)}
                 """,
                 {"oid": oid, "offset": "-2 hours"},
             ).fetchone()
@@ -348,3 +344,5 @@ def _print_run_status(run_id: str, as_json: bool = False) -> None:
     for s in steps:
         err = (s["error"] or "")[:60]
         click.echo(f"{s['step_name']:<30}  {s['status']:<12}  {s['retries']:<7}  {err}")
+
+log = logging.getLogger(__name__)

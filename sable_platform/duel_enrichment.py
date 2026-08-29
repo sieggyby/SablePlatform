@@ -30,7 +30,8 @@ from sable_platform.db.content_deck import upsert_candidate
 
 # X handle shape — a candidate whose author isn't handle-shaped is dropped by the bot's
 # render whitelist, so don't even promote it.
-_HANDLE_OK = lambda h: isinstance(h, str) and 1 <= len(h) <= 15 and h.replace("_", "").isalnum()
+def _HANDLE_OK(h) -> bool:
+    return isinstance(h, str) and 1 <= len(h) <= 15 and h.replace("_", "").isalnum()
 _ENGAGEMENT_KEYS = ("likes", "retweets", "replies", "quotes")
 
 

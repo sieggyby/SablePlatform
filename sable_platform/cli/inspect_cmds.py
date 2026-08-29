@@ -7,8 +7,6 @@ import logging
 
 import click
 
-log = logging.getLogger(__name__)
-
 from sable_platform.db.connection import get_db
 from sable_platform.db.centrality import list_centrality_scores
 from sable_platform.db.cost import RECORDED_LEDGER_SPEND_BASIS, get_weekly_spend
@@ -615,3 +613,5 @@ def inspect_prospect_pipeline(tier: str | None, stale_days: int | None,
             f"{r['org_id']:<24}  {r['composite_score']:>6.2f}  {r['tier']:<8}  {fit:>5}  "
             f"{diag_date:<12}  {stale:>5}  {r['recommended_action']}"
         )
+
+log = logging.getLogger(__name__)

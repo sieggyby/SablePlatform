@@ -27,13 +27,12 @@ from sable_platform.checkin.collector import CheckinInputs, collect_inputs
 from sable_platform.checkin.deltas import DeltaReport, MetricDelta, compute_deltas
 from sable_platform.checkin.render import render_data_sections
 from sable_platform.checkin.synthesize import (
-    SYSTEM_PROMPT,
     SynthesisResult,
     synthesize as synthesize_call,
 )
 from sable_platform.db.cost import log_cost
 from sable_platform.db import snapshots as snapshot_store
-from sable_platform.errors import SableError, INVALID_CONFIG, STEP_EXECUTION_ERROR
+from sable_platform.errors import SableError, INVALID_CONFIG
 from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
 from sable_platform.workflows import registry
 
