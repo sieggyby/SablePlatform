@@ -231,10 +231,13 @@ def test_pg_instant_shape():
     """
     got = compat._pg_instant("started_at")
     assert got == (
-        "(CASE WHEN NULLIF(started_at, '') ~ '(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'"
-        " THEN NULLIF(started_at, '')::timestamptz"
-        " ELSE (NULLIF(started_at, '')::timestamp AT TIME ZONE 'UTC') END)"
+        "(CASE WHEN TRIM(NULLIF(started_at, '')) ~ '(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'"
+        " THEN TRIM(NULLIF(started_at, ''))::timestamptz"
+        " ELSE (TRIM(NULLIF(started_at, ''))::timestamp AT TIME ZONE 'UTC') END)"
     )
+    # TRIM is load-bearing: the offset test is anchored to end-of-string, so one trailing
+    # space sends a value that DOES carry an offset down the naive branch.
+    assert "TRIM(" in got
 
 
 def test_ts_column_casts_on_postgres_and_never_on_sqlite():

@@ -6,7 +6,7 @@ import logging
 
 import click
 
-from sable_platform.db.compat import (days_since_int, get_dialect,
+from sable_platform.db.compat import (days_since_int_of_max, get_dialect,
                                       stuck_run_predicate)
 from sable_platform.db.connection import get_db
 from sable_platform.db.alerts import list_alerts
@@ -41,7 +41,11 @@ def dashboard(org_id: str | None, as_json: bool) -> None:
 
             # Stale data
             _dialect = get_dialect(conn)
-            _age_expr = days_since_int("MAX(completed_at)", _dialect)
+            # days_since_int("MAX(...)") casts the LEXICOGRAPHIC max, so it reported a
+            # real number computed off the wrong row. days_since_int_of_max aggregates the
+            # instants first. `latest` is selected for readers of the query and is not used
+            # below, so it stays the raw value rather than becoming a Julian float.
+            _age_expr = days_since_int_of_max("completed_at", _dialect)
             sync_rows = conn.execute(
                 f"""
                 SELECT sync_type,

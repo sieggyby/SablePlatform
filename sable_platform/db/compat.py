@@ -95,8 +95,14 @@ _PG_TS_OFFSET_RE = r"'(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'"
 
 
 def _pg_instant(column: str) -> str:
-    """PostgreSQL: *column* as a ``timestamptz``, the same answer under any session zone."""
-    inner = f"NULLIF({column}, '')"
+    """PostgreSQL: *column* as a ``timestamptz``, the same answer under any session zone.
+
+    ``TRIM`` first. The offset test is anchored to end-of-string, so a single trailing space
+    sends a value that DOES carry an offset down the naive branch and shifts it by the
+    session's UTC offset. Trimming is free and removes a silent wrong answer; PostgreSQL's
+    own cast tolerates the whitespace either way.
+    """
+    inner = f"TRIM(NULLIF({column}, ''))"
     return (f"(CASE WHEN {inner} ~ {_PG_TS_OFFSET_RE} THEN {inner}::timestamptz"
             f" ELSE ({inner}::timestamp AT TIME ZONE 'UTC') END)")
 
@@ -402,3 +408,38 @@ def ts_order(column: str, dialect: str) -> str:
     if dialect == "sqlite":
         return f"julianday(NULLIF({column}, ''))"
     return f"{_pg_instant(column)}"
+
+
+def ts_max(column: str, dialect: str) -> str:
+    """SQL expression: the LATEST instant in a group, from a TEXT timestamp *column*.
+
+    ``MAX(col)`` on TEXT returns the lexicographic maximum, which is not the latest row once
+    two spellings share the column: every ``'...T...'`` value outranks every ``'... ...'``
+    value whatever the clock says. Casting the result afterwards converts the WRONG row, so a
+    ``days_since_int("MAX(completed_at)", ...)`` reads a real number off the wrong timestamp
+    and reports a freshness that never existed.
+
+    Returns a timestamptz on PostgreSQL and a Julian day number on SQLite, so this is for
+    arithmetic and ordering, not for display. Use :func:`days_since_int_of_max` when the
+    caller wants an age.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    if dialect == "sqlite":
+        return f"MAX(julianday(NULLIF({column}, '')))"
+    return f"MAX({_pg_instant(column)})"
+
+
+def days_since_int_of_max(column: str, dialect: str) -> str:
+    """SQL expression: whole days since the LATEST instant in a group.
+
+    The aggregate form of :func:`days_since_int`. Pairing that helper with ``MAX(col)``
+    picks the wrong row first and then casts it correctly, which is the harder failure to
+    notice: the answer is a plausible number rather than an error.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    if dialect == "sqlite":
+        return f"CAST(julianday('now') - {ts_max(column, dialect)} AS INTEGER)"
+    return (f"CAST(EXTRACT(EPOCH FROM (NOW() - {ts_max(column, dialect)}))"
+            f" / 86400.0 AS INTEGER)")

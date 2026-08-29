@@ -61,6 +61,8 @@ from typing import Dict, List, Optional, Protocol, Sequence, Tuple, runtime_chec
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import get_dialect, ts_compare
+
 from sable_platform.autocm.gate.autonomy import (
     HEAVY_EDIT_THRESHOLD,
     edit_diff_ratio,
@@ -954,7 +956,7 @@ class ReviewQueueController:
                 "SELECT d.id, d.category, d.tier, d.source_message_id "
                 "FROM autocm_drafts d "
                 "WHERE d.client_id = :c AND d.status = :pending "
-                "  AND d.created_at <= :cutoff "
+                f"  AND {ts_compare('d.created_at', '<=', 'cutoff', get_dialect(self._conn))} "
                 "  AND NOT EXISTS ("
                 "    SELECT 1 FROM autocm_reviews r WHERE r.draft_id = d.id) "
                 "ORDER BY d.id"

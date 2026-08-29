@@ -21,6 +21,18 @@ from sable_platform.db.compat import (get_dialect, ts_at_or_after, ts_before,
                                       ts_compare)
 
 
+
+def _hb_fresh(column: str, conn: Connection) -> str:
+    """"the operator heartbeat is inside the window", as an INSTANT comparison.
+
+    ``relay_operator_heartbeat.last_seen`` is written by SableWeb on every reply-assist load.
+    Compared as text against an ISO-Z cutoff, a heartbeat in the server-default spelling
+    sorts below the cutoff on its own day, so a logged-in operator reads as absent and the
+    sweep that gates on them never runs.
+    """
+    return ts_compare(column, ">=", "hb_cutoff" if "." in column else "cutoff",
+                      get_dialect(conn))
+
 def _utc_now_iso() -> str:
     """UTC ISO-8601 ``...Z`` timestamp, matching the relay TEXT timestamp columns.
 
@@ -3062,7 +3074,7 @@ def list_due_sweep_orgs(
             "WHERE c.enabled = 1 "
             "  AND EXISTS ( "
             "      SELECT 1 FROM relay_operator_heartbeat h "
-            "      WHERE h.org_id = c.org_id AND h.last_seen >= :hb_cutoff "
+            f"      WHERE h.org_id = c.org_id AND {_hb_fresh('h.last_seen', conn)} "
             "  ) "
             "  AND ( "
             "      c.last_sweep_at IS NULL "
@@ -3260,7 +3272,7 @@ def has_recent_heartbeat(
     row = conn.execute(
         text(
             "SELECT 1 FROM relay_operator_heartbeat "
-            "WHERE org_id = :org_id AND last_seen >= :cutoff LIMIT 1"
+            f"WHERE org_id = :org_id AND {_hb_fresh('last_seen', conn)} LIMIT 1"
         ),
         {"org_id": org_id, "cutoff": cutoff},
     ).fetchone()

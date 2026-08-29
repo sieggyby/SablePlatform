@@ -213,7 +213,8 @@ def test_the_predicate_gives_the_same_answer_under_any_session_timezone(postgres
             " (2, '2026-08-29T12:00:00Z'),"       # _utc_now_iso
             " (3, '2026-08-29T12:00:00'),"        # api/tokens.py:131, naive
             " (4, '2026-08-29 12:00:00'),"        # autocm/gate/autonomy.py:107, naive
-            " (5, '2026-08-29 05:00:00-07')"))    # a real non-UTC offset, same instant
+            " (5, '2026-08-29 05:00:00-07'),"     # a real non-UTC offset, same instant
+            " (6, '  2026-08-29 12:00:00+00  ')"))  # padded: the offset test is end-anchored
         expr = ts_order("ts", "postgresql")
         answers = {}
         for zone in ("UTC", "Asia/Tokyo", "America/Los_Angeles"):
@@ -226,8 +227,8 @@ def test_the_predicate_gives_the_same_answer_under_any_session_timezone(postgres
         conn.execute(text("SET TIME ZONE 'UTC'"))
 
         for zone, got in answers.items():
-            assert got == ["2026-08-29 12:00:00"] * 5, (
-                f"under {zone} the five spellings of one instant disagreed: {got}")
+            assert got == ["2026-08-29 12:00:00"] * 6, (
+                f"under {zone} the six spellings of one instant disagreed: {got}")
         # A power check. All-equal is also satisfiable by an expression that returns a
         # constant, so pin that the value is the instant the rows actually encode.
         assert answers["UTC"][0] == "2026-08-29 12:00:00"

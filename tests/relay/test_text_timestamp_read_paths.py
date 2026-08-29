@@ -235,3 +235,63 @@ def test_fetched_at_is_not_nullable_so_the_old_none_branch_was_unreachable(sa_co
         " VALUES ('cache4', 'a', 'h', 't', '', '{}')"))
     sa_conn.commit()
     assert relay_db.get_cached_relay_tweet(sa_conn, "cache4", ttl_hours=1) is None
+
+
+def test_the_digest_does_not_count_a_returning_member_as_new(sa_conn):
+    """A regression guard, and labelled as one: it passes against the pre-fix tree too.
+
+    Codex asked for direct coverage of the earliest-row rewrite. This is the half that is
+    only a guard. A text `MIN` can only pick the wrong row when two candidates share a
+    calendar date, and two messages on one day cannot straddle a week boundary, so the text
+    `MIN` was never wrong ACROSS weeks. The bug-catching half is the test below it.
+    """
+    org, chat = _seed_org(sa_conn)
+    week_start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    iso = "%Y-%m-%dT%H:%M:%SZ"
+
+    def put(when, ext, fmt):
+        sa_conn.execute(text(
+            "INSERT INTO relay_messages (org_id, chat_id, platform, external_message_id,"
+            " external_user_id, text, received_at)"
+            " VALUES (:o, :c, 'telegram', :e, :ext, 'hi', :ts)"
+        ), {"o": org, "c": chat, "e": f"{ext}-{when:%j%H}", "ext": ext, "ts": when.strftime(fmt)})
+
+    # u_old: earliest is LAST week, written in the space spelling.
+    put(week_start - timedelta(days=3), "u_old", SPACE)
+    put(week_start + timedelta(days=2, hours=10), "u_old", iso)
+    # u_new: earliest is this week.
+    put(week_start + timedelta(days=2, hours=11), "u_new", SPACE)
+    sa_conn.commit()
+
+    stats = analytics.volume(sa_conn, 0, week_start, org_id=org)
+    assert stats.messages == 2, f"the week holds 2 messages, digest saw {stats.messages}"
+    assert stats.new_members == 1, (
+        f"new_members={stats.new_members}. 2 means a returning member whose first-ever "
+        "message is older than the week was counted as new, which is the text-MIN failure.")
+
+
+def test_the_digest_counts_one_member_once_when_two_messages_share_a_timestamp(sa_conn):
+    """The half that DOES fail against the pre-fix tree.
+
+    The old code decided "is this row the member's first" with
+    `m["received_at"] == first_seen`, a string comparison. Two messages carrying the same
+    timestamp string both matched, so one member counted as two new members. Matching on the
+    row id is exact. Sharing a timestamp is ordinary: `func.now()` inside one transaction
+    returns the same value for every row it writes.
+    """
+    org, chat = _seed_org(sa_conn)
+    week_start = datetime(2026, 7, 27, 0, 0, tzinfo=timezone.utc)
+    same_instant = (week_start + timedelta(days=2, hours=10)).strftime(SPACE)
+    for i in (1, 2):
+        sa_conn.execute(text(
+            "INSERT INTO relay_messages (org_id, chat_id, platform, external_message_id,"
+            " external_user_id, text, received_at)"
+            " VALUES (:o, :c, 'telegram', :e, 'twin', 'hi', :ts)"
+        ), {"o": org, "c": chat, "e": f"twin{i}", "ts": same_instant})
+    sa_conn.commit()
+
+    stats = analytics.volume(sa_conn, 0, week_start, org_id=org)
+    assert stats.messages == 2 and stats.distinct_members == 1
+    assert stats.new_members == 1, (
+        f"new_members={stats.new_members} for ONE member. 2 means both rows matched the "
+        "first-ever timestamp string and the same member was counted twice.")

@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.compat import days_since_int
+from sable_platform.db.compat import days_since_int, ts_order
 
 
 def query_prospect_pipeline(
@@ -26,6 +26,9 @@ def query_prospect_pipeline(
     # Subquery: latest completed diagnostic per org_id
     _dialect = conn.dialect.name
     _days_expr = days_since_int("d.completed_at", _dialect)
+    # ORDER BY on the raw TEXT column ranks every '...T...' value above every '... ...'
+    # value whatever the clock says, so rn = 1 was not reliably the latest diagnostic.
+    _latest = ts_order("completed_at", _dialect)
     query = f"""
         SELECT
             ps.org_id,
@@ -44,7 +47,7 @@ def query_prospect_pipeline(
         FROM prospect_scores ps
         LEFT JOIN (
             SELECT org_id, fit_score, recommended_action, completed_at,
-                   ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY completed_at DESC) AS rn
+                   ROW_NUMBER() OVER (PARTITION BY org_id ORDER BY {_latest} DESC) AS rn
             FROM diagnostic_runs
             WHERE status = 'completed'
         ) d ON ps.org_id = d.org_id AND d.rn = 1

@@ -242,6 +242,19 @@ class VolumeStats:
         return round((self.messages - self.prev_messages) / self.prev_messages, 4)
 
 
+
+def _in_week(column: str, conn: Connection) -> str:
+    """"*column* falls inside the [:start, :end) digest week", comparing INSTANTS.
+
+    The bounds are ISO-Z and these columns carry a ``func.now()`` default, so a text
+    comparison drops every row written on the week's FIRST DAY: once the calendar dates
+    differ the comparison decides before it reaches the separator, and only on the bound's
+    own day does the separator get to decide.
+    """
+    _d = get_dialect(conn)
+    return (f"{ts_compare(column, '>=', 'start', _d)}"
+            f" AND {ts_compare(column, '<', 'end', _d)}")
+
 def _client_org_id(conn: Connection, client_id: int) -> Optional[str]:
     row = conn.execute(
         text("SELECT org_id FROM autocm_clients WHERE id = :id"), {"id": client_id}
@@ -386,7 +399,7 @@ def autonomy_ratios(
     rows = conn.execute(
         text(
             "SELECT status, COUNT(*) AS n FROM autocm_drafts "
-            "WHERE client_id = :c AND created_at >= :start AND created_at < :end "
+            f"WHERE client_id = :c AND {_in_week('created_at', conn)} "
             "GROUP BY status"
         ),
         {"c": client_id, "start": start, "end": end},
@@ -401,7 +414,7 @@ def autonomy_ratios(
         text(
             "SELECT COUNT(*) AS n, COALESCE(SUM(is_clean_approval), 0) AS clean "
             "FROM autocm_reviews "
-            "WHERE client_id = :c AND reviewed_at >= :start AND reviewed_at < :end"
+            f"WHERE client_id = :c AND {_in_week('reviewed_at', conn)}"
         ),
         {"c": client_id, "start": start, "end": end},
     ).fetchone()
