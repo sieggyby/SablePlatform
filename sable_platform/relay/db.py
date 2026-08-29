@@ -17,7 +17,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.compat import get_dialect, ts_at_or_after, ts_before
+from sable_platform.db.compat import (get_dialect, ts_at_or_after, ts_before,
+                                      ts_compare)
 
 
 def _utc_now_iso() -> str:
@@ -3184,21 +3185,27 @@ def get_cached_relay_tweet(
     AND ``fetched_at`` is within ``ttl_hours`` (default 6h, plan §3.7) — otherwise
     ``None`` (so the sweep re-fetches a stale entry). Read-only.
     """
+    # Freshness is decided in SQL, not by comparing two Python strings.
+    #
+    # fetched_at holds BOTH spellings: relay/db.py:576 omits the column and takes the
+    # func.now() server default, relay/db.py:3172 binds _utc_now_iso(). Compared as text
+    # against an ISO-Z cutoff, a server-default row sorts below it whatever the clock says,
+    # so a tweet fetched seconds ago read as STALE and the caller paid SocialData for a
+    # refetch it already had. A NULL fetched_at is still a miss: NULLIF makes the comparison
+    # NULL, which excludes the row exactly as the old `is None` branch did.
+    _fresh = ts_compare("fetched_at", ">=", "cutoff", get_dialect(conn))
     row = conn.execute(
         text(
             "SELECT id, x_id, x_author_id, x_author_handle, text, media_urls, "
             "       is_reply, in_reply_to_x_id, conversation_x_id, fetched_at, raw, "
             "       engagement_json, lang, author_followers "
-            "FROM relay_tweets WHERE x_id = :x_id"
+            f"FROM relay_tweets WHERE x_id = :x_id AND {_fresh}"
         ),
-        {"x_id": str(x_id)},
+        {"x_id": str(x_id),
+         "cutoff": (datetime.now(timezone.utc)
+                    - timedelta(hours=int(ttl_hours))).strftime("%Y-%m-%dT%H:%M:%SZ")},
     ).fetchone()
     if row is None:
-        return None
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(hours=int(ttl_hours))
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if row._mapping["fetched_at"] is None or row._mapping["fetched_at"] < cutoff:
         return None
     return dict(row._mapping)
 

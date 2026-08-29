@@ -18,9 +18,15 @@ The three DB-backed strong-skips (CLASSIFIER §1 / LATENCY §2):
                                     posted in the same chat within N minutes
                                     (founder pre-emption lookback).
 
-All timestamps are computed in Python as UTC ISO-8601 ``...Z`` and bound as
-parameters (never ``strftime('now')``), so the SQL is dialect-agnostic and runs
-unchanged on the live Postgres pool — matching the relay/db.py contract.
+Cutoffs are computed in Python as UTC ISO-8601 ``...Z`` and bound as parameters
+(never ``strftime('now')``), so the SQL is dialect-agnostic and runs unchanged on
+the live Postgres pool — matching the relay/db.py contract.
+
+That covers the cutoff and NOT the column. ``relay_messages.received_at`` is TEXT
+and its writer omits it, so PostgreSQL fills it from ``func.now()`` in the
+``'... 16:31:09+00'`` spelling while the cutoff is ``'...T16:30:09Z'``. Compared as
+text, the space separator decides before the clock does. The two time comparisons
+here go through ``compat.ts_compare``, which compares instants on both sides.
 """
 from __future__ import annotations
 
@@ -29,6 +35,8 @@ from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+
+from sable_platform.db.compat import get_dialect, ts_compare
 
 # The relay member roles that mark a CLIENT-SIDE principal (founder / their team)
 # whose own post in a thread pre-empts a NULO reply. Per the 057 CHECK these are
@@ -54,6 +62,22 @@ def _iso_seconds_ago(seconds: int, *, now: Optional[datetime] = None) -> str:
     if base.tzinfo is None:
         base = base.replace(tzinfo=timezone.utc)
     return (base - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _recent(column: str, conn: Connection) -> str:
+    """"*column* is at or after the :cutoff bind", as an INSTANT comparison.
+
+    relay_messages.received_at is TEXT and persist_inbound_message omits it, so PostgreSQL
+    fills it from the func.now() server default as '2026-08-29 16:31:09.83+00'. The cutoff
+    here is formatted '2026-08-29T16:30:09Z'. Space is 0x20 and T is 0x54, so the stored
+    value sorts BELOW the cutoff whatever the time is, and the text comparison returned
+    NOTHING for every window I measured, down to a message five seconds old.
+
+    Both suppression checks are built on this predicate, so both were answering "nobody has
+    replied" on PostgreSQL regardless of who had. Codex found it; the measurement is in
+    DEFECTS_FOUND.md.
+    """
+    return ts_compare(column, ">=", "cutoff", get_dialect(conn))
 
 
 def is_flagged_user(
@@ -134,7 +158,7 @@ def member_replied_within(
     row = conn.execute(
         text(
             "SELECT 1 FROM relay_messages "
-            "WHERE chat_id = :chat_id AND received_at >= :cutoff "
+            f"WHERE chat_id = :chat_id AND {_recent('received_at', conn)} "
             f"{exclude_sql} "
             "LIMIT 1"
         ),
@@ -195,7 +219,7 @@ def team_posted_within(
             "SELECT 1 FROM relay_messages m "
             "JOIN relay_member_roles r "
             "  ON r.member_id = m.member_id AND r.org_id = :org_id "
-            "WHERE m.chat_id = :chat_id AND m.received_at >= :cutoff "
+            f"WHERE m.chat_id = :chat_id AND {_recent('m.received_at', conn)} "
             f"  AND r.role IN ({placeholders}) "
             f"{exclude_sql} "
             "LIMIT 1"

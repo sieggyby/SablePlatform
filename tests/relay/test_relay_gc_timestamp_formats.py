@@ -28,8 +28,8 @@ from sable_platform.relay import db as relay_db
 # and ``_utc_now_iso`` writes the second. PostgreSQL's ``now()`` writes a third,
 # ``'... 12:00:00+00'``, which only a PostgreSQL file ever holds -- see
 # ``test_sqlite_cannot_parse_the_postgres_offset_spelling`` for that recorded limit.
-SPACE_FORM = "%Y-%m-%d %H:%M:%S"
-ISO_Z_FORM = "%Y-%m-%dT%H:%M:%SZ"
+SPACE_FORM = "%Y-%m-%d %H:%M:%S.%f"
+ISO_Z_FORM = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 
 def _survivor_offset(retention_days: int) -> timedelta:
@@ -38,16 +38,28 @@ def _survivor_offset(retention_days: int) -> timedelta:
     The bug only shows while the row and the cutoff share a UTC calendar day: once the day
     digits differ, the TEXT comparison reaches a real decision before it ever reaches the
     separator. So the offset is capped at whatever room is left in the cutoff's own day.
+
+    Timestamps here carry MICROSECONDS for that reason. At second precision a cutoff landing
+    at 23:59:59 leaves under a second of room, the survivor formats to the same string as the
+    cutoff, and a strict comparison excludes it -- the test would have to skip. SQLite's
+    julianday reads a fractional part, verified in
+    test_sqlite_cannot_parse_the_postgres_offset_spelling, so microsecond room is real room.
     """
     cut = datetime.now(timezone.utc) - timedelta(days=retention_days)
-    end_of_day = cut.replace(hour=23, minute=59, second=59, microsecond=0)
+    end_of_day = cut.replace(hour=23, minute=59, second=59, microsecond=999999)
     return min(timedelta(hours=4), end_of_day - cut)
 
 
 def _skip_if_no_room(retention_days: int) -> timedelta:
+    """The room is measured in microseconds, so this guard should never fire.
+
+    It is an assertion wearing a skip's clothes: if it ever does fire, the cutoff landed in
+    the final two microseconds of a UTC day. Keeping it means a freak run reports honestly
+    instead of failing for a reason that has nothing to do with the code.
+    """
     room = _survivor_offset(retention_days)
-    if room < timedelta(seconds=2):
-        pytest.skip("cutoff lands in the last 2s of a UTC day; no room inside it")
+    if room < timedelta(microseconds=2):
+        pytest.skip("cutoff landed in the last 2us of a UTC day")
     return room
 
 

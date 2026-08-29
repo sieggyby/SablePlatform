@@ -76,6 +76,31 @@ def _check_column(column: str) -> None:
         )
 
 
+# A stored TEXT timestamp, read as an INSTANT, without asking the session what zone it is in.
+#
+# `text::timestamptz` resolves a value that carries no offset using the SESSION timezone.
+# `engine._pin_utc_session` sets UTC on every engine this package builds, but these helpers
+# take an arbitrary Connection and psql, a migration tool, or another service is not bound by
+# that. Naive values are stored today: `api/tokens.py:131` writes '...T12:00:00' and
+# `autocm/gate/autonomy.py:107` writes '... 12:00:00'.
+#
+# Measured on live PostgreSQL 16, five rows all recording 2026-08-29 12:00 UTC in five
+# spellings. Under UTC the plain cast reads all five as 12:00. Under Asia/Tokyo the two naive
+# rows read as 03:00, nine hours out. The expression below reads all five as 12:00 under both.
+#
+# A value that carries an offset keeps it; `::timestamp` would DISCARD it and turn
+# '2026-08-29 05:00:00-07' into 05:00 UTC rather than 12:00. That is why this is a CASE and
+# not a single cast.
+_PG_TS_OFFSET_RE = r"'(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'"
+
+
+def _pg_instant(column: str) -> str:
+    """PostgreSQL: *column* as a ``timestamptz``, the same answer under any session zone."""
+    inner = f"NULLIF({column}, '')"
+    return (f"(CASE WHEN {inner} ~ {_PG_TS_OFFSET_RE} THEN {inner}::timestamptz"
+            f" ELSE ({inner}::timestamp AT TIME ZONE 'UTC') END)")
+
+
 # ---------------------------------------------------------------------------
 # Elapsed-time helpers (replace julianday arithmetic)
 # ---------------------------------------------------------------------------
@@ -89,7 +114,7 @@ def hours_since(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"(julianday('now') - julianday({column})) * 24"
-    return f"EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz)) / 3600.0"
+    return f"EXTRACT(EPOCH FROM (NOW() - {_pg_instant(column)})) / 3600.0"
 
 
 def seconds_since(column: str, dialect: str) -> str:
@@ -101,7 +126,7 @@ def seconds_since(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"(julianday('now') - julianday({column})) * 86400"
-    return f"EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz))"
+    return f"EXTRACT(EPOCH FROM (NOW() - {_pg_instant(column)}))"
 
 
 def days_since(column: str, dialect: str) -> str:
@@ -113,7 +138,7 @@ def days_since(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"julianday('now') - julianday({column})"
-    return f"EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz)) / 86400.0"
+    return f"EXTRACT(EPOCH FROM (NOW() - {_pg_instant(column)})) / 86400.0"
 
 
 def days_since_int(column: str, dialect: str) -> str:
@@ -125,7 +150,7 @@ def days_since_int(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"CAST(julianday('now') - julianday({column}) AS INTEGER)"
-    return f"CAST(EXTRACT(EPOCH FROM (NOW() - NULLIF({column}, '')::timestamptz)) / 86400.0 AS INTEGER)"
+    return f"CAST(EXTRACT(EPOCH FROM (NOW() - {_pg_instant(column)})) / 86400.0 AS INTEGER)"
 
 
 def days_between(col_a: str, col_b: str, dialect: str) -> str:
@@ -137,8 +162,8 @@ def days_between(col_a: str, col_b: str, dialect: str) -> str:
     _check_dialect(dialect)
     if dialect == "sqlite":
         return f"julianday({col_a}) - julianday({col_b})"
-    return (f"EXTRACT(EPOCH FROM (NULLIF({col_a}, '')::timestamptz"
-            f" - NULLIF({col_b}, '')::timestamptz)) / 86400.0")
+    return (f"EXTRACT(EPOCH FROM ({_pg_instant(col_a)}"
+            f" - {_pg_instant(col_b)})) / 86400.0")
 
 
 def days_until(column: str, dialect: str) -> str:
@@ -151,7 +176,7 @@ def days_until(column: str, dialect: str) -> str:
     _check_column(column)
     if dialect == "sqlite":
         return f"julianday({column}) - julianday('now')"
-    return f"EXTRACT(EPOCH FROM (NULLIF({column}, '')::timestamptz - NOW())) / 86400.0"
+    return f"EXTRACT(EPOCH FROM ({_pg_instant(column)} - NOW())) / 86400.0"
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +221,7 @@ def ts_column(column: str, dialect: str) -> str:
     _check_column_ref(column)
     if dialect == "sqlite":
         return f"NULLIF({column}, '')"
-    return f"NULLIF({column}, '')::timestamptz"
+    return f"{_pg_instant(column)}"
 
 
 def now_offset_param(param_name: str, dialect: str) -> str:
@@ -297,7 +322,7 @@ def ts_before(column: str, param_name: str, dialect: str) -> str:
     _check_identifier(param_name, "parameter name")
     if dialect == "sqlite":
         return f"julianday(NULLIF({column}, '')) < julianday('now', :{param_name})"
-    return f"NULLIF({column}, '')::timestamptz < (NOW() + (:{param_name})::interval)"
+    return f"{_pg_instant(column)} < (NOW() + (:{param_name})::interval)"
 
 
 def ts_at_or_after(column: str, param_name: str, dialect: str) -> str:
@@ -313,7 +338,7 @@ def ts_at_or_after(column: str, param_name: str, dialect: str) -> str:
     _check_identifier(param_name, "parameter name")
     if dialect == "sqlite":
         return f"julianday(NULLIF({column}, '')) >= julianday('now', :{param_name})"
-    return f"NULLIF({column}, '')::timestamptz >= (NOW() + (:{param_name})::interval)"
+    return f"{_pg_instant(column)} >= (NOW() + (:{param_name})::interval)"
 
 
 def stuck_run_predicate(column: str, param_name: str, dialect: str) -> str:
@@ -333,3 +358,47 @@ def stuck_run_predicate(column: str, param_name: str, dialect: str) -> str:
     _check_column_ref(column)
     return (f"(NULLIF({column}, '') IS NULL"
             f" OR {ts_before(column, param_name, dialect)})")
+
+
+_TS_OPS = ("<", "<=", ">", ">=", "=")
+
+
+def ts_compare(column: str, op: str, param_name: str, dialect: str) -> str:
+    """SQL predicate: TEXT timestamp *column* compared to an ABSOLUTE timestamp parameter.
+
+    :func:`ts_before` and :func:`ts_at_or_after` cover a window expressed as now-plus-offset.
+    This covers the other shape, where the caller already has a specific instant: a cache
+    TTL, a digest week boundary, a suppression cutoff computed in Python.
+
+    Same contract, same reason. A TEXT comparison against a formatted string is decided by
+    the separator character before it reaches the clock, and the two spellings that reach
+    these columns differ in exactly that character.
+
+    Bind the parameter as an ISO-8601 string. On PostgreSQL the cast is written
+    ``CAST(:name AS timestamptz)`` and NOT ``:name::timestamptz``: the driver reads the
+    second colon pair of ``:name::type`` as another bind and the statement fails to parse.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    _check_identifier(param_name, "parameter name")
+    if op not in _TS_OPS:
+        raise ValueError(f"operator must be one of {_TS_OPS}, got {op!r}")
+    if dialect == "sqlite":
+        return f"julianday(NULLIF({column}, '')) {op} julianday(:{param_name})"
+    return (f"{_pg_instant(column)} {op}"
+            f" CAST(:{param_name} AS timestamptz)")
+
+
+def ts_order(column: str, dialect: str) -> str:
+    """SQL expression: a TEXT timestamp *column* as a value that SORTS chronologically.
+
+    ``ORDER BY`` and ``MIN`` on a mixed-spelling TEXT column are wrong for the same reason a
+    comparison is: ``'2026-07-30 12:00'`` sorts below ``'2026-07-30T09:00'`` because the
+    separator is read before the hour. A digest that orders a week of messages this way
+    interleaves them, and ``MIN`` returns a row that is not the earliest.
+    """
+    _check_dialect(dialect)
+    _check_column_ref(column)
+    if dialect == "sqlite":
+        return f"julianday(NULLIF({column}, ''))"
+    return f"{_pg_instant(column)}"

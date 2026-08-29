@@ -145,31 +145,37 @@ GUARDED_HELPERS = [
 # ``''::timestamptz`` raise and takes the whole query down, which is the same class of
 # silent failure these helpers exist to prevent. The SQLite expectations are unchanged,
 # because julianday('') already returns NULL there.
+# The PostgreSQL branch of every helper reads a stored TEXT timestamp through one shared
+# expression, so these cases name it once instead of pasting it five times. Its exact shape
+# is pinned by test_pg_instant_shape below, and its BEHAVIOUR -- one answer under any session
+# timezone -- by tests/postgres/test_pg_gc_timestamp_formats.py.
+_PG_INSTANT = compat._pg_instant("run_date")
+
 COLUMN_CASES = [
     (
         compat.days_since,
         "julianday('now') - julianday(run_date)",
-        "EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz)) / 86400.0",
+        "EXTRACT(EPOCH FROM (NOW() - " + _PG_INSTANT + ")) / 86400.0",
     ),
     (
         compat.days_until,
         "julianday(run_date) - julianday('now')",
-        "EXTRACT(EPOCH FROM (NULLIF(run_date, '')::timestamptz - NOW())) / 86400.0",
+        "EXTRACT(EPOCH FROM (" + _PG_INSTANT + " - NOW())) / 86400.0",
     ),
     (
         compat.days_since_int,
         "CAST(julianday('now') - julianday(run_date) AS INTEGER)",
-        "CAST(EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz)) / 86400.0 AS INTEGER)",
+        "CAST(EXTRACT(EPOCH FROM (NOW() - " + _PG_INSTANT + ")) / 86400.0 AS INTEGER)",
     ),
     (
         compat.seconds_since,
         "(julianday('now') - julianday(run_date)) * 86400",
-        "EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz))",
+        "EXTRACT(EPOCH FROM (NOW() - " + _PG_INSTANT + "))",
     ),
     (
         compat.hours_since,
         "(julianday('now') - julianday(run_date)) * 24",
-        "EXTRACT(EPOCH FROM (NOW() - NULLIF(run_date, '')::timestamptz)) / 3600.0",
+        "EXTRACT(EPOCH FROM (NOW() - " + _PG_INSTANT + ")) / 3600.0",
     ),
 ]
 
@@ -214,14 +220,33 @@ def test_plain_column_sql_unchanged(func, sqlite_sql, postgres_sql):
     assert func("run_date", "postgresql") == postgres_sql
 
 
+def test_pg_instant_shape():
+    """The one expression every PostgreSQL branch reads a TEXT timestamp through.
+
+    A plain ``::timestamptz`` resolves an offset-less value using the SESSION timezone, and
+    naive values are stored today (``api/tokens.py:131``, ``autocm/gate/autonomy.py:107``).
+    A plain ``::timestamp`` would DISCARD a real offset instead. Hence the CASE: measured on
+    live PostgreSQL 16 in
+    tests/postgres/test_pg_gc_timestamp_formats.py::test_the_predicate_gives_the_same_answer_under_any_session_timezone.
+    """
+    got = compat._pg_instant("started_at")
+    assert got == (
+        "(CASE WHEN NULLIF(started_at, '') ~ '(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'"
+        " THEN NULLIF(started_at, '')::timestamptz"
+        " ELSE (NULLIF(started_at, '')::timestamp AT TIME ZONE 'UTC') END)"
+    )
+
+
 def test_ts_column_casts_on_postgres_and_never_on_sqlite():
     """Every timestamp column in schema.py is TEXT, so comparing one against
     now_offset_param() raises `operator does not exist: text > timestamp with time zone`
     on PostgreSQL. ts_column casts it. SQLite must NEVER see ::timestamptz."""
     from sable_platform.db.compat import ts_column
 
-    assert ts_column("started_at", "postgresql") == "NULLIF(started_at, '')::timestamptz"
+    assert ts_column("started_at", "postgresql") == compat._pg_instant("started_at")
+    assert "::timestamptz" in ts_column("started_at", "postgresql")
     assert ts_column("started_at", "sqlite") == "NULLIF(started_at, '')"
+    assert "timestamptz" not in ts_column("started_at", "sqlite")
     # the loop-B guard still applies: a bind parameter is not a column
     with pytest.raises(ValueError):
         ts_column(":cutoff", "postgresql")

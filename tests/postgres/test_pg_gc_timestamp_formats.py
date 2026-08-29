@@ -17,7 +17,8 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import text
 
-from sable_platform.db.compat import stuck_run_predicate, ts_at_or_after, ts_before
+from sable_platform.db.compat import (stuck_run_predicate, ts_at_or_after, ts_before,
+                                      ts_order)
 from sable_platform.relay import db as relay_db
 
 
@@ -185,5 +186,50 @@ def test_the_proposed_cost_events_expression_index_cannot_be_built(postgres_engi
                 conn.execute(text(f"CREATE INDEX ON idx_probe ({expr})"))
             assert "immutable" in str(exc.value).lower(), f"{expr} -> {exc.value}"
             conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_the_predicate_gives_the_same_answer_under_any_session_timezone(postgres_engine):
+    """A stored timestamp must mean one instant, whatever zone the reader connected in.
+
+    ``text::timestamptz`` resolves a value carrying NO offset using the session timezone.
+    ``engine._pin_utc_session`` sets UTC on every engine this package builds, but these
+    helpers take an arbitrary Connection, and psql, Alembic, or another service is not bound
+    by that pin. Naive values are stored today: ``api/tokens.py:131`` writes
+    ``'...T12:00:00'`` and ``autocm/gate/autonomy.py:107`` writes ``'... 12:00:00'``.
+
+    Five rows, one instant, five spellings. Measured before the fix: under UTC the plain cast
+    read all five as 12:00, and under Asia/Tokyo the two naive rows read as 03:00, nine hours
+    out. Row 5 is why the helper is a CASE and not a plain ``::timestamp`` -- discarding a
+    real offset would turn 05:00-07 into 05:00 UTC instead of 12:00.
+    """
+    conn = postgres_engine.connect()
+    try:
+        conn.execute(text("CREATE TEMP TABLE tz_probe (id int, ts text)"))
+        conn.execute(text(
+            "INSERT INTO tz_probe VALUES"
+            " (1, '2026-08-29 12:00:00+00'),"     # func.now()
+            " (2, '2026-08-29T12:00:00Z'),"       # _utc_now_iso
+            " (3, '2026-08-29T12:00:00'),"        # api/tokens.py:131, naive
+            " (4, '2026-08-29 12:00:00'),"        # autocm/gate/autonomy.py:107, naive
+            " (5, '2026-08-29 05:00:00-07')"))    # a real non-UTC offset, same instant
+        expr = ts_order("ts", "postgresql")
+        answers = {}
+        for zone in ("UTC", "Asia/Tokyo", "America/Los_Angeles"):
+            conn.execute(text(f"SET TIME ZONE '{zone}'"))
+            answers[zone] = [
+                str(r[1]) for r in conn.execute(
+                    text(f"SELECT id, ({expr} AT TIME ZONE 'UTC') FROM tz_probe ORDER BY id")
+                ).fetchall()
+            ]
+        conn.execute(text("SET TIME ZONE 'UTC'"))
+
+        for zone, got in answers.items():
+            assert got == ["2026-08-29 12:00:00"] * 5, (
+                f"under {zone} the five spellings of one instant disagreed: {got}")
+        # A power check. All-equal is also satisfiable by an expression that returns a
+        # constant, so pin that the value is the instant the rows actually encode.
+        assert answers["UTC"][0] == "2026-08-29 12:00:00"
     finally:
         conn.close()

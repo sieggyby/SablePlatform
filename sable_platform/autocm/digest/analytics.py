@@ -42,6 +42,8 @@ from typing import Dict, List, Optional, Protocol, Sequence, Tuple
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import get_dialect, ts_compare, ts_order
+
 from sable_platform.autocm.gate.autonomy import gather_review_stats
 from sable_platform.autocm.llm import LLMProvider
 
@@ -251,12 +253,14 @@ def _week_messages(
     conn: Connection, org_id: str, start: str, end: str
 ) -> List[Dict[str, Optional[str]]]:
     """Fetch the week's relay_messages rows for the org (filter-skipped INCLUDED)."""
+    _d = get_dialect(conn)
     rows = conn.execute(
         text(
             "SELECT id, member_id, external_user_id, text, received_at "
             "FROM relay_messages "
-            "WHERE org_id = :org_id AND received_at >= :start AND received_at < :end "
-            "ORDER BY received_at, id"
+            f"WHERE org_id = :org_id AND {ts_compare('received_at', '>=', 'start', _d)} "
+            f"  AND {ts_compare('received_at', '<', 'end', _d)} "
+            f"ORDER BY {ts_order('received_at', _d)}, id"
         ),
         {"org_id": org_id, "start": start, "end": end},
     ).fetchall()
@@ -278,33 +282,39 @@ def volume(
         (m["member_id"], m["external_user_id"]) for m in msgs
     }
 
+    _d = get_dialect(conn)
     prev_row = conn.execute(
         text(
             "SELECT COUNT(*) FROM relay_messages "
-            "WHERE org_id = :org_id AND received_at >= :ps AND received_at < :start"
+            f"WHERE org_id = :org_id AND {ts_compare('received_at', '>=', 'ps', _d)} "
+            f"  AND {ts_compare('received_at', '<', 'start', _d)}"
         ),
         {"org_id": org_id or "", "ps": prev_start, "start": start},
     ).fetchone()
     prev_messages = int(prev_row[0] or 0)
 
     # new members: a member whose earliest-ever message for the org is in-window.
+    # A member is new this week when their earliest-ever message for the org is the
+    # in-window row being examined. Asking for the earliest ROW rather than MIN(received_at)
+    # removes two text comparisons at once: the text MIN over a mixed-spelling column does
+    # not return the earliest row, and the `start <= first_seen < end` bound check that
+    # followed it compared two strings the same wrong way. Matching on the row id is exact
+    # even when two messages share a timestamp, which the old string equality was not.
     new_members = 0
     for m in msgs:
         mid, ext = m["member_id"], m["external_user_id"]
         first_row = conn.execute(
             text(
-                "SELECT MIN(received_at) FROM relay_messages "
+                "SELECT id FROM relay_messages "
                 "WHERE org_id = :org_id "
                 "  AND ((member_id IS NOT NULL AND member_id = :mid) "
-                "       OR (member_id IS NULL AND external_user_id = :ext))"
+                "       OR (member_id IS NULL AND external_user_id = :ext)) "
+                f"ORDER BY {ts_order('received_at', _d)}, id LIMIT 1"
             ),
             {"org_id": org_id or "", "mid": mid, "ext": ext},
         ).fetchone()
-        first_seen = first_row[0] if first_row else None
-        if first_seen is not None and start <= first_seen < end:
-            # count each distinct member once: only when THIS row is their first.
-            if m["received_at"] == first_seen:
-                new_members += 1
+        if first_row is not None and first_row[0] == m["id"]:
+            new_members += 1
 
     return VolumeStats(
         messages=messages,
