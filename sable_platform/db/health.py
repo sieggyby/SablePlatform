@@ -7,7 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
-from sable_platform.db.compat import hours_since
+from sable_platform.db.compat import get_dialect, hours_since, ts_order
 
 
 def _row_value(row, key: str, index: int):
@@ -51,8 +51,17 @@ def check_db_health(conn: Connection) -> dict:
     org_row = conn.execute(text("SELECT COUNT(*) as cnt FROM orgs")).fetchone()
     org_count = _row_value(org_row, "cnt", 0) or 0
 
+    # NOT `MAX(started_at)`. Codex round 3 named this shape: a text MAX returns the
+    # LEXICOGRAPHIC maximum, and `diagnostic_runs.started_at` holds two spellings, so every
+    # `'...T...'` value outranks every `'... ...'` value whatever the clock says. The health
+    # page then reports a real timestamp belonging to a run that was not the latest.
+    # `_row_value` already answers None for no row, which is what MAX returned on an empty
+    # table.
+    _latest = ts_order("started_at", get_dialect(conn))
     diag_row = conn.execute(
-        text("SELECT MAX(started_at) as latest FROM diagnostic_runs")
+        text(f"SELECT started_at as latest FROM diagnostic_runs"
+             f" WHERE NULLIF(started_at, '') IS NOT NULL"
+             f" ORDER BY {_latest} DESC LIMIT 1")
     ).fetchone()
     latest_diag = _row_value(diag_row, "latest", 0)
 

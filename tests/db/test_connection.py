@@ -4,12 +4,16 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from sable_platform.db.connection import ensure_schema, get_db, sable_db_path
+from sable_platform.db.connection import _MIGRATIONS, ensure_schema, get_db, sable_db_path
 
 
 # ---------------------------------------------------------------------------
 # sable_db_path
 # ---------------------------------------------------------------------------
+
+# The head version, read from the registry rather than pinned. A literal here goes stale
+# on every migration and reads as a failure rather than as an edit someone forgot.
+HEAD_VERSION = _MIGRATIONS[-1][1]
 
 class TestSableDbPath:
     def test_default_path(self, monkeypatch):
@@ -103,7 +107,7 @@ class TestEnsureSchema:
         raw.row_factory = sqlite3.Row
         ensure_schema(raw)
         row = raw.execute("SELECT version FROM schema_version").fetchone()
-        assert row[0] == 89
+        assert row[0] == HEAD_VERSION
         raw.close()
 
     def test_tables_exist(self, in_memory_db):

@@ -5,7 +5,11 @@ import sqlite3
 
 import pytest
 
-from sable_platform.db.connection import ensure_schema
+from sable_platform.db.connection import _MIGRATIONS, ensure_schema
+
+# The head version, read from the registry rather than pinned. Six tests used to
+# hardcode it, so every migration cost six edits and a stale one read as a failure.
+HEAD_VERSION = _MIGRATIONS[-1][1]
 
 
 EXPECTED_TABLES = {
@@ -170,7 +174,7 @@ def test_fresh_db_reaches_current_version():
     conn = _make_conn()
     ensure_schema(conn)
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 89
+    assert row["version"] == HEAD_VERSION
 
 
 def test_all_tables_exist():
@@ -189,7 +193,7 @@ def test_idempotent_schema():
     ensure_schema(conn)
     ensure_schema(conn)  # Run again — should not raise
     row = conn.execute("SELECT version FROM schema_version").fetchone()
-    assert row["version"] == 89
+    assert row["version"] == HEAD_VERSION
 
 
 def test_workflow_tables_columns():
@@ -1303,7 +1307,7 @@ def test_migration_068_opportunity_id_nullable_on_fresh_db():
     """
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == HEAD_VERSION
 
     # PRAGMA table_info: row = (cid, name, type, notnull, dflt_value, pk)
     cols = {
@@ -1480,7 +1484,7 @@ def test_migration_069_detected_via_on_fresh_db():
     reply can be stamped 'auto' (the scheduled detection job) or left NULL (legacy)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == HEAD_VERSION
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "detected_via" in cols, "migration 069 must add reply_outcomes.detected_via"
@@ -1730,7 +1734,7 @@ def test_migration_088_posted_text_on_fresh_db():
     text unavailable at link time)."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == HEAD_VERSION
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(reply_outcomes)").fetchall()}
     assert "posted_text" in cols, "migration 088 must add reply_outcomes.posted_text"
@@ -1769,7 +1773,7 @@ def test_migration_089_cost_events_vendor_units_on_fresh_db():
     cost_usd stays recomputable when the plan rate changes. Token rows stay NULL."""
     conn = _make_conn()
     ensure_schema(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == 89
+    assert conn.execute("SELECT version FROM schema_version").fetchone()["version"] == HEAD_VERSION
 
     cols = {r[1]: r for r in conn.execute("PRAGMA table_info(cost_events)").fetchall()}
     for col in ("credits", "credit_rate_usd", "note"):

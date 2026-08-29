@@ -5,6 +5,8 @@ import uuid
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 
 def upsert_alert_config(
@@ -151,9 +153,9 @@ def acknowledge_alert(
         return "already_resolved"
 
     conn.execute(
-        text("""
+        text(f"""
         UPDATE alerts
-        SET status='acknowledged', acknowledged_at=CURRENT_TIMESTAMP, acknowledged_by=:operator
+        SET status='acknowledged', acknowledged_at={now_canonical_sql(get_dialect(conn))}, acknowledged_by=:operator
         WHERE alert_id=:alert_id AND status='new'
         """),
         {"operator": operator, "alert_id": alert_id},
@@ -194,7 +196,7 @@ def resolve_alert(
 
     conn.execute(
         text(
-            "UPDATE alerts SET status='resolved', resolved_at=CURRENT_TIMESTAMP"
+            f"UPDATE alerts SET status='resolved', resolved_at={now_canonical_sql(get_dialect(conn))}"
             " WHERE alert_id=:alert_id AND status != 'resolved'"
         ),
         {"alert_id": alert_id},
@@ -225,7 +227,7 @@ def get_last_delivered_at(conn: Connection, dedup_key: str) -> str | None:
 def mark_delivered(conn: Connection, dedup_key: str) -> None:
     """Set last_delivered_at=now on the current 'new' alert for this dedup_key."""
     conn.execute(
-        text("UPDATE alerts SET last_delivered_at=CURRENT_TIMESTAMP, last_delivery_error=NULL "
+        text(f"UPDATE alerts SET last_delivered_at={now_canonical_sql(get_dialect(conn))}, last_delivery_error=NULL "
              "WHERE dedup_key=:dedup_key AND status='new'"),
         {"dedup_key": dedup_key},
     )

@@ -53,6 +53,8 @@ from typing import Any
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 log = logging.getLogger(__name__)
 
@@ -204,7 +206,7 @@ def _write_cursor(conn: Connection, table: str, org_id: str, value: str) -> None
     ).fetchone()
     if existing:
         conn.execute(
-            text("UPDATE platform_meta SET value=:v, updated_at=CURRENT_TIMESTAMP WHERE key=:k"),
+            text(f"UPDATE platform_meta SET value=:v, updated_at={now_canonical_sql(get_dialect(conn))} WHERE key=:k"),
             {"v": value, "k": key},
         )
     else:

@@ -9,6 +9,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from sable_platform.errors import SableError, ENTITY_NOT_FOUND, ENTITY_ARCHIVED, ORG_NOT_FOUND
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 SHARED_HANDLE_MERGE_CONFIDENCE = 0.80
 
@@ -26,9 +28,9 @@ def create_entity(
 
     entity_id = uuid.uuid4().hex
     conn.execute(
-        text("""
+        text(f"""
         INSERT INTO entities (entity_id, org_id, display_name, status, source, updated_at)
-        VALUES (:entity_id, :org_id, :display_name, :status, :source, CURRENT_TIMESTAMP)
+        VALUES (:entity_id, :org_id, :display_name, :status, :source, {now_canonical_sql(get_dialect(conn))})
         """),
         {"entity_id": entity_id, "org_id": org_id, "display_name": display_name,
          "status": status, "source": source},
@@ -77,7 +79,7 @@ def update_display_name(
     if row["status"] == "confirmed" and source != "manual":
         return
     conn.execute(
-        text("UPDATE entities SET display_name=:display_name, updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
+        text(f"UPDATE entities SET display_name=:display_name, updated_at={now_canonical_sql(get_dialect(conn))} WHERE entity_id=:entity_id"),
         {"display_name": display_name, "entity_id": entity_id},
     )
     conn.commit()
@@ -139,7 +141,7 @@ def add_handle(
                 pass
 
     conn.execute(
-        text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
+        text(f"UPDATE entities SET updated_at={now_canonical_sql(get_dialect(conn))} WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()
@@ -200,7 +202,7 @@ def list_entity_notes(
 def archive_entity(conn: Connection, entity_id: str) -> None:
     row = get_entity(conn, entity_id)
     conn.execute(
-        text("UPDATE entities SET status='archived', updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
+        text(f"UPDATE entities SET status='archived', updated_at={now_canonical_sql(get_dialect(conn))} WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()

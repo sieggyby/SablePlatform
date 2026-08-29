@@ -10,6 +10,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import OperationalError as SAOperationalError
 
 from sable_platform.db.audit import log_audit
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +112,7 @@ def add_tag(
         conn.execute(
             text(f"""
             UPDATE entity_tags
-            SET is_current = 0, deactivated_at = CURRENT_TIMESTAMP
+            SET is_current = 0, deactivated_at = {now_canonical_sql(get_dialect(conn))}
             WHERE entity_id = :entity_id AND tag = :tag AND {active_predicate(conn.dialect.name)}
             """),
             {"entity_id": entity_id, "tag": tag},
@@ -130,7 +132,8 @@ def add_tag(
          "confidence": confidence, "expires_at": expires_at},
     )
     conn.execute(
-        text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
+        text(f"UPDATE entities SET updated_at={now_canonical_sql(get_dialect(conn))}"
+             f" WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()
@@ -170,13 +173,14 @@ def deactivate_tag(
     conn.execute(
         text(f"""
         UPDATE entity_tags
-        SET is_current = 0, deactivated_at = CURRENT_TIMESTAMP
+        SET is_current = 0, deactivated_at = {now_canonical_sql(get_dialect(conn))}
         WHERE entity_id = :entity_id AND tag = :tag AND {active_predicate(conn.dialect.name)}
         """),
         {"entity_id": entity_id, "tag": tag},
     )
     conn.execute(
-        text("UPDATE entities SET updated_at=CURRENT_TIMESTAMP WHERE entity_id=:entity_id"),
+        text(f"UPDATE entities SET updated_at={now_canonical_sql(get_dialect(conn))}"
+             f" WHERE entity_id=:entity_id"),
         {"entity_id": entity_id},
     )
     conn.commit()

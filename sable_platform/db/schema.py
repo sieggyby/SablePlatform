@@ -22,9 +22,10 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
-    func,
     text,
 )
+
+from sable_platform.db.ts_format import utc_now_iso_sql
 
 metadata = MetaData()
 
@@ -43,7 +44,7 @@ platform_meta = Table(
     metadata,
     Column("key", Text, primary_key=True),
     Column("value", Text, nullable=False),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 # ------------------------------------------------------------------
@@ -59,8 +60,8 @@ orgs = Table(
     Column("twitter_handle", Text),
     Column("config_json", Text, nullable=False, server_default=text("'{}'")),
     Column("status", Text, nullable=False, server_default=text("'active'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 entities = Table(
@@ -72,8 +73,8 @@ entities = Table(
     Column("status", Text, nullable=False, server_default=text("'candidate'")),
     Column("source", Text, nullable=False, server_default=text("'auto'")),
     Column("config_json", Text, nullable=False, server_default=text("'{}'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_entities_org", "org_id"),
 )
 
@@ -85,7 +86,7 @@ entity_handles = Table(
     Column("platform", Text, nullable=False),
     Column("handle", Text, nullable=False),
     Column("is_primary", Integer, nullable=False, server_default="0"),
-    Column("added_at", Text, nullable=False, server_default=func.now()),
+    Column("added_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("platform", "handle"),
     Index("idx_handles_entity", "entity_id"),
     Index("idx_handles_platform_handle", "platform", "handle"),
@@ -101,7 +102,7 @@ entity_tags = Table(
     Column("confidence", Float, nullable=False, server_default="1.0"),
     Column("is_current", Integer, nullable=False, server_default="1"),
     Column("expires_at", Text),
-    Column("added_at", Text, nullable=False, server_default=func.now()),
+    Column("added_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("deactivated_at", Text),
     Index("idx_tags_entity", "entity_id"),
     Index("idx_tags_tag", "tag"),
@@ -118,7 +119,7 @@ entity_notes = Table(
     Column("entity_id", Text, ForeignKey("entities.entity_id"), nullable=False),
     Column("body", Text, nullable=False),
     Column("source", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_notes_entity", "entity_id"),
 )
 
@@ -131,8 +132,8 @@ merge_candidates = Table(
     Column("confidence", Float, nullable=False, server_default="0.0"),
     Column("reason", Text),
     Column("status", Text, nullable=False, server_default=text("'pending'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("entity_a_id", "entity_b_id"),
     Index("idx_merge_candidates_status", "status"),
 )
@@ -146,7 +147,7 @@ merge_events = Table(
     Column("candidate_id", Integer, ForeignKey("merge_candidates.candidate_id")),
     Column("merged_by", Text),
     Column("snapshot_json", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 # ------------------------------------------------------------------
@@ -165,7 +166,7 @@ content_items = Table(
     Column("body", Text),
     Column("metadata_json", Text, nullable=False, server_default=text("'{}'")),
     Column("posted_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_content_org", "org_id"),
     Index("idx_content_entity", "entity_id"),
 )
@@ -177,7 +178,7 @@ diagnostic_runs = Table(
     Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
     Column("run_type", Text, nullable=False),
     Column("status", Text, nullable=False, server_default=text("'running'")),
-    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("started_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("completed_at", Text),
     Column("result_json", Text),
     Column("error", Text),
@@ -213,7 +214,7 @@ diagnostic_deltas = Table(
     Column("value_after", Float),
     Column("delta", Float),
     Column("pct_change", Float),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_deltas_org", "org_id", "metric_name"),
     Index("idx_deltas_after", "run_id_after"),
 )
@@ -230,8 +231,8 @@ jobs = Table(
     Column("job_type", Text, nullable=False),
     Column("status", Text, nullable=False, server_default=text("'pending'")),
     Column("config_json", Text, nullable=False, server_default=text("'{}'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 004
     Column("completed_at", Text),
     Column("result_json", Text),
@@ -275,7 +276,7 @@ artifacts = Table(
     Column("stale", Integer, nullable=False, server_default="0"),
     # Migration 005
     Column("degraded", Integer, nullable=False, server_default="0"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_artifacts_org", "org_id"),
     Index("idx_artifacts_type", "artifact_type"),
 )
@@ -292,7 +293,7 @@ cost_events = Table(
     Column("output_tokens", Integer, nullable=False, server_default="0"),
     Column("cost_usd", Float, nullable=False, server_default="0.0"),
     Column("call_status", Text, nullable=False, server_default=text("'success'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 081 — the acting operator's SableWeb SESSION identity (operator_arf …),
     # NOT the persona X-handle. NULL = unattributed (pre-081 rows / system paths).
     Column("operator_id", Text),
@@ -318,7 +319,7 @@ sync_runs = Table(
     Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
     Column("sync_type", Text, nullable=False),
     Column("status", Text, nullable=False, server_default=text("'running'")),
-    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("started_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("completed_at", Text),
     Column("records_synced", Integer, nullable=False, server_default="0"),
     Column("error", Text),
@@ -350,7 +351,7 @@ workflow_runs = Table(
     Column("started_at", Text),
     Column("completed_at", Text),
     Column("error", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 012
     Column("step_fingerprint", Text),
     # Migration 024
@@ -394,7 +395,7 @@ workflow_events = Table(
     Column("step_id", Text),
     Column("event_type", Text, nullable=False),
     Column("payload_json", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_workflow_events_run", "run_id"),
 )
 
@@ -420,7 +421,7 @@ actions = Table(
     Column("completed_at", Text),
     Column("skipped_at", Text),
     Column("outcome_notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_actions_org", "org_id", "status"),
 )
 
@@ -454,7 +455,7 @@ outcomes = Table(
     Column("metric_delta", Float),
     Column("data_json", Text),
     Column("recorded_by", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_outcomes_org", "org_id"),
 )
 
@@ -488,7 +489,7 @@ entity_tag_history = Table(
     Column("source", Text),
     Column("source_ref", Text),
     Column("expires_at", Text),
-    Column("effective_at", Text, nullable=False, server_default=func.now()),
+    Column("effective_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_tag_history_entity", "entity_id", "effective_at"),
     Index("idx_tag_history_org", "org_id", "tag", "effective_at"),
 )
@@ -506,7 +507,7 @@ alert_configs = Table(
     Column("telegram_chat_id", Text),
     Column("discord_webhook_url", Text),
     Column("enabled", Integer, nullable=False, server_default="1"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 011
     Column("cooldown_hours", Integer, nullable=False, server_default="4"),
     UniqueConstraint("org_id"),
@@ -531,7 +532,7 @@ alerts = Table(
     Column("acknowledged_at", Text),
     Column("acknowledged_by", Text),
     Column("resolved_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 011
     Column("last_delivered_at", Text),
     # Migration 013
@@ -565,7 +566,7 @@ discord_pulse_runs = Table(
     Column("retention_delta", Float),
     Column("echo_rate_delta", Float),
     # Migration 010 uses strftime('%Y-%m-%dT%H:%M:%SZ', 'now') — not datetime('now')
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("org_id", "project_slug", "run_date"),
     Index("idx_discord_pulse_runs_org_date", "org_id", "run_date"),
 )
@@ -591,8 +592,8 @@ discord_streak_events = Table(
     Column("invalidated_at", Text),
     Column("invalidated_reason", Text),
     Column("ingest_source", Text, nullable=False, server_default=text("'gateway'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 049: image_phash for Scored Mode V2 Pass A. Captured at post
     # time even when scoring state='off' — collision detection works always.
     Column("image_phash", Text),
@@ -617,7 +618,7 @@ discord_guild_config = Table(
     Column("guild_id", Text, primary_key=True),
     Column("relax_mode_on", Integer, nullable=False, server_default=text("0")),
     Column("current_burn_mode", Text, nullable=False, server_default=text("'once'")),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("updated_by", Text, nullable=False),
     # Migration 047 — personalize-mode toggle for /roast personalization layer.
     Column("personalize_mode_on", Integer, nullable=False, server_default=text("0")),
@@ -631,7 +632,7 @@ discord_burn_optins = Table(
     Column("user_id", Text, nullable=False),
     Column("mode", Text, nullable=False),
     Column("opted_in_by", Text, nullable=False),
-    Column("opted_in_at", Text, nullable=False, server_default=func.now()),
+    Column("opted_in_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("guild_id", "user_id"),
 )
 
@@ -641,7 +642,7 @@ discord_burn_random_log = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("guild_id", Text, nullable=False),
     Column("user_id", Text, nullable=False),
-    Column("roasted_at", Text, nullable=False, server_default=func.now()),
+    Column("roasted_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index(
         "idx_discord_burn_random_log_recent",
         "guild_id",
@@ -659,7 +660,7 @@ discord_burn_blocklist = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("guild_id", Text, nullable=False),
     Column("user_id", Text, nullable=False),
-    Column("blocked_at", Text, nullable=False, server_default=func.now()),
+    Column("blocked_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("guild_id", "user_id", name="uq_discord_burn_blocklist_guild_user"),
     Index("idx_discord_burn_blocklist_user", "user_id", "guild_id"),
 )
@@ -675,7 +676,7 @@ discord_peer_roast_tokens = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("guild_id", Text, nullable=False),
     Column("actor_user_id", Text, nullable=False),
-    Column("granted_at", Text, nullable=False, server_default=func.now()),
+    Column("granted_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("source", Text, nullable=False),
     Column("year_month", Text, nullable=False),
     Column("consumed_at", Text),
@@ -717,7 +718,7 @@ discord_peer_roast_flags = Table(
     Column("post_id", Text, nullable=False),
     Column("bot_reply_id", Text, nullable=False),
     Column("reactor_user_id", Text, nullable=False),
-    Column("flagged_at", Text, nullable=False, server_default=func.now()),
+    Column("flagged_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index(
         "idx_discord_peer_roast_flags_target",
         "target_user_id", "guild_id", "flagged_at",
@@ -739,7 +740,7 @@ discord_message_observations = Table(
     Column("content_truncated", Text),
     Column("reactions_given_json", Text),
     Column("posted_at", Text, nullable=False),
-    Column("captured_at", Text, nullable=False, server_default=func.now()),
+    Column("captured_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint(
         "guild_id", "message_id",
         name="uq_discord_message_observations_guild_message",
@@ -765,7 +766,7 @@ discord_user_observations = Table(
     Column("sample_messages_json", Text),
     Column("reaction_emojis_given_json", Text),
     Column("channels_active_in_json", Text),
-    Column("computed_at", Text, nullable=False, server_default=func.now()),
+    Column("computed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index(
         "idx_discord_user_observations_user",
         "user_id", "guild_id", "computed_at",
@@ -787,7 +788,7 @@ discord_user_vibes = Table(
     Column("reaction_signature", Text),
     Column("palette_signals", Text),
     Column("tone", Text),
-    Column("inferred_at", Text, nullable=False, server_default=func.now()),
+    Column("inferred_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column(
         "source_observation_id",
         Integer,
@@ -812,7 +813,7 @@ discord_invite_snapshot = Table(
     Column("uses", Integer, nullable=False, server_default=text("0")),
     Column("max_uses", Integer, nullable=False, server_default=text("0")),
     Column("expires_at", Text),
-    Column("captured_at", Text, nullable=False, server_default=func.now()),
+    Column("captured_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("guild_id", "code", name="uq_discord_invite_snapshot_guild_code"),
     Index("idx_discord_invite_snapshot_guild", "guild_id"),
 )
@@ -826,7 +827,7 @@ discord_team_inviters = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("guild_id", Text, nullable=False),
     Column("user_id", Text, nullable=False),
-    Column("added_at", Text, nullable=False, server_default=func.now()),
+    Column("added_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("added_by", Text, nullable=False),
     UniqueConstraint("guild_id", "user_id", name="uq_discord_team_inviters_guild_user"),
     Index("idx_discord_team_inviters_guild", "guild_id"),
@@ -841,7 +842,7 @@ discord_member_admit = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("guild_id", Text, nullable=False),
     Column("user_id", Text, nullable=False),
-    Column("joined_at", Text, nullable=False, server_default=func.now()),
+    Column("joined_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("attributed_invite_code", Text),
     Column("attributed_inviter_user_id", Text),
     Column("is_team_invite", Integer, nullable=False, server_default=text("0")),
@@ -896,8 +897,8 @@ discord_fitcheck_scores = Table(
     Column("reveal_trigger", Text),
     Column("invalidated_at", Text),
     Column("invalidated_reason", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("guild_id", "post_id", name="uq_discord_fitcheck_scores_guild_post"),
     Index(
         "idx_discord_fitcheck_scores_user_pct",
@@ -926,7 +927,7 @@ discord_fitcheck_emoji_milestones = Table(
     Column("emoji_key", Text, nullable=False),
     Column("milestone", Integer, nullable=False),
     Column("crossed_at", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint(
         "guild_id", "post_id", "emoji_key", "milestone",
         name="uq_discord_fitcheck_emoji_milestones_crossing",
@@ -958,8 +959,8 @@ discord_scoring_config = Table(
     Column("cold_start_min_pool", Integer, nullable=False, server_default=text("20")),
     Column("model_id", Text, nullable=False, server_default=text("'claude-sonnet-4-6'")),
     Column("prompt_version", Text, nullable=False, server_default=text("'rubric_v1'")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("guild_id", name="uq_discord_scoring_config_guild"),
 )
 
@@ -979,8 +980,8 @@ discord_state_pins = Table(
     Column("channel_id", Text, nullable=False),
     Column("message_id", Text, nullable=False),
     Column("posted_at", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint(
         "guild_id", "characteristic",
         name="uq_discord_state_pins_guild_characteristic",
@@ -1021,7 +1022,7 @@ entity_decay_scores = Table(
     Column("entity_id", Text, nullable=False),
     Column("decay_score", Float, nullable=False),
     Column("risk_tier", Text, nullable=False),
-    Column("scored_at", Text, nullable=False, server_default=func.now()),
+    Column("scored_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("run_date", Text),
     Column("factors_json", Text),
     UniqueConstraint("org_id", "entity_id"),
@@ -1038,7 +1039,7 @@ entity_centrality_scores = Table(
     Column("degree_centrality", Float, nullable=False, server_default="0.0"),
     Column("betweenness_centrality", Float, nullable=False, server_default="0.0"),
     Column("eigenvector_centrality", Float, nullable=False, server_default="0.0"),
-    Column("scored_at", Text, nullable=False, server_default=func.now()),
+    Column("scored_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("run_date", Text, nullable=False),
     # Migration 023
     Column("in_centrality", Float, nullable=False, server_default="0.0"),
@@ -1059,7 +1060,7 @@ entity_watchlist = Table(
     Column("entity_id", Text, nullable=False),
     Column("added_by", Text, nullable=False),
     Column("note", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("org_id", "entity_id"),
     Index("idx_watchlist_org", "org_id"),
 )
@@ -1073,7 +1074,7 @@ watchlist_snapshots = Table(
     Column("decay_score", Float),
     Column("tags_json", Text),
     Column("interaction_count", Integer),
-    Column("snapshot_at", Text, nullable=False, server_default=func.now()),
+    Column("snapshot_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_watchlist_snap", "org_id", "entity_id", "snapshot_at"),
 )
 
@@ -1085,7 +1086,7 @@ audit_log = Table(
     "audit_log",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("timestamp", Text, nullable=False, server_default=func.now()),
+    Column("timestamp", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("actor", Text, nullable=False),
     Column("action", Text, nullable=False),
     Column("org_id", Text),
@@ -1112,7 +1113,7 @@ webhook_subscriptions = Table(
     Column("consecutive_failures", Integer, nullable=False, server_default="0"),
     Column("last_failure_at", Text),
     Column("last_failure_error", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("org_id", "url"),
 )
 
@@ -1133,7 +1134,7 @@ prospect_scores = Table(
     Column("rationale_json", Text),
     Column("enrichment_json", Text),
     Column("next_action", Text),
-    Column("scored_at", Text, nullable=False, server_default=func.now()),
+    Column("scored_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 025
     Column("graduated_at", Text),
     # Migration 026
@@ -1159,7 +1160,7 @@ playbook_targets = Table(
     Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
     Column("artifact_id", Text),
     Column("targets_json", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_playbook_targets_org", "org_id"),
 )
 
@@ -1170,7 +1171,7 @@ playbook_outcomes = Table(
     Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
     Column("targets_artifact_id", Text),
     Column("outcomes_json", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_playbook_outcomes_org", "org_id"),
 )
 
@@ -1187,7 +1188,7 @@ metric_snapshots = Table(
     Column("snapshot_date", Text, nullable=False),
     Column("metrics_json", Text, nullable=False, server_default=text("'{}'")),
     Column("source", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("org_id", "snapshot_date"),
     Index("idx_metric_snapshots_org_date", "org_id", "snapshot_date"),
 )
@@ -1209,8 +1210,8 @@ kol_candidates = Table(
     Column("bio_snapshot", Text),
     Column("followers_snapshot", Integer),
     Column("discovery_sources_json", Text, nullable=False, server_default=text("'[]'")),
-    Column("first_seen_at", Text, nullable=False, server_default=func.now()),
-    Column("last_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("first_seen_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("last_seen_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("archetype_tags_json", Text, nullable=False, server_default=text("'[]'")),
     Column("sector_tags_json", Text, nullable=False, server_default=text("'[]'")),
     Column(
@@ -1278,8 +1279,8 @@ project_profiles_external = Table(
     Column("profile_blob", Text),
     Column("enrichment_source", Text, nullable=False, server_default=text("'manual_only'")),
     Column("last_enriched_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("last_used_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("last_used_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 kol_handle_resolution_conflicts = Table(
@@ -1299,7 +1300,7 @@ kol_handle_resolution_conflicts = Table(
         nullable=False,
     ),
     Column("resolved_twitter_id", Text),
-    Column("detected_at", Text, nullable=False, server_default=func.now()),
+    Column("detected_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("resolution_state", Text, nullable=False, server_default=text("'open'")),
     Column("resolved_at", Text),
     Column("notes", Text),
@@ -1317,7 +1318,7 @@ kol_extract_runs = Table(
     Column("target_user_id", Text),
     Column("provider", Text, nullable=False),
     Column("extract_type", Text, nullable=False),
-    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("started_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("completed_at", Text),
     Column("cursor_completed", Integer, nullable=False, server_default=text("0")),
     Column("last_cursor", Text),
@@ -1347,7 +1348,7 @@ kol_follow_edges = Table(
     Column("follower_handle", Text),
     Column("followed_id", Text, nullable=False),
     Column("followed_handle", Text, nullable=False),
-    Column("fetched_at", Text, nullable=False, server_default=func.now()),
+    Column("fetched_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("run_id", "follower_id", "followed_id"),
     Index("idx_kol_follow_edges_followed", "followed_id"),
     Index("idx_kol_follow_edges_followed_handle", "followed_handle"),
@@ -1367,7 +1368,7 @@ kol_operator_relationships = Table(
     Column("status", Text, nullable=False),
     Column("note", Text),
     Column("is_private", Integer, nullable=False, server_default=text("0")),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("idx_kor_handle_client", "handle_normalized", "client_id"),
     Index("idx_kor_operator", "operator_id", "client_id"),
     Index("idx_kor_created", "created_at"),
@@ -1386,7 +1387,7 @@ kol_create_audit = Table(
     "kol_create_audit",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("at_utc", Text, nullable=False, server_default=func.now()),
+    Column("at_utc", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("email", Text),
     Column("endpoint", Text, nullable=False),
     Column("method", Text, nullable=False),
@@ -1424,7 +1425,7 @@ api_tokens = Table(
     Column("label", Text, nullable=False),
     Column("operator_id", Text, nullable=False),
     Column("created_by", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("expires_at", Text),
     Column("last_used_at", Text),
     Column("revoked_at", Text),
@@ -1452,7 +1453,7 @@ kol_enrichment = Table(
     ),
     Column("operator_email", Text, nullable=False),
     Column("operator_persona", Text, nullable=False),
-    Column("fetched_at", Text, nullable=False, server_default=func.now()),
+    Column("fetched_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("payload_json", Text, nullable=False),
     Column("grok_model", Text),
     Column("cost_usd", Float, server_default="0"),
@@ -1490,7 +1491,7 @@ media_assets = Table(
     Column("source_ref", Text),
     Column("caption", Text),
     Column("metadata_json", Text, nullable=False, server_default="{}"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_media_assets_org_kind", "org_id", "kind"),
     Index("ix_media_assets_sha", "org_id", "sha256"),
 )
@@ -1511,7 +1512,7 @@ operator_reply_quota = Table(
     Column("day_utc", Text, primary_key=True),
     Column("org_id", Text),
     Column("count", Integer, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 # Per-(operator, org, ISO-week) dollar budget for on-demand meme production (mig 078).
@@ -1525,7 +1526,7 @@ operator_meme_budget = Table(
     Column("week_iso", Text, primary_key=True),
     Column("spend_usd", Float, nullable=False, server_default="0"),
     Column("runs", Integer, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Accumulator invariants -- spend/runs are non-negative. DB backstop for the app-layer
     # negative-spend guard in meme_budget.reconcile_meme_spend (mirrors 078_*.sql + the Alembic rev).
     CheckConstraint("spend_usd >= 0", name="ck_operator_meme_budget_spend_nonneg"),
@@ -1544,7 +1545,7 @@ reply_suggestions = Table(
     Column("variants_json", Text, nullable=False, server_default="[]"),
     Column("model", Text),
     Column("cost_usd", Float),
-    Column("generated_at", Text, nullable=False, server_default=func.now()),
+    Column("generated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # mig 060 — media kind (image/video/none) the reply attached; backs the
     # prefer-image ranking + per-operator anti-spam image throttle.
     Column("clip_media_kind", Text),
@@ -1574,7 +1575,7 @@ reply_outcomes = Table(
     Column("chosen_variant_idx", Integer),
     Column("was_edited", Integer, nullable=False, server_default="0"),
     Column("engagement_json", Text, nullable=False, server_default="{}"),
-    Column("recorded_at", Text, nullable=False, server_default=func.now()),
+    Column("recorded_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 066: the media asset (if any) that rode along with this posted
     # reply, so assisted-vs-organic lift can be sliced by attached media.
     Column("media_content_id", Text),
@@ -1611,7 +1612,7 @@ reply_campaigns = Table(
     Column("objective", Text),
     Column("status", Text, nullable=False, server_default="active"),
     Column("created_by", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("won_at", Text),
     Column("closed_at", Text),
     Index("ix_reply_campaigns_org", "org_id", "status", "created_at"),
@@ -1627,7 +1628,7 @@ reply_campaign_assignments = Table(
     Column("posted_tweet_id", Text),
     Column("angle", Text),
     Column("status", Text, nullable=False, server_default="assigned"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("posted_at", Text),
     Index("ix_reply_campaign_assignments_campaign", "campaign_id"),
 )
@@ -1639,7 +1640,7 @@ reply_campaign_assignments = Table(
 # Mirrors 057_relay.sql. The .sql file carries the strftime ISO-8601-Z _at
 # default + the CHECK constraints; test_schema.py parity compares only table
 # names, column names, type affinity, nullability, and named indexes — so this
-# uses the house server_default=func.now() (defaults are not compared) and the
+# uses the house server_default=utc_now_iso_sql() (defaults are not compared) and the
 # named partial indexes are reproduced exactly. relay_publication_jobs.state
 # CHECK = the corrected section-3.1 set ('pending','claimed','retry','done','dead').
 
@@ -1654,7 +1655,7 @@ relay_clients = Table(
     Column("last_seen_x_id", Text),
     Column("last_error", Text),
     Column("config", Text, nullable=False, server_default="{}"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 relay_chats = Table(
@@ -1665,7 +1666,7 @@ relay_chats = Table(
     Column("platform", Text, nullable=False),
     Column("chat_id", Text, nullable=False),
     Column("title", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "platform IN ('telegram','discord')",
         name="ck_relay_chats_platform",
@@ -1689,7 +1690,7 @@ relay_chat_bindings = Table(
     Column("superseded_by_chat_id", Text),
     Column("last_seen_at", Text),
     Column("last_error", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "platform IN ('telegram','discord')",
         name="ck_relay_chat_bindings_platform",
@@ -1728,7 +1729,7 @@ relay_members = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("display_name", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 relay_member_identities = Table(
@@ -1738,7 +1739,7 @@ relay_member_identities = Table(
     Column("platform", Text, nullable=False),
     Column("external_user_id", Text, nullable=False),
     Column("handle", Text),
-    Column("linked_at", Text, nullable=False, server_default=func.now()),
+    Column("linked_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "platform IN ('telegram','x','discord')",
         name="ck_relay_member_identities_platform",
@@ -1754,7 +1755,7 @@ relay_member_roles = Table(
     Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
     Column("role", Text, nullable=False),
     Column("granted_by", Integer, ForeignKey("relay_members.id")),
-    Column("granted_at", Text, nullable=False, server_default=func.now()),
+    Column("granted_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "role IN ('sable_operator','client_team','admin')",
         name="ck_relay_member_roles_role",
@@ -1770,7 +1771,7 @@ relay_member_preferences = Table(
     Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
     Column("replies_optin", Integer, nullable=False, server_default="0"),
     Column("mute_until", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("member_id", "org_id"),
     Index("relay_member_preferences_optin", "org_id", "replies_optin", "mute_until"),
 )
@@ -1787,7 +1788,7 @@ relay_tweets = Table(
     Column("is_reply", Integer, nullable=False, server_default="0"),
     Column("in_reply_to_x_id", Text),
     Column("conversation_x_id", Text),
-    Column("fetched_at", Text, nullable=False, server_default=func.now()),
+    Column("fetched_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("raw", Text),
     # Migration 062 — read-through cache signals for the heuristic pre-rank.
     Column("engagement_json", Text),
@@ -1818,7 +1819,7 @@ relay_search_windows = Table(
     Column("query_norm", Text, nullable=False),
     Column("window_start", Text, nullable=False),
     Column("window_end", Text, nullable=False),
-    Column("completed_at", Text, nullable=False, server_default=func.now()),
+    Column("completed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("result_count", Integer, nullable=False, server_default="0"),
     Column("result_ids_json", Text, nullable=False, server_default="[]"),
     Column("source", Text),
@@ -1839,7 +1840,7 @@ relay_messages = Table(
     Column("external_user_id", Text),
     Column("text", Text),
     Column("reply_to_external_message_id", Text),
-    Column("received_at", Text, nullable=False, server_default=func.now()),
+    Column("received_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "platform IN ('telegram','discord')",
         name="ck_relay_messages_platform",
@@ -1872,7 +1873,7 @@ relay_submissions = Table(
     Column("source_role", Text, nullable=False),
     Column("note", Text),
     Column("status", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("expires_at", Text, nullable=False),
     Column("resolved_at", Text),
     CheckConstraint(
@@ -1904,7 +1905,7 @@ relay_submission_reactions = Table(
     Column("submission_id", Integer, ForeignKey("relay_submissions.id"), nullable=False),
     Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
     Column("emoji", Text, nullable=False),
-    Column("reacted_at", Text, nullable=False, server_default=func.now()),
+    Column("reacted_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("submission_id", "member_id", "emoji"),
     Index("relay_submission_reactions_by_emoji", "submission_id", "emoji"),
 )
@@ -1922,9 +1923,9 @@ relay_publication_jobs = Table(
     Column("attempts", Integer, nullable=False, server_default="0"),
     Column("claimed_by", Text),
     Column("claimed_at", Text),
-    Column("next_attempt_at", Text, nullable=False, server_default=func.now()),
+    Column("next_attempt_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("last_error", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "destination_platform IN ('discord','telegram')",
         name="ck_relay_publication_jobs_destination_platform",
@@ -1958,7 +1959,7 @@ relay_publications = Table(
     Column("destination_platform", Text, nullable=False),
     Column("destination_chat_id", Text, nullable=False),
     Column("destination_message_id", Text, nullable=False),
-    Column("published_at", Text, nullable=False, server_default=func.now()),
+    Column("published_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("relay_publications_by_tweet", "tweet_id"),
     Index(
         "relay_publications_by_message",
@@ -1986,7 +1987,7 @@ relay_reply_opportunities = Table(
     Column("flagger_id", Integer, ForeignKey("relay_members.id"), nullable=False),
     Column("origin", Text, nullable=False),
     Column("note", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 062 — reply-opportunity feed (purely additive, see 062.sql).
     Column("score", Float),
     Column("score_reason", Text),
@@ -2029,7 +2030,7 @@ relay_reply_notifications = Table(
         nullable=False,
     ),
     Column("member_id", Integer, ForeignKey("relay_members.id"), nullable=False),
-    Column("notified_at", Text, nullable=False, server_default=func.now()),
+    Column("notified_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("dismissed_at", Text),
     Column("replied_at", Text),
     Column("replied_tweet_id", Text),
@@ -2062,7 +2063,7 @@ relay_opportunity_operator_state = Table(
     Column("operator_handle", Text, nullable=False),
     Column("state", Text, nullable=False),
     Column("snooze_until", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("opportunity_id", "operator_handle"),
 )
 
@@ -2081,7 +2082,7 @@ relay_opportunity_feedback = Table(
     Column("rater_handle", Text, nullable=False),
     Column("rater_role", Text, nullable=False),
     Column("thumb", Integer, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_relay_opportunity_feedback_opp", "opportunity_id"),
 )
 
@@ -2100,7 +2101,7 @@ relay_sweep_config = Table(
     Column("expiry_hours", Integer, nullable=False, server_default="36"),
     Column("last_sweep_at", Text),
     Column("sweep_requested_at", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 # Per-source since_id cursor (do NOT overload relay_clients.last_seen_x_id).
@@ -2111,7 +2112,7 @@ relay_sweep_cursor = Table(
     Column("source", Text, nullable=False),
     Column("query_hash", Text, nullable=False),
     Column("since_id", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("org_id", "source", "query_hash"),
 )
 
@@ -2122,7 +2123,7 @@ relay_operator_heartbeat = Table(
     metadata,
     Column("org_id", Text, nullable=False),
     Column("operator_handle", Text, nullable=False),
-    Column("last_seen", Text, nullable=False, server_default=func.now()),
+    Column("last_seen", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("org_id", "operator_handle"),
 )
 
@@ -2146,10 +2147,10 @@ relay_trending_stories = Table(
     Column("member_tweet_ids_json", Text, nullable=False, server_default="[]"),
     Column("monitor_terms_json", Text, nullable=False, server_default="[]"),
     Column("status", Text, nullable=False, server_default="emerging"),
-    Column("first_seen_at", Text, nullable=False, server_default=func.now()),
-    Column("last_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("first_seen_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("last_seen_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("expires_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_relay_trending_stories_feed", "org_id", "status"),
 )
 
@@ -2167,8 +2168,8 @@ relay_topic_suggestions = Table(
     Column("org_id", Text, ForeignKey("relay_clients.org_id"), nullable=False),
     Column("topics_json", Text, nullable=False, server_default="[]"),
     Column("model", Text),
-    Column("refreshed_at", Text, nullable=False, server_default=func.now()),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("refreshed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_relay_topic_suggestions_org", "org_id", "refreshed_at"),
 )
 
@@ -2185,7 +2186,7 @@ relay_topic_picks = Table(
     Column("topic", Text, nullable=False),
     Column("register_band", Text),
     Column("operator_handle", Text),
-    Column("picked_at", Text, nullable=False, server_default=func.now()),
+    Column("picked_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_relay_topic_picks_org", "org_id", "picked_at"),
 )
 
@@ -2206,7 +2207,7 @@ tweetbank_entries = Table(
     Column("author", Text),
     Column("source", Text, nullable=False, server_default="human"),
     Column("status", Text, nullable=False, server_default="approved"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("used_at", Text),
     Column("used_by", Text),
     CheckConstraint("source IN ('human', 'ai')", name="ck_tweetbank_source"),
@@ -2232,7 +2233,7 @@ relay_quality_accounts = Table(
     Column("source", Text),
     Column("followers_snapshot", Integer),
     Column("active", Integer, nullable=False, server_default="1"),
-    Column("added_at", Text, nullable=False, server_default=func.now()),
+    Column("added_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 relay_quality_tweets = Table(
@@ -2243,7 +2244,7 @@ relay_quality_tweets = Table(
     Column("posted_at", Text),
     Column("text", Text),
     Column("band", Text),
-    Column("first_seen_at", Text, nullable=False, server_default=func.now()),
+    Column("first_seen_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     # Migration 085 — K1 instrumentation, parsed from the SocialData raw object.
     # Three-valued: NULL = not yet parsed (pre-backfill row); media_kinds '' = parsed,
     # NO media, else a sorted comma list of entity types ('photo', 'animated_gif,video').
@@ -2259,7 +2260,7 @@ relay_tweet_snapshots = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("tweet_x_id", Text, nullable=False),
     Column("target_age_hours", Integer, nullable=False),
-    Column("taken_at", Text, nullable=False, server_default=func.now()),
+    Column("taken_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("age_hours", Float),
     Column("likes", Integer),
     Column("retweets", Integer),
@@ -2297,7 +2298,7 @@ media_rec_events = Table(
     Column("slate_json", Text, nullable=False, server_default="[]"),
     Column("chosen_content_id", Text),
     Column("applied", Integer, nullable=False, server_default="0"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_media_rec_events_unapplied", "org_id", "applied"),
 )
 
@@ -2309,7 +2310,7 @@ media_quality = Table(
     Column("elo", Float, nullable=False, server_default="1500"),
     Column("n_offered", Integer, nullable=False, server_default="0"),
     Column("n_chosen", Integer, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("org_id", "content_id"),
 )
 
@@ -2325,7 +2326,7 @@ content_quality = Table(
     Column("elo", Float, nullable=False, server_default="1500"),
     Column("n_offered", Integer, nullable=False, server_default="0"),
     Column("n_chosen", Integer, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("org_id", "subject_kind", "subject_key"),
     CheckConstraint(
         "subject_kind IN ('candidate', 'feature')", name="ck_content_quality_subject_kind"
@@ -2339,7 +2340,7 @@ media_embeddings = Table(
     Column("content_id", Text, nullable=False),
     Column("embedding_json", Text),
     Column("embedding_model", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("org_id", "content_id"),
 )
 
@@ -2348,7 +2349,7 @@ relay_processed_updates = Table(
     metadata,
     Column("platform", Text, nullable=False),
     Column("update_id", Text, nullable=False),
-    Column("processed_at", Text, nullable=False, server_default=func.now()),
+    Column("processed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "platform IN ('telegram','discord')",
         name="ck_relay_processed_updates_platform",
@@ -2363,7 +2364,7 @@ relay_processed_updates = Table(
 # Mirrors 058_autocm.sql. The .sql carries the strftime ISO-8601-Z _at default +
 # the CHECK constraints; test_schema.py parity compares only table names, column
 # names, type affinity, nullability, and named indexes — so this uses the house
-# server_default=func.now() (defaults not compared) and the named indexes are
+# server_default=utc_now_iso_sql() (defaults not compared) and the named indexes are
 # reproduced exactly. DECISION D-2: autocm_kb_chunks.chunk_embedding is Text
 # (JSON-encoded float vector; app-side cosine). The companion FTS5 virtual table
 # autocm_kb_chunks_fts (+ its shadow tables) is a SQLite-only mechanism not
@@ -2382,8 +2383,8 @@ autocm_personas = Table(
     Column("reactive_prompt", Text),
     Column("calibration_set", Text, nullable=False, server_default="{}"),
     Column("config", Text, nullable=False, server_default="{}"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 Index("autocm_personas_name_unique", autocm_personas.c.name, unique=True)
 
@@ -2399,8 +2400,8 @@ autocm_clients = Table(
     Column("surface_config", Text, nullable=False, server_default="{}"),
     Column("kb_config", Text, nullable=False, server_default="{}"),
     Column("enabled", Integer, nullable=False, server_default="0"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "autonomy_state IN ('hitl','partial','auto','paused')",
         name="ck_autocm_clients_autonomy_state",
@@ -2423,7 +2424,7 @@ autocm_kb_sources = Table(
     Column("last_refreshed_at", Text),
     Column("last_changed_at", Text),
     Column("last_error", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "status IN ('active','stale','disabled')",
         name="ck_autocm_kb_sources_status",
@@ -2448,7 +2449,7 @@ autocm_kb_chunks = Table(
     Column("chunk_authority", Float, nullable=False, server_default="0.5"),
     Column("content_hash", Text),
     Column("status", Text, nullable=False, server_default="active"),
-    Column("indexed_at", Text, nullable=False, server_default=func.now()),
+    Column("indexed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "status IN ('active','stale','wrong')",
         name="ck_autocm_kb_chunks_status",
@@ -2465,7 +2466,7 @@ autocm_kb_constants = Table(
     Column("value", Text, nullable=False),
     Column("description", Text),
     Column("updated_by", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("client_id", "key"),
 )
 
@@ -2483,7 +2484,7 @@ autocm_drafts = Table(
     Column("confidence", Float),
     Column("cited_chunk_ids", Text, nullable=False, server_default="[]"),
     Column("status", Text, nullable=False, server_default="pending"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("resolved_at", Text),
     CheckConstraint(
         "register IN ('calm','reactive')",
@@ -2511,7 +2512,7 @@ autocm_reviews = Table(
     Column("edit_diff_size", Float, nullable=False, server_default="0"),
     Column("is_clean_approval", Integer, nullable=False, server_default="0"),
     Column("note", Text),
-    Column("reviewed_at", Text, nullable=False, server_default=func.now()),
+    Column("reviewed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "decision IN ('approve','edit','reject','punt_to_founder')",
         name="ck_autocm_reviews_decision",
@@ -2533,7 +2534,7 @@ autocm_category_state = Table(
     Column("freeze_until", Text),
     Column("freeze_reason", Text),
     Column("frozen_by", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "state IN ('hitl','auto')",
         name="ck_autocm_category_state_state",
@@ -2557,7 +2558,7 @@ autocm_escalations = Table(
     Column("reason", Text),
     Column("founder_status", Text, nullable=False, server_default="pending"),
     Column("oncall_status", Text, nullable=False, server_default="pending"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("resolved_at", Text),
     CheckConstraint(
         "founder_status IN ('pending','notified','acknowledged','resolved')",
@@ -2580,7 +2581,7 @@ autocm_flagged_users = Table(
     Column("external_user_id", Text),
     Column("reason", Text),
     Column("status", Text, nullable=False, server_default="silenced"),
-    Column("flagged_at", Text, nullable=False, server_default=func.now()),
+    Column("flagged_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("cleared_at", Text),
     Column("cleared_by", Text),
     CheckConstraint(
@@ -2602,7 +2603,7 @@ autocm_adversarial_runs = Table(
     Column("failed", Integer, nullable=False, server_default="0"),
     Column("result", Text, nullable=False, server_default="{}"),
     Column("status", Text, nullable=False, server_default="pending"),
-    Column("ran_at", Text, nullable=False, server_default=func.now()),
+    Column("ran_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "status IN ('pending','passed','failed','error')",
         name="ck_autocm_adversarial_runs_status",
@@ -2621,7 +2622,7 @@ autocm_digest_interactions = Table(
     Column("target_ref", Text),
     Column("payload", Text, nullable=False, server_default="{}"),
     Column("actor", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "action IN ('approve_for_kb','recognize','demote','compose','ignore','ask')",
         name="ck_autocm_digest_interactions_action",
@@ -2640,8 +2641,8 @@ autocm_time_saved_baseline = Table(
     Column("engagement_start_at", Text),
     Column("calibrated_by", Text),
     Column("notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 Index(
     "autocm_time_saved_baseline_client_unique",
@@ -2660,11 +2661,11 @@ mod_slot_sessions = Table(
     Column("session_id", Text, primary_key=True),
     Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
     Column("operator_handle", Text, nullable=False),
-    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("started_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("ended_at", Text),
     Column("chats_watched_json", Text, nullable=False, server_default="[]"),
     Column("note", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_mod_slot_sessions_org", "org_id", "started_at"),
     Index("ix_mod_slot_sessions_operator", "operator_handle", "ended_at"),
 )
@@ -2676,9 +2677,9 @@ operator_work_events = Table(
     Column("org_id", Text, ForeignKey("orgs.org_id"), nullable=False),
     Column("operator_handle", Text, nullable=False),
     Column("event_type", Text, nullable=False),
-    Column("occurred_at", Text, nullable=False, server_default=func.now()),
+    Column("occurred_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("ref_json", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("ix_operator_work_events_org", "org_id", "occurred_at"),
 )
 
@@ -2695,10 +2696,10 @@ community_audit_guilds = Table(
     Column("plan_tier", Text, nullable=False, server_default="free"),
     Column("status", Text, nullable=False, server_default="active"),
     Column("consent_at", Text),
-    Column("joined_at", Text, nullable=False, server_default=func.now()),
+    Column("joined_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("last_audit_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
 )
 
 community_audit_runs = Table(
@@ -2715,9 +2716,9 @@ community_audit_runs = Table(
     Column("span_start", Text),
     Column("overall_grade", Text),
     Column("category_grades_json", Text, nullable=False, server_default="{}"),
-    Column("started_at", Text, nullable=False, server_default=func.now()),
+    Column("started_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Column("finished_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint("kind IN ('metadata','deep')", name="ck_community_audit_runs_kind"),
     CheckConstraint(
         "status IN ('running','ok','aborted','partial')",
@@ -2738,7 +2739,7 @@ community_audit_findings = Table(
     Column("plain_detail", Text),
     Column("message_ref", Text),
     Column("confidence", Float),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("community_audit_findings_by_run", "run_id", "category"),
 )
 
@@ -2750,7 +2751,7 @@ community_audit_security_checks = Table(
     Column("check_key", Text, nullable=False),
     Column("status", Text, nullable=False),
     Column("detail", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "status IN ('pass','warn','fail')",
         name="ck_community_audit_security_checks_status",
@@ -2773,7 +2774,7 @@ community_audit_settings_snapshot = Table(
     Column("verification_level", Text),
     Column("description", Text),
     Column("raw_json", Text, nullable=False, server_default="{}"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index(
         "community_audit_settings_snapshot_by_run",
         "run_id",
@@ -2789,7 +2790,7 @@ community_audit_reaction_ledger = Table(
     Column("reactor_id", Text, nullable=False),
     Column("emoji", Text, nullable=False),
     Column("author_id", Text, nullable=False),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("guild_id", "post_id", "reactor_id", "emoji"),
     Index("community_audit_reaction_ledger_by_author", "guild_id", "author_id"),
 )
@@ -2802,7 +2803,7 @@ community_audit_member_scores = Table(
     Column("contribution_score", Float, nullable=False, server_default="0"),
     Column("components_json", Text, nullable=False, server_default="{}"),
     Column("last_active_at", Text),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("guild_id", "member_id"),
     Index("community_audit_member_scores_rank", "guild_id", "contribution_score"),
 )
@@ -2814,7 +2815,7 @@ community_audit_member_activity = Table(
     Column("member_id", Text, nullable=False),
     Column("period", Text, nullable=False),
     Column("message_count", Integer, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("guild_id", "member_id", "period"),
 )
 
@@ -2826,7 +2827,7 @@ community_audit_rate_limits = Table(
     Column("window_start", Text, nullable=False),
     Column("count", Integer, nullable=False, server_default="0"),
     Column("ai_usd", Float, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "scope IN ('guild','inviter','global')",
         name="ck_community_audit_rate_limits_scope",
@@ -2841,7 +2842,7 @@ community_audit_benchmark = Table(
     Column("metric_key", Text, nullable=False),
     Column("distribution_json", Text, nullable=False, server_default="{}"),
     Column("sample_size", Integer, nullable=False, server_default="0"),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("category", "metric_key"),
 )
 
@@ -2853,7 +2854,7 @@ community_audit_identity_links = Table(
     Column("twitter_handle", Text, nullable=False),
     Column("confidence", Float),
     Column("source", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("guild_id", "discord_member_id"),
 )
 
@@ -2865,7 +2866,7 @@ community_audit_leads = Table(
     Column("email", Text, nullable=False),
     Column("guild_id", Text),
     Column("source", Text, nullable=False, server_default="audit_page"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("community_audit_leads_by_email", "email"),
 )
 
@@ -2882,8 +2883,8 @@ client_intake = Table(
     Column("primary_contact_telegram", Text),
     Column("website_url", Text),
     Column("notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "manifest_status IN ('draft','ready','applied')",
         name="ck_client_intake_status",
@@ -2902,7 +2903,7 @@ client_accounts = Table(
     Column("display_name", Text),
     Column("bio", Text),
     Column("notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     UniqueConstraint("org_id", "platform", "handle", name="uq_client_accounts_handle"),
     Index("client_accounts_by_org", "org_id"),
 )
@@ -2916,7 +2917,7 @@ client_docs = Table(
     Column("label", Text, nullable=False),
     Column("location", Text, nullable=False),
     Column("notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("client_docs_by_org", "org_id"),
 )
 
@@ -2932,8 +2933,8 @@ org_entitlements = Table(
     Column("ended_at", Text),
     Column("config_json", Text, nullable=False, server_default="{}"),
     Column("notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "status IN ('trial','active','paused','ended')",
         name="ck_org_entitlements_status",
@@ -2954,8 +2955,8 @@ allowlist_entries = Table(
     Column("assigned_orgs", Text),
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("notes", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "role IN ('admin','operator','client','client_ops')",
         name="ck_allowlist_entries_role",
@@ -2986,7 +2987,7 @@ content_candidates = Table(
     Column("tell_score", Float),
     Column("dedupe_key", Text),
     Column("expires_at", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         # mig 083: 'community_tweet' = ingested REAL community tweets for the /duel game --
         # duel-only rows (target_handle always NULL, never keep/schedule/publish, never Elo-folded).
@@ -3093,7 +3094,7 @@ content_deck_decisions = Table(
     Column("pair_loser_id", Integer),
     # mig 080: forward-only fold flag for the content-quality Elo (parallel to media_rec_events.applied).
     Column("applied", Integer, nullable=False, server_default="0"),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "actor_kind IN ('operator','community')", name="ck_content_deck_decisions_actor_kind"
     ),
@@ -3119,7 +3120,7 @@ content_deck_operator_state = Table(
     Column("operator_handle", Text, nullable=False),
     Column("state", Text, nullable=False),
     Column("snooze_until", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     PrimaryKeyConstraint("candidate_id", "operator_handle"),
     CheckConstraint(
         "state IN ('dismissed','snoozed')", name="ck_content_deck_operator_state_state"
@@ -3149,8 +3150,8 @@ content_publish_jobs = Table(
     Column("claimed_at", Text),
     Column("handed_off_at", Text),
     Column("posted_ref", Text),
-    Column("created_at", Text, nullable=False, server_default=func.now()),
-    Column("updated_at", Text, nullable=False, server_default=func.now()),
+    Column("created_at", Text, nullable=False, server_default=utc_now_iso_sql()),
+    Column("updated_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     CheckConstraint(
         "release_state IN ('scheduled','due','claimed','handed_off','posted','canceled')",
         name="ck_content_publish_jobs_release_state",
@@ -3187,6 +3188,6 @@ deck_consumed_assertions = Table(
     Column("org_id", Text, nullable=False),
     Column("actor", Text, nullable=False),
     Column("exp", Integer, nullable=False),
-    Column("consumed_at", Text, nullable=False, server_default=func.now()),
+    Column("consumed_at", Text, nullable=False, server_default=utc_now_iso_sql()),
     Index("deck_consumed_assertions_by_exp", "exp"),
 )

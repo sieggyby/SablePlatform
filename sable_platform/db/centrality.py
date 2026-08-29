@@ -13,6 +13,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, ORG_NOT_FOUND
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 
 BRIDGE_CENTRALITY_THRESHOLD = 0.3
@@ -56,7 +58,7 @@ def sync_centrality_scores(
         entity_id = entity_row["entity_id"] if entity_row else handle.lower().lstrip("@")
 
         conn.execute(
-            text("""
+            text(f"""
             INSERT INTO entity_centrality_scores
                 (org_id, entity_id, degree_centrality, in_centrality,
                  out_centrality, run_date)
@@ -65,7 +67,7 @@ def sync_centrality_scores(
                 degree_centrality = excluded.degree_centrality,
                 in_centrality = excluded.in_centrality,
                 out_centrality = excluded.out_centrality,
-                scored_at = CURRENT_TIMESTAMP,
+                scored_at = {now_canonical_sql(get_dialect(conn))},
                 run_date = excluded.run_date
             """),
             {"org_id": org_id, "entity_id": entity_id, "degree": degree,

@@ -11,6 +11,9 @@ import json
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.compat import get_dialect, ts_order
+from sable_platform.db.ts_format import now_canonical_sql
+
 
 def sync_prospect_scores(
     conn: Connection,
@@ -31,6 +34,7 @@ def sync_prospect_scores(
     Returns number of scores upserted.
     """
     upserted = 0
+    _dialect = get_dialect(conn)
     for score in scores:
         org_id = score["org_id"]
         composite = score["composite_score"]
@@ -44,11 +48,22 @@ def sync_prospect_scores(
         score_band_low = score.get("score_band_low")
         score_band_high = score.get("score_band_high")
         timing_urgency = score.get("timing_urgency")
+        # NOT `MAX(graduated_at)`. Codex round 3 named this shape: a text MAX returns the
+        # LEXICOGRAPHIC maximum, so once a column holds two spellings every `'...T...'`
+        # value outranks every `'... ...'` value whatever the clock says, and the flag
+        # carried forward is the wrong one. `NULLIF(... ) IS NOT NULL` reproduces MAX's
+        # own behaviour of ignoring NULLs and empty strings.
+        _grad = ts_order("graduated_at", _dialect)
+        _rej = ts_order("rejected_at", _dialect)
         prev_flags = conn.execute(
             text(
-                "SELECT MAX(graduated_at) AS graduated_at, MAX(rejected_at) AS rejected_at"
-                " FROM prospect_scores"
-                " WHERE org_id = :org_id"
+                "SELECT"
+                "  (SELECT graduated_at FROM prospect_scores"
+                "    WHERE org_id = :org_id AND NULLIF(graduated_at, '') IS NOT NULL"
+                f"   ORDER BY {_grad} DESC LIMIT 1) AS graduated_at,"
+                "  (SELECT rejected_at FROM prospect_scores"
+                "    WHERE org_id = :org_id AND NULLIF(rejected_at, '') IS NOT NULL"
+                f"   ORDER BY {_rej} DESC LIMIT 1) AS rejected_at"
             ),
             {"org_id": org_id},
         ).fetchone()
@@ -80,7 +95,7 @@ def sync_prospect_scores(
                 "  timing_urgency = excluded.timing_urgency,"
                 "  graduated_at = COALESCE(prospect_scores.graduated_at, excluded.graduated_at),"
                 "  rejected_at = COALESCE(prospect_scores.rejected_at, excluded.rejected_at),"
-                "  scored_at = CURRENT_TIMESTAMP"
+                f"  scored_at = {now_canonical_sql(get_dialect(conn))}"
             ),
             {
                 "org_id": org_id,
@@ -158,7 +173,7 @@ def graduate_prospect(conn: Connection, project_id: str) -> int:
     Returns the number of rows updated.
     """
     cursor = conn.execute(
-        text("UPDATE prospect_scores SET graduated_at = CURRENT_TIMESTAMP WHERE org_id = :org_id AND graduated_at IS NULL"),
+        text(f"UPDATE prospect_scores SET graduated_at = {now_canonical_sql(get_dialect(conn))} WHERE org_id = :org_id AND graduated_at IS NULL"),
         {"org_id": project_id},
     )
     conn.commit()
@@ -172,7 +187,7 @@ def reject_prospect(conn: Connection, project_id: str) -> int:
     Returns the number of rows updated.
     """
     cursor = conn.execute(
-        text("UPDATE prospect_scores SET rejected_at = CURRENT_TIMESTAMP WHERE org_id = :org_id AND rejected_at IS NULL"),
+        text(f"UPDATE prospect_scores SET rejected_at = {now_canonical_sql(get_dialect(conn))} WHERE org_id = :org_id AND rejected_at IS NULL"),
         {"org_id": project_id},
     )
     conn.commit()

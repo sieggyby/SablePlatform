@@ -9,6 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, ORG_NOT_FOUND
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 
 MAX_SUBSCRIPTIONS_PER_ORG = 5
@@ -134,10 +136,10 @@ def delete_subscription(conn: Connection, subscription_id: int) -> bool:
 def record_failure(conn: Connection, subscription_id: int, error: str) -> None:
     """Increment failure count. Auto-disable after 10 consecutive failures."""
     conn.execute(
-        text("""
+        text(f"""
         UPDATE webhook_subscriptions
         SET consecutive_failures = consecutive_failures + 1,
-            last_failure_at = CURRENT_TIMESTAMP,
+            last_failure_at = {now_canonical_sql(get_dialect(conn))},
             last_failure_error = :error
         WHERE id=:id
         """),

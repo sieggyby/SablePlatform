@@ -7,6 +7,8 @@ import json
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.ts_format import ISO_Z_FORMAT
+
 from sable_platform.errors import SableError, CROSS_ORG_MERGE_BLOCKED, ENTITY_NOT_FOUND
 from sable_platform.db.tags import _REPLACE_CURRENT_TAGS
 
@@ -98,7 +100,12 @@ def execute_merge(
             f"Cannot merge entities from different orgs: {source_row['org_id']} vs {target_row['org_id']}",
         )
 
-    ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    # `isoformat()` renders '2026-08-29T18:00:00.123456+00:00': a fractional part AND a
+    # '+00:00' offset, so it was a THIRD spelling in `entity_tags.deactivated_at`,
+    # `entities.updated_at` and `merge_candidates.updated_at`. The fraction is the part that
+    # bites: '.' is 0x2E and 'Z' is 0x5A, so '...T18:00:00.123456+00:00' sorts BELOW
+    # '...T18:00:00Z', which is the same instant.
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime(ISO_Z_FORMAT)
 
     try:
         snapshot = {

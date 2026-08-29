@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
+from sable_platform.db.ts_format import ISO_Z_FORMAT
+
 
 # Token format constants.
 _PREFIX = "sp_live_"
@@ -125,10 +127,14 @@ def issue_token(
     token_hash = _hash_token(raw)
     expires_at = None
     if expires_in_days is not None:
+        # Canonical, WITH the `Z`. Without it this is a naive string, and
+        # `api_tokens.expires_at` is `timestamp with time zone` on PostgreSQL, so the cast
+        # resolves it in the SESSION's timezone. A token minted under a non-UTC session
+        # would expire hours early or late.
         expires_at = (
             _dt.datetime.now(_dt.timezone.utc)
             + _dt.timedelta(days=expires_in_days)
-        ).strftime("%Y-%m-%dT%H:%M:%S")
+        ).strftime(ISO_Z_FORMAT)
 
     conn.execute(
         text(
@@ -181,11 +187,8 @@ def verify_token(conn: Connection, raw_token: str) -> TokenContext | None:
         return None
     if row["revoked_at"]:
         return None
-    if row["expires_at"]:
-        # Lexicographic compare on ISO timestamps works because of the format.
-        now_iso = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
-        if row["expires_at"] <= now_iso:
-            return None
+    if row["expires_at"] and _is_expired(row["expires_at"]):
+        return None
 
     expected = row["token_hash"]
     actual = _hash_token(full)
@@ -205,6 +208,48 @@ def verify_token(conn: Connection, raw_token: str) -> TokenContext | None:
         scopes=scopes,
         org_scopes=org_scopes,
     )
+
+
+def _is_expired(value, *, now: _dt.datetime | None = None) -> bool:
+    """True if a stored ``expires_at`` is at or before *now*. Takes either dialect's type.
+
+    ``api_tokens.expires_at`` is TEXT on SQLite and ``timestamp with time zone`` on
+    PostgreSQL (DEFECTS_FOUND item 9), so a raw read hands back a ``str`` on one and a
+    ``datetime`` on the other. The code this replaces compared the value to an ISO string,
+    which RAISED on PostgreSQL for every token that carries an expiry:
+
+        '<=' not supported between instances of 'datetime.datetime' and 'str'
+
+    Measured against PostgreSQL 16 through the real migration chain.
+
+    An unreadable value now FAILS CLOSED, and that is a deliberate change. The old
+    lexicographic compare let one through: ``'garbage' <= '2026-...'`` is False, so a
+    corrupt expiry read as "not expired". On an authentication check the safe answer to
+    "I cannot tell when this expires" is to reject the token.
+    """
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if isinstance(value, _dt.datetime):
+        moment = value if value.tzinfo else value.replace(tzinfo=_dt.timezone.utc)
+    else:
+        raw = str(value).strip().replace(" ", "T")
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            moment = _dt.datetime.fromisoformat(raw)
+        except ValueError:
+            return True
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=_dt.timezone.utc)
+    return moment <= now
+
+
+# `api_tokens` keeps its bare CURRENT_TIMESTAMP, deliberately. DEFECTS_FOUND item 9:
+# `created_at`, `last_used_at` and `revoked_at` are `timestamp with time zone` on
+# PostgreSQL while `schema.py` declares them `Text`. Writing the canonical TEXT expression
+# into one is a hard error, measured:
+#     column "ts" is of type timestamp with time zone but expression is of type text
+# CURRENT_TIMESTAMP is the right thing for a real timestamp column. What is wrong here is
+# the type divergence, and that is a schema fix, not a call-site one.
 
 
 def touch_last_used(conn: Connection, token_id: str) -> None:

@@ -9,6 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, MAX_RETRIES_EXCEEDED
+from sable_platform.db.compat import get_dialect, ts_compare, ts_order
+from sable_platform.db.ts_format import ISO_Z_FORMAT, now_canonical_sql
 
 
 def create_job(
@@ -54,7 +56,7 @@ def start_step(conn: Connection, step_id: int) -> None:
     conn.execute(
         text(
             "UPDATE job_steps"
-            " SET status='running', started_at=CURRENT_TIMESTAMP"
+            f" SET status='running', started_at={now_canonical_sql(get_dialect(conn))}"
             " WHERE step_id=:step_id"
         ),
         {"step_id": step_id},
@@ -66,7 +68,7 @@ def complete_step(conn: Connection, step_id: int, output: dict | None = None) ->
     conn.execute(
         text(
             "UPDATE job_steps"
-            " SET status='completed', completed_at=CURRENT_TIMESTAMP, output_json=:output_json"
+            f" SET status='completed', completed_at={now_canonical_sql(get_dialect(conn))}, output_json=:output_json"
             " WHERE step_id=:step_id"
         ),
         {"output_json": json.dumps(output or {}), "step_id": step_id},
@@ -123,24 +125,34 @@ def claim_next_job(
 
     Both paths bump jobs.updated_at and stamp jobs.worker_id.
     """
+    # Three shapes of the TEXT-timestamp defect met in one statement, and they used to be
+    # wrong in the same direction. The write was `now()` / `datetime('now')`, both SPACE
+    # form. The staleness test compared `updated_at` to a SPACE-form cutoff as TEXT. The
+    # tie-break ordered `created_at` as TEXT. So a row written by a Python `...T...Z`
+    # writer outranked every space-form row whatever the clock said, and a stale running
+    # job could be reclaimed early or never.
+    _dialect = get_dialect(conn)
+    _now = now_canonical_sql(_dialect)
+    _stale = ts_compare("updated_at", "<", "cutoff", _dialect)
+    _order = ts_order("created_at", _dialect)
     cutoff = (
         datetime.now(timezone.utc) - timedelta(minutes=stale_after_minutes)
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    ).strftime(ISO_Z_FORMAT)
 
-    if conn.dialect.name == "postgresql":
+    if _dialect == "postgresql":
         sql = text(
             "UPDATE jobs"
             " SET status='running',"
             "     worker_id=:worker_id,"
-            "     updated_at=now()"
+            f"     updated_at={_now}"
             " WHERE job_id = ("
             "     SELECT job_id FROM jobs"
             "     WHERE job_type = :job_type"
             "       AND ("
             "           status = 'pending'"
-            "           OR (status = 'running' AND updated_at < :cutoff)"
+            f"           OR (status = 'running' AND {_stale})"
             "       )"
-            "     ORDER BY created_at"
+            f"     ORDER BY {_order}"
             "     FOR UPDATE SKIP LOCKED"
             "     LIMIT 1"
             " )"
@@ -151,15 +163,15 @@ def claim_next_job(
             "UPDATE jobs"
             " SET status='running',"
             "     worker_id=:worker_id,"
-            "     updated_at=datetime('now')"
+            f"     updated_at={_now}"
             " WHERE job_id = ("
             "     SELECT job_id FROM jobs"
             "     WHERE job_type = :job_type"
             "       AND ("
             "           status = 'pending'"
-            "           OR (status = 'running' AND updated_at < :cutoff)"
+            f"           OR (status = 'running' AND {_stale})"
             "       )"
-            "     ORDER BY created_at"
+            f"     ORDER BY {_order}"
             "     LIMIT 1"
             " )"
             " RETURNING job_id, config_json, org_id"
@@ -185,8 +197,8 @@ def complete_job(conn: Connection, job_id: str, result: dict | None = None) -> N
         text(
             "UPDATE jobs"
             " SET status='done',"
-            "     completed_at=CURRENT_TIMESTAMP,"
-            "     updated_at=CURRENT_TIMESTAMP,"
+            f"     completed_at={now_canonical_sql(get_dialect(conn))},"
+            f"     updated_at={now_canonical_sql(get_dialect(conn))},"
             "     result_json=:result_json"
             " WHERE job_id=:job_id"
         ),
@@ -201,8 +213,8 @@ def fail_job(conn: Connection, job_id: str, error: str) -> None:
         text(
             "UPDATE jobs"
             " SET status='failed',"
-            "     completed_at=CURRENT_TIMESTAMP,"
-            "     updated_at=CURRENT_TIMESTAMP,"
+            f"     completed_at={now_canonical_sql(get_dialect(conn))},"
+            f"     updated_at={now_canonical_sql(get_dialect(conn))},"
             "     error_message=:error"
             " WHERE job_id=:job_id"
         ),
@@ -223,7 +235,7 @@ def release_job(conn: Connection, job_id: str) -> None:
             "UPDATE jobs"
             " SET status='pending',"
             "     worker_id=NULL,"
-            "     updated_at=CURRENT_TIMESTAMP"
+            f"     updated_at={now_canonical_sql(get_dialect(conn))}"
             " WHERE job_id=:job_id"
         ),
         {"job_id": job_id},

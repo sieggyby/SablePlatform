@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 from sable_platform.workflows.alert_checks import (
     _check_actions_unclaimed,
     _check_bridge_decay,
@@ -84,8 +86,10 @@ def evaluate_alerts(
         created.extend(_run_check(conn, _check_discord_pulse_regression, oid))
 
     try:
+        _now = now_canonical_sql(get_dialect(conn))
         conn.execute(
-            "INSERT INTO platform_meta (key, value, updated_at) VALUES ('last_alert_eval_at', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "INSERT INTO platform_meta (key, value, updated_at)"
+            f" VALUES ('last_alert_eval_at', {_now}, {_now})"
             " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"
         )
         conn.commit()

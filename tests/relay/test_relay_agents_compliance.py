@@ -134,10 +134,18 @@ def test_057_strftime_default_uses_iso_z_form_no_localtime():
     )
 
 
-def test_relay_schema_uses_func_now_not_handcoded_strftime():
-    """The schema.py side follows the house ``func.now()`` convention and never
-    hand-codes a ``strftime`` default (the strftime default is the ``.sql`` file's
-    contract; schema.py default VALUES are not parity-asserted)."""
+def test_relay_schema_uses_the_house_default_not_a_handcoded_strftime():
+    """The schema.py side follows the house default convention and never hand-codes a
+    ``strftime`` default (the strftime default is the ``.sql`` file's contract; schema.py
+    default VALUES are not parity-asserted).
+
+    The house default was ``func.now()`` until migration 090. ``func.now()`` renders a SPACE
+    separator on both dialects while 61 Python writers wrote a ``T``, so the column held two
+    spellings and every text comparison over it was decided by the separator character. The
+    house default is now ``utc_now_iso_sql()``, which renders the canonical
+    ``YYYY-MM-DDTHH:MM:SSZ`` on both. The rule this test enforces is unchanged: ONE house
+    default, never a hand-rolled ``text("... strftime ...")`` per column.
+    """
     schema_src = (
         RELAY_PKG_DIR.parent / "db" / "schema.py"
     ).read_text(encoding="utf-8")
@@ -163,11 +171,15 @@ def test_relay_schema_uses_func_now_not_handcoded_strftime():
         ):
             handcoded.append(val.args[0].value)
     assert handcoded == [], (
-        "db/schema.py must use server_default=func.now(), not a hand-coded "
+        "db/schema.py must use the house server_default helper, not a hand-coded "
         f"server_default=text(strftime(...)): {handcoded}"
     )
-    assert "server_default=func.now()" in schema_src, (
-        "db/schema.py lost the func.now() house convention for _at defaults"
+    assert "server_default=utc_now_iso_sql()" in schema_src, (
+        "db/schema.py lost the utc_now_iso_sql() house convention for _at defaults"
+    )
+    assert "server_default=func.now()" not in schema_src, (
+        "db/schema.py reintroduced func.now(), which writes the SPACE separator and puts "
+        "two spellings back in the same column. See migration 090."
     )
 
 

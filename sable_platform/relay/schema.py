@@ -1,7 +1,7 @@
 """SableRelay SQLAlchemy table models (mirrors migration 057_relay.sql).
 
 The ``relay_*`` family is defined canonically — bare-imports style,
-``server_default=func.now()``, named indexes — on the shared platform
+``server_default=utc_now_iso_sql()``, named indexes — on the shared platform
 ``MetaData`` in ``sable_platform.db.schema`` (where 057 landed alongside the
 SQL migration, per the SP dual-migration convention). Redefining the same
 table names on that same ``MetaData`` would raise ``InvalidRequestError``, so

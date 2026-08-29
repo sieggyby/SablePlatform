@@ -20,6 +20,8 @@ from sable_platform.errors import (
     WORKFLOW_NOT_FOUND,
 )
 from sable_platform.webhooks.dispatch import dispatch_event
+from sable_platform.db.compat import get_dialect, ts_order
+from sable_platform.db.ts_format import now_canonical_sql
 
 log = logging.getLogger(__name__)
 _ACTIVE_RUN_LOCK_INDEX = "idx_workflow_runs_active_lock"
@@ -78,7 +80,7 @@ def create_workflow_run(
 
 def start_workflow_run(conn: Connection, run_id: str) -> None:
     conn.execute(
-        text("UPDATE workflow_runs SET status='running', started_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
+        text(f"UPDATE workflow_runs SET status='running', started_at={now_canonical_sql(get_dialect(conn))} WHERE run_id=:run_id"),
         {"run_id": run_id},
     )
     conn.commit()
@@ -86,7 +88,7 @@ def start_workflow_run(conn: Connection, run_id: str) -> None:
 
 def complete_workflow_run(conn: Connection, run_id: str) -> None:
     conn.execute(
-        text("UPDATE workflow_runs SET status='completed', completed_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
+        text(f"UPDATE workflow_runs SET status='completed', completed_at={now_canonical_sql(get_dialect(conn))} WHERE run_id=:run_id"),
         {"run_id": run_id},
     )
     conn.commit()
@@ -94,7 +96,7 @@ def complete_workflow_run(conn: Connection, run_id: str) -> None:
 
 def fail_workflow_run(conn: Connection, run_id: str, error: str) -> None:
     conn.execute(
-        text("UPDATE workflow_runs SET status='failed', completed_at=CURRENT_TIMESTAMP, error=:error WHERE run_id=:run_id"),
+        text(f"UPDATE workflow_runs SET status='failed', completed_at={now_canonical_sql(get_dialect(conn))}, error=:error WHERE run_id=:run_id"),
         {"error": redact_error(error), "run_id": run_id},
     )
     conn.commit()
@@ -104,7 +106,7 @@ def unlock_workflow_run(conn: Connection, run_id: str) -> bool:
     """Force-fail a stuck workflow run. Returns True if a row was updated."""
     cursor = conn.execute(
         text(
-            "UPDATE workflow_runs SET status='failed', completed_at=CURRENT_TIMESTAMP,"
+            f"UPDATE workflow_runs SET status='failed', completed_at={now_canonical_sql(get_dialect(conn))},"
             " error='manually unlocked via CLI'"
             " WHERE run_id=:run_id AND status IN ('pending', 'running')"
         ),
@@ -141,7 +143,7 @@ def create_workflow_step(
 
 def start_workflow_step(conn: Connection, step_id: str) -> None:
     conn.execute(
-        text("UPDATE workflow_steps SET status='running', started_at=CURRENT_TIMESTAMP WHERE step_id=:step_id"),
+        text(f"UPDATE workflow_steps SET status='running', started_at={now_canonical_sql(get_dialect(conn))} WHERE step_id=:step_id"),
         {"step_id": step_id},
     )
     conn.commit()
@@ -151,7 +153,7 @@ def complete_workflow_step(conn: Connection, step_id: str, output: dict) -> None
     conn.execute(
         text(
             "UPDATE workflow_steps"
-            " SET status='completed', completed_at=CURRENT_TIMESTAMP, output_json=:output_json"
+            f" SET status='completed', completed_at={now_canonical_sql(get_dialect(conn))}, output_json=:output_json"
             " WHERE step_id=:step_id"
         ),
         {"output_json": json.dumps(output), "step_id": step_id},
@@ -163,7 +165,7 @@ def skip_workflow_step(conn: Connection, step_id: str, reason: str) -> None:
     conn.execute(
         text(
             "UPDATE workflow_steps"
-            " SET status='skipped', completed_at=CURRENT_TIMESTAMP, output_json=:output_json"
+            f" SET status='skipped', completed_at={now_canonical_sql(get_dialect(conn))}, output_json=:output_json"
             " WHERE step_id=:step_id"
         ),
         {"output_json": json.dumps({"_skip_reason": reason}), "step_id": step_id},
@@ -175,7 +177,7 @@ def fail_workflow_step(conn: Connection, step_id: str, error: str) -> None:
     conn.execute(
         text(
             "UPDATE workflow_steps"
-            " SET status='failed', completed_at=CURRENT_TIMESTAMP, retries=retries+1, error=:error"
+            f" SET status='failed', completed_at={now_canonical_sql(get_dialect(conn))}, retries=retries+1, error=:error"
             " WHERE step_id=:step_id"
         ),
         {"error": redact_error(error), "step_id": step_id},
@@ -196,7 +198,7 @@ def mark_timed_out_runs(conn: Connection, hours: int = 6) -> list[str]:
     run_ids = [r["run_id"] for r in rows]
     for run_id in run_ids:
         conn.execute(
-            text("UPDATE workflow_runs SET status='timed_out', completed_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
+            text(f"UPDATE workflow_runs SET status='timed_out', completed_at={now_canonical_sql(get_dialect(conn))} WHERE run_id=:run_id"),
             {"run_id": run_id},
         )
     conn.commit()
@@ -214,7 +216,7 @@ def cancel_workflow_run(conn: Connection, run_id: str) -> None:
     if row["status"] in ("completed", "failed", "cancelled", "timed_out"):
         raise SableError(STEP_EXECUTION_ERROR, f"Cannot cancel run '{run_id}': already {row['status']}")
     conn.execute(
-        text("UPDATE workflow_runs SET status='cancelled', completed_at=CURRENT_TIMESTAMP WHERE run_id=:run_id"),
+        text(f"UPDATE workflow_runs SET status='cancelled', completed_at={now_canonical_sql(get_dialect(conn))} WHERE run_id=:run_id"),
         {"run_id": run_id},
     )
     conn.commit()
@@ -293,12 +295,16 @@ def get_latest_run(
     workflow_name: str,
     status: str | None = None,
 ):
+    # NOT `ORDER BY created_at`. The order shape of the TEXT-timestamp defect: a text sort
+    # ranks every `'...T...'` value above every `'... ...'` value whatever the clock says,
+    # so "latest" returned whichever row happened to carry a `T`.
+    _order = ts_order("created_at", get_dialect(conn))
     if status:
         return conn.execute(
             text(
                 "SELECT * FROM workflow_runs"
                 " WHERE org_id=:org_id AND workflow_name=:workflow_name AND status=:status"
-                " ORDER BY created_at DESC LIMIT 1"
+                f" ORDER BY {_order} DESC LIMIT 1"
             ),
             {"org_id": org_id, "workflow_name": workflow_name, "status": status},
         ).fetchone()
@@ -306,7 +312,7 @@ def get_latest_run(
         text(
             "SELECT * FROM workflow_runs"
             " WHERE org_id=:org_id AND workflow_name=:workflow_name"
-            " ORDER BY created_at DESC LIMIT 1"
+            f" ORDER BY {_order} DESC LIMIT 1"
         ),
         {"org_id": org_id, "workflow_name": workflow_name},
     ).fetchone()

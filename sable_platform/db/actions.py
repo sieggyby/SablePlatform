@@ -6,8 +6,9 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.compat import days_between
+from sable_platform.db.compat import days_between, get_dialect
 from sable_platform.errors import SableError, ENTITY_NOT_FOUND
+from sable_platform.db.ts_format import now_canonical_sql
 
 
 def create_action(
@@ -43,9 +44,9 @@ def create_action(
 def claim_action(conn: Connection, action_id: str, operator: str) -> None:
     """Mark an action as claimed by an operator."""
     conn.execute(
-        text("""
+        text(f"""
         UPDATE actions
-        SET status='claimed', operator=:operator, claimed_at=CURRENT_TIMESTAMP
+        SET status='claimed', operator=:operator, claimed_at={now_canonical_sql(get_dialect(conn))}
         WHERE action_id=:action_id
         """),
         {"operator": operator, "action_id": action_id},
@@ -61,9 +62,9 @@ def complete_action(
 ) -> None:
     """Mark an action as completed."""
     conn.execute(
-        text("""
+        text(f"""
         UPDATE actions
-        SET status='completed', completed_at=CURRENT_TIMESTAMP, outcome_notes=:outcome_notes
+        SET status='completed', completed_at={now_canonical_sql(get_dialect(conn))}, outcome_notes=:outcome_notes
         WHERE action_id=:action_id
         """),
         {"outcome_notes": outcome_notes, "action_id": action_id},
@@ -79,9 +80,9 @@ def skip_action(
 ) -> None:
     """Mark an action as skipped."""
     conn.execute(
-        text("""
+        text(f"""
         UPDATE actions
-        SET status='skipped', skipped_at=CURRENT_TIMESTAMP, outcome_notes=:outcome_notes
+        SET status='skipped', skipped_at={now_canonical_sql(get_dialect(conn))}, outcome_notes=:outcome_notes
         WHERE action_id=:action_id
         """),
         {"outcome_notes": outcome_notes, "action_id": action_id},

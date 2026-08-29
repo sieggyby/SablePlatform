@@ -93,14 +93,20 @@ def _iso_z(dt: datetime) -> str:
 def _iso_space(dt: datetime) -> str:
     """Render a datetime to the space-separated audit-log form (no T/Z, no micros).
 
-    ``audit_log.timestamp`` is written by the column DEFAULT
-    (018_audit_log.sql ``datetime('now')`` on SQLite / ``func.now()`` on Postgres),
-    which renders ``YYYY-MM-DD HH:MM:SS`` (space-separated, no ``T``/``Z``) — NOT
-    the :func:`_iso_z` ``...T...Z`` form the autocm convention binds elsewhere.
-    The two TEXT forms are not lexically comparable (space ``0x20`` < ``T`` ``0x54``),
-    so a windowed breach filter must compare against a ``since`` rendered in THIS
-    form (after normalizing any ``T``/``Z`` in the stored value away). See
-    :func:`gather_review_stats`.
+    HISTORY, and read it before changing anything here. ``audit_log.timestamp`` USED to be
+    written by a column DEFAULT that rendered ``YYYY-MM-DD HH:MM:SS`` (space-separated),
+    NOT the ``...T...Z`` form the autocm convention binds everywhere else. The two TEXT
+    forms are not lexically comparable (space ``0x20`` < ``T`` ``0x54``), so this module
+    normalized BOTH sides to the space form before comparing.
+
+    Migration 090 made the default canonical and backfilled the old rows, so a migrated
+    database now holds only ``...T...Z`` here. This code is kept because the normalization
+    strips ``T`` and ``Z`` from whichever form it is given, so it is correct against both,
+    and a SQLite database that has not run 090 still holds the old form.
+
+    It is NOT the pattern to copy. New comparisons use
+    :func:`sable_platform.db.compat.ts_compare`, which compares instants and needs no
+    agreement about spelling at all.
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
@@ -365,16 +371,13 @@ def gather_review_stats(
     breach_params: dict = {"org_id": _org_id_for_client(conn, client_id), "category": category}
     breach_clause = ""
     if since is not None:
-        # ``audit_log.timestamp`` is written by the column DEFAULT
-        # (018_audit_log.sql ``datetime('now')`` / Alembic ``func.now()``) in the
-        # SPACE-separated ``YYYY-MM-DD HH:MM:SS`` form, NOT the ``...T...Z`` form
-        # ``since`` carries (and the autocm convention binds elsewhere). The two
-        # forms are not lexically comparable (space 0x20 < 'T' 0x54), so a naive
-        # ``timestamp >= :since`` would silently drop a same-window breach row.
-        # Normalize BOTH sides to the space-separated form before comparing: strip
-        # any T/Z from the stored value and bind ``since`` in space form. This makes
-        # the windowed breach count correct regardless of which form the audit row
-        # was written in (default OR an explicit _iso_z bind).
+        # ``audit_log.timestamp`` could hold either TEXT form, and the two are not
+        # lexically comparable (space 0x20 < 'T' 0x54), so a naive ``timestamp >= :since``
+        # would silently drop a same-window breach row. Both sides are normalized to the
+        # space-separated form first: strip any T/Z from the stored value and bind
+        # ``since`` in space form. That is correct whichever form the row carries.
+        # Migration 090 canonicalized the column, so a migrated database holds only the
+        # ``...T...Z`` form now, and this still reads it correctly.
         breach_clause = (
             " AND REPLACE(REPLACE(timestamp, 'T', ' '), 'Z', '') >= :breach_since"
         )

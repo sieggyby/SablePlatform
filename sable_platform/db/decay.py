@@ -15,6 +15,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from sable_platform.errors import SableError, ORG_NOT_FOUND
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 
 DECAY_WARNING_THRESHOLD = 0.6
@@ -62,14 +64,14 @@ def sync_decay_scores(
         entity_id = entity_row["entity_id"] if entity_row else handle.lower().lstrip("@")
 
         conn.execute(
-            text("""
+            text(f"""
             INSERT INTO entity_decay_scores
                 (org_id, entity_id, decay_score, risk_tier, run_date, factors_json)
             VALUES (:org_id, :entity_id, :decay_score, :risk_tier, :run_date, :factors_json)
             ON CONFLICT (org_id, entity_id) DO UPDATE SET
                 decay_score = excluded.decay_score,
                 risk_tier = excluded.risk_tier,
-                scored_at = CURRENT_TIMESTAMP,
+                scored_at = {now_canonical_sql(get_dialect(conn))},
                 run_date = excluded.run_date,
                 factors_json = excluded.factors_json
             """),

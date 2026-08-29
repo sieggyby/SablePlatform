@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 
 from sqlalchemy import text
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 # Default weekly AI spend cap for an auto-created prospect org. Low by design — a
 # self-invite community-audit prospect is not a paying client. Written under the
@@ -120,7 +122,7 @@ def set_org_config(conn, org_id: str, key: str, value: str):
     cfg = json.loads(row[0]) if row[0] else {}
     cfg[key] = parsed
     conn.execute(
-        text("UPDATE orgs SET config_json = :cfg, updated_at = CURRENT_TIMESTAMP WHERE org_id = :org_id"),
+        text(f"UPDATE orgs SET config_json = :cfg, updated_at = {now_canonical_sql(get_dialect(conn))} WHERE org_id = :org_id"),
         {"cfg": json.dumps(cfg), "org_id": org_id},
     )
     conn.commit()
@@ -186,7 +188,7 @@ def upsert_prospect_org(
             "UPDATE orgs SET "
             "  twitter_handle = COALESCE(:twitter_handle, twitter_handle), "
             "  config_json = :config_json, "
-            "  updated_at = CURRENT_TIMESTAMP "
+            f"  updated_at = {now_canonical_sql(get_dialect(conn))} "
             "WHERE org_id = :org_id"
         ),
         {
@@ -284,7 +286,7 @@ def upsert_client_org(
             "  twitter_handle = COALESCE(twitter_handle, :twitter_handle), "
             "  discord_server_id = COALESCE(discord_server_id, :discord_server_id), "
             "  config_json = :config_json, "
-            "  updated_at = CURRENT_TIMESTAMP "
+            f"  updated_at = {now_canonical_sql(get_dialect(conn))} "
             "WHERE org_id = :org_id"
         ),
         {

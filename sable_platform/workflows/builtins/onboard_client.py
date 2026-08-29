@@ -9,6 +9,8 @@ from sqlalchemy.exc import DatabaseError as SADatabaseError
 from sable_platform.errors import SableError, INVALID_CONFIG
 from sable_platform.workflows.models import StepDefinition, StepResult, WorkflowDefinition
 from sable_platform.workflows import registry
+from sable_platform.db.compat import get_dialect
+from sable_platform.db.ts_format import now_canonical_sql
 
 
 def _verify_org(ctx) -> StepResult:
@@ -69,9 +71,9 @@ def _create_initial_sync_record(ctx) -> StepResult:
     cult_run_id = uuid.uuid4().hex
     try:
         row = ctx.db.execute(
-            """
+            f"""
             INSERT INTO sync_runs (org_id, sync_type, cult_run_id, started_at, status, records_synced)
-            VALUES (?, 'onboarding', ?, CURRENT_TIMESTAMP, 'pending', 0)
+            VALUES (?, 'onboarding', ?, {now_canonical_sql(get_dialect(ctx.db))}, 'pending', 0)
             RETURNING sync_id
             """,
             (ctx.org_id, cult_run_id),

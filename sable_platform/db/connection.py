@@ -108,6 +108,7 @@ _MIGRATIONS = [
     ("087_community_audit_vocab.sql", 87),
     ("088_reply_outcomes_posted_text.sql", 88),
     ("089_cost_events_vendor_units.sql", 89),
+    ("090_canonical_text_timestamps.sql", 90),
 ]
 
 
