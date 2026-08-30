@@ -449,6 +449,77 @@ def test_migration_092_reaches_a_connection_that_was_already_open(tmp_path):
     assert writer.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
+def test_migration_092_fails_loudly_on_a_touch_table_collision():
+    """The schema-cookie bump must never destroy a table that already holds data.
+
+    ``CREATE TABLE IF NOT EXISTS`` followed by ``DROP TABLE IF EXISTS`` would skip the
+    create and then drop someone else's table. 092 uses the bare forms, so a collision
+    raises and the whole migration rolls back.
+    """
+    import sqlite3
+
+    import sable_platform.db.connection as connection
+
+    saved = connection._MIGRATIONS
+    conn = sqlite3.connect(":memory:")
+    try:
+        connection._MIGRATIONS = [m for m in saved if m[1] <= 91]
+        connection.ensure_schema(conn)
+        conn.execute("CREATE TABLE _sable_092_schema_touch (payload TEXT)")
+        conn.execute("INSERT INTO _sable_092_schema_touch VALUES ('do not lose me')")
+        conn.commit()
+
+        connection._MIGRATIONS = saved
+        with pytest.raises(sqlite3.OperationalError):
+            connection.ensure_schema(conn)
+    finally:
+        connection._MIGRATIONS = saved
+
+    # The data survives and the database stays where it was.
+    assert conn.execute(
+        "SELECT payload FROM _sable_092_schema_touch").fetchone()[0] == "do not lose me"
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 91
+
+
+def test_migration_092_rewrites_only_the_tables_it_names():
+    """The rewrite is scoped by table NAME, not by "any DDL containing the string".
+
+    An unscoped rewrite would also edit a CHECK constraint or a quoted literal in a table
+    added later, and ``PRAGMA integrity_check`` would still return ok because the rewritten
+    DDL stays valid. This plants exactly that table and proves 092 leaves it alone.
+    """
+    import sqlite3
+
+    import sable_platform.db.connection as connection
+
+    saved = connection._MIGRATIONS
+    conn = sqlite3.connect(":memory:")
+    # A DOUBLE-quoted literal. SQLite accepts it, and the stored DDL then carries the raw
+    # string `datetime('now')`, which is exactly what an unscoped rewrite would match.
+    ddl = ('CREATE TABLE bystander (note TEXT NOT NULL'
+           ' CHECK (note <> "datetime(\'now\')"))')
+    try:
+        connection._MIGRATIONS = [m for m in saved if m[1] <= 91]
+        connection.ensure_schema(conn)
+        conn.execute(ddl)
+        conn.commit()
+        before = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='bystander'").fetchone()[0]
+        assert "datetime('now')" in before, "the planted table does not carry the string"
+
+        connection._MIGRATIONS = saved
+        connection.ensure_schema(conn)
+    finally:
+        connection._MIGRATIONS = saved
+
+    after = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='bystander'").fetchone()[0]
+    assert after == before, f"092 rewrote a table it does not name:\n{before}\n{after}"
+    # And it still did its real job.
+    _canonical, stale = _timestamp_defaults(conn)
+    assert not stale, stale
+
+
 def test_migration_092_has_no_semicolon_inside_a_comment():
     """Same hazard as 090. ``connection.py`` splits on ``;`` with no SQL parser."""
     import importlib.resources

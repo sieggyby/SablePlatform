@@ -24,10 +24,27 @@
 -- The 116 timestamp defaults that later migrations already wrote canonically are untouched,
 -- because they do not contain the old expression.
 PRAGMA writable_schema=ON;
+-- Scoped to the 42 tables by NAME, not to "any table whose DDL contains the string". The
+-- safety check above was run against this schema, and a name list is what makes the code
+-- enforce it. Without the list, a table added later carrying datetime('now') inside a CHECK
+-- constraint or a quoted literal would be rewritten too, and integrity_check would still
+-- return ok, because the rewritten DDL stays valid.
 UPDATE sqlite_master
    SET sql = replace(sql, 'datetime(''now'')', 'strftime(''%Y-%m-%dT%H:%M:%SZ'',''now'')')
  WHERE type = 'table'
-   AND sql LIKE '%datetime(''now'')%';
+   AND sql LIKE '%datetime(''now'')%'
+   AND name IN (
+       'actions', 'alert_configs', 'alerts', 'api_tokens', 'artifacts', 'audit_log',
+       'community_conversation_flags', 'content_items', 'cost_events', 'diagnostic_deltas',
+       'diagnostic_runs', 'entities', 'entity_centrality_scores', 'entity_decay_scores',
+       'entity_handles', 'entity_notes', 'entity_tag_history', 'entity_tags',
+       'entity_watchlist', 'jobs', 'kol_candidates', 'kol_create_audit', 'kol_enrichment',
+       'kol_extract_runs', 'kol_follow_edges', 'kol_handle_resolution_conflicts',
+       'kol_operator_relationships', 'merge_candidates', 'merge_events',
+       'metric_snapshots', 'orgs', 'outcomes', 'platform_meta', 'playbook_outcomes',
+       'playbook_targets', 'project_profiles_external', 'prospect_scores', 'sync_runs',
+       'watchlist_snapshots', 'webhook_subscriptions', 'workflow_events', 'workflow_runs'
+   );
 PRAGMA writable_schema=RESET;
 -- A direct sqlite_master UPDATE does NOT bump `PRAGMA schema_version`, so a connection that
 -- was already open keeps its cached schema and keeps writing the OLD default. Measured on a
@@ -37,8 +54,12 @@ PRAGMA writable_schema=RESET;
 -- schema_version itself and every other connection reparses. A literal `PRAGMA
 -- schema_version = N` cannot be used here, because the new value has to be computed and this
 -- file is static SQL.
-CREATE TABLE IF NOT EXISTS _sable_092_schema_touch (x INTEGER);
-DROP TABLE IF EXISTS _sable_092_schema_touch;
+-- NO `IF NOT EXISTS` and NO `IF EXISTS`, deliberately. With them, a pre-existing table of
+-- this name would skip the create and then be DROPPED, taking its data with it. Without
+-- them a collision raises, ensure_schema propagates it, the transaction rolls back, and the
+-- database stays at version 91. A loud failure is right for a name nothing should own.
+CREATE TABLE _sable_092_schema_touch (x INTEGER);
+DROP TABLE _sable_092_schema_touch;
 
 -- The DDL rewrite fixes what future inserts write. These 48 statements fix what the stale
 -- defaults already wrote. Migration 090 canonicalized the values present when it ran, so
