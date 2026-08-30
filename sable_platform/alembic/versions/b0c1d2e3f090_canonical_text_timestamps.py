@@ -3,7 +3,7 @@
 Every timestamp in this schema is TEXT. That works only while one spelling is used, and it
 was not: ``server_default=func.now()`` renders ``now()`` on PostgreSQL and
 ``CURRENT_TIMESTAMP`` on SQLite, both producing ``'2026-08-29 12:00:00...'`` with a SPACE,
-while 67 Python call sites write ``'2026-08-29T12:00:00Z'`` with a ``T``. Space is ``0x20``
+while 67 Python call sites render ``'2026-08-29T12:00:00Z'`` with a ``T``. Space is ``0x20``
 and ``T`` is ``0x54``. Every comparison, ``ORDER BY``, ``MIN`` and ``MAX`` over one of these
 columns was therefore decided by the separator character before it reached the clock.
 

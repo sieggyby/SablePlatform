@@ -17,7 +17,7 @@ It runs in two phases.
 Every timestamp in this schema is TEXT. One spelling is safe. Two are not.
 
 The column default rendered `now()` on PostgreSQL and `CURRENT_TIMESTAMP` on SQLite. Both
-write a SPACE separator. 67 Python call sites write a `T` instead. Space is `0x20` and `T`
+write a SPACE separator. 67 Python call sites render a `T` instead. Space is `0x20` and `T`
 is `0x54`. A text comparison therefore reads the separator before the hour.
 
 Three shapes broke.
@@ -38,7 +38,7 @@ backfill that kept it would leave the defect in place.
 
 Whole seconds is one fixed width that closes this. A padded six-digit fraction is another.
 This migration uses whole seconds. SQLite's `strftime('%f')` renders three digits and never
-six, and 67 call sites already write the whole-second format.
+six, and 67 call sites already render the whole-second format.
 
 ## Lock profile
 
@@ -201,7 +201,7 @@ rows less than a second apart can land on the same string.
 FIXED WIDTH is what makes a text compare chronological, and whole seconds is one fixed
 width among several. A fixed six-digit fraction would hold the order and keep the
 microseconds. Second precision is what this codebase already runs on: 090 canonicalized 233
-columns at it, 67 `strftime` call sites write the canonical format themselves, and SQLite
+columns at it, 67 `strftime` call sites render the canonical format themselves, and SQLite
 renders at most
 three fractional digits. Widening the format reopens all three, so this migration keeps it.
 

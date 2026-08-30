@@ -4,7 +4,7 @@
 --
 -- Every timestamp in this schema is TEXT, which works only while one spelling is used.
 -- It was not. The column DEFAULT was CURRENT_TIMESTAMP, which writes a SPACE separator,
--- while 67 Python call sites write strftime('%Y-%m-%dT%H:%M:%SZ') with a T. Space is 0x20
+-- while 67 Python call sites render strftime('%Y-%m-%dT%H:%M:%SZ') with a T. Space is 0x20
 -- and T is 0x54, so every comparison, ORDER BY, MIN and MAX over one of these columns was
 -- decided by the separator character rather than by the clock.
 --

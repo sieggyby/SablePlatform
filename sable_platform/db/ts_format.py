@@ -3,13 +3,13 @@
 The platform stores its timestamps as TEXT. That is survivable only while every writer
 agrees on the spelling, and until this module existed they did not: a
 ``server_default=func.now()`` renders ``now()`` on PostgreSQL and ``CURRENT_TIMESTAMP`` on
-SQLite, both of which produce a SPACE separator, while 67 Python call sites write
+SQLite, both of which produce a SPACE separator, while 67 Python call sites render
 ``strftime("%Y-%m-%dT%H:%M:%SZ")`` with a ``T``. Space is ``0x20`` and ``T`` is ``0x54``,
 so every comparison, ``ORDER BY``, ``MIN`` and ``MAX`` over one of those columns was decided
 by the separator character before it reached the clock.
 
 ``sable_platform.db.compat`` fixes that at READ time, one call site at a time. This module
-fixes it at WRITE time, once, for every column: the canonical spelling is what 67 writers
+fixes it at WRITE time, once, for every column: the canonical spelling is what 67 call sites
 already produce, and the server defaults now produce it too.
 
 **The canonical spelling is fixed width on purpose.** Lexicographic order equals

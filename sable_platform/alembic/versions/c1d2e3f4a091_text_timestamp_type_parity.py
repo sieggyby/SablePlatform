@@ -40,9 +40,10 @@ breaks the order. A fixed six-digit fraction would hold the order AND keep the m
 Second precision is a choice this codebase already made, not a property it requires:
 
 - Migration 090 canonicalized 233 TEXT columns at second precision.
-- 67 ``strftime`` call sites in ``sable_platform/`` write the canonical format. 63 pass the
-  literal and 4 pass ``ISO_Z_FORMAT``. Counted by AST over call expressions, not by grep,
-  and the alembic tree is excluded.
+- 67 ``strftime`` call sites in ``sable_platform/`` RENDER the canonical format. 63 pass
+  the literal and 4 pass ``ISO_Z_FORMAT``. Counted by AST over call expressions, not by
+  grep, and the alembic tree is excluded. Render, not write: two of the 67 are
+  ``utc_now_iso`` itself and a comparison cutoff in ``db/jobs.py``, which store nothing.
 - SQLite renders at most three fractional digits. ``strftime('%f')`` gives ``SS.SSS``, so a
   six-digit canonical needs string surgery in the SQLite default expression.
 
