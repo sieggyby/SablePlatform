@@ -29,6 +29,16 @@ UPDATE sqlite_master
  WHERE type = 'table'
    AND sql LIKE '%datetime(''now'')%';
 PRAGMA writable_schema=RESET;
+-- A direct sqlite_master UPDATE does NOT bump `PRAGMA schema_version`, so a connection that
+-- was already open keeps its cached schema and keeps writing the OLD default. Measured on a
+-- file database: a reader opened before the rewrite still stored '2026-08-30 02:23:52'.
+--
+-- `RESET` reloads this connection only. These two statements are real DDL, so SQLite bumps
+-- schema_version itself and every other connection reparses. A literal `PRAGMA
+-- schema_version = N` cannot be used here, because the new value has to be computed and this
+-- file is static SQL.
+CREATE TABLE IF NOT EXISTS _sable_092_schema_touch (x INTEGER);
+DROP TABLE IF EXISTS _sable_092_schema_touch;
 
 -- The DDL rewrite fixes what future inserts write. These 48 statements fix what the stale
 -- defaults already wrote. Migration 090 canonicalized the values present when it ran, so

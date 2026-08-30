@@ -403,6 +403,52 @@ def test_migration_092_backfills_what_a_stale_default_wrote():
     assert row[1] == "not a timestamp", "the backfill converted a value it cannot read"
 
 
+def test_migration_092_reaches_a_connection_that_was_already_open(tmp_path):
+    """A direct ``sqlite_master`` UPDATE does not bump ``PRAGMA schema_version``.
+
+    Without a bump, a connection opened BEFORE the migration keeps its cached schema and
+    keeps writing the old default. This is a file database with two connections, because an
+    in-memory database with one connection cannot show it: ``writable_schema=RESET`` reloads
+    the connection that ran the migration, and that is the only one such a test has.
+    """
+    import sqlite3
+
+    import sable_platform.db.connection as connection
+
+    path = str(tmp_path / "sable.db")
+    saved = connection._MIGRATIONS
+    try:
+        connection._MIGRATIONS = [m for m in saved if m[1] <= 91]
+        writer = sqlite3.connect(path)
+        connection.ensure_schema(writer)
+
+        reader = sqlite3.connect(path)
+        reader.execute("SELECT count(*) FROM orgs").fetchone()   # load the old schema
+        version_before = writer.execute("PRAGMA schema_version").fetchone()[0]
+
+        connection._MIGRATIONS = saved
+        connection.ensure_schema(writer)
+    finally:
+        connection._MIGRATIONS = saved
+
+    version_after = writer.execute("PRAGMA schema_version").fetchone()[0]
+    assert version_after != version_before, (
+        "PRAGMA schema_version did not move; open connections keep the old default")
+
+    reader.execute("INSERT INTO orgs (org_id, display_name) VALUES ('viaReader', 'R')")
+    reader.commit()
+    stored = reader.execute(
+        "SELECT created_at FROM orgs WHERE org_id='viaReader'").fetchone()[0]
+    assert _CANON.match(stored), f"the pre-existing connection wrote {stored!r}"
+
+    # The touch table must not survive.
+    assert writer.execute(
+        "SELECT count(*) FROM sqlite_master WHERE name='_sable_092_schema_touch'"
+    ).fetchone()[0] == 0
+    assert writer.execute("PRAGMA writable_schema").fetchone()[0] == 0
+    assert writer.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
 def test_migration_092_has_no_semicolon_inside_a_comment():
     """Same hazard as 090. ``connection.py`` splits on ``;`` with no SQL parser."""
     import importlib.resources
