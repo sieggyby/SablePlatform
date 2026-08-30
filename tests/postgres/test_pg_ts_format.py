@@ -455,9 +455,11 @@ def test_migration_091_truncates_sub_second_precision_rather_than_rounding(postg
     direction, because rounding and truncating differ by a whole second at `.999999` and
     rounding would roll a year at the last microsecond of December.
 
-    The truncation is required, not tolerated. Lexicographic order equals chronological
-    order only at a fixed width, so a preserved fractional part would sort BELOW a bare
-    second and reintroduce the defect migration 090 closes.
+    Truncating is a choice, not a necessity. Fixed width is the necessity: PostgreSQL
+    renders a fraction with trailing zeros stripped, so keeping what it renders gives a
+    column several widths at once, and a variable width sorts wrong. A PADDED six-digit
+    fraction would sort right and keep the microseconds. Migration 091 keeps whole seconds
+    because that is the width the rest of the schema already runs at.
     """
     from sqlalchemy import create_engine
 

@@ -3,20 +3,26 @@
 The platform stores its timestamps as TEXT. That is survivable only while every writer
 agrees on the spelling, and until this module existed they did not: a
 ``server_default=func.now()`` renders ``now()`` on PostgreSQL and ``CURRENT_TIMESTAMP`` on
-SQLite, both of which produce a SPACE separator, while 61 Python call sites write
+SQLite, both of which produce a SPACE separator, while 67 Python call sites write
 ``strftime("%Y-%m-%dT%H:%M:%SZ")`` with a ``T``. Space is ``0x20`` and ``T`` is ``0x54``,
 so every comparison, ``ORDER BY``, ``MIN`` and ``MAX`` over one of those columns was decided
 by the separator character before it reached the clock.
 
 ``sable_platform.db.compat`` fixes that at READ time, one call site at a time. This module
-fixes it at WRITE time, once, for every column: the canonical spelling is what 61 writers
+fixes it at WRITE time, once, for every column: the canonical spelling is what 67 writers
 already produce, and the server defaults now produce it too.
 
 **The canonical spelling is fixed width on purpose.** Lexicographic order equals
-chronological order only while every value has the same shape. A fractional part breaks it:
-``'...T12:00:00.5Z'`` sorts BELOW ``'...T12:00:00Z'`` because ``.`` is ``0x2E`` and ``Z`` is
-``0x5A``. Second precision with no fractional part is therefore not a rounding decision, it
-is the property the whole scheme rests on.
+chronological order only while every value has the same shape. A VARIABLE-width fractional
+part breaks it: ``'...T12:00:00.5Z'`` sorts BELOW ``'...T12:00:00Z'`` because ``.`` is
+``0x2E`` and ``Z`` is ``0x5A``. PostgreSQL renders a ``timestamptz`` to text with trailing
+zeros REMOVED, so a column that keeps what it renders holds several widths at once:
+measured, ``.500000`` gives ``.5`` and ``.000000`` gives no fraction at all.
+
+Fixed width is the requirement, and whole seconds is one width that meets it. A six-digit
+fraction is another: ``to_char(..., 'SS.US')`` pads it on PostgreSQL. This module picks
+whole seconds because SQLite cannot match that width without string surgery. Its
+``strftime('%f')`` renders exactly three digits, padded, never six.
 
 Native ``timestamptz`` columns would be better still, and this module does not get there. It
 makes the column uniform; it does not change the stored TYPE. Reads keep returning ``str`` on

@@ -17,7 +17,7 @@ It runs in two phases.
 Every timestamp in this schema is TEXT. One spelling is safe. Two are not.
 
 The column default rendered `now()` on PostgreSQL and `CURRENT_TIMESTAMP` on SQLite. Both
-write a SPACE separator. 61 Python call sites write a `T` instead. Space is `0x20` and `T`
+write a SPACE separator. 67 Python call sites write a `T` instead. Space is `0x20` and `T`
 is `0x54`. A text comparison therefore reads the separator before the hour.
 
 Three shapes broke.
@@ -29,10 +29,16 @@ Three shapes broke.
 
 ## Why second precision
 
-Lexicographic order equals chronological order only at a fixed width.
+Lexicographic order equals chronological order only at a FIXED width.
 
 `'...T12:00:00.5Z'` sorts BELOW `'...T12:00:00Z'`, because `.` is `0x2E` and `Z` is `0x5A`.
-A backfill that kept sub-second precision would leave the defect in place.
+PostgreSQL strips trailing zeros when it renders a timestamp to text, so `.500000` comes
+back as `.5` and a column that keeps what it renders holds several widths at once. A
+backfill that kept it would leave the defect in place.
+
+Whole seconds is one fixed width that closes this. A padded six-digit fraction is another.
+This migration uses whole seconds. SQLite's `strftime('%f')` renders three digits and never
+six, and 67 call sites already write the whole-second format.
 
 ## Lock profile
 
@@ -195,7 +201,8 @@ rows less than a second apart can land on the same string.
 FIXED WIDTH is what makes a text compare chronological, and whole seconds is one fixed
 width among several. A fixed six-digit fraction would hold the order and keep the
 microseconds. Second precision is what this codebase already runs on: 090 canonicalized 233
-columns at it, 71 call sites write the format literal themselves, and SQLite renders at most
+columns at it, 67 `strftime` call sites write the canonical format themselves, and SQLite
+renders at most
 three fractional digits. Widening the format reopens all three, so this migration keeps it.
 
 Four things were measured against this schema before the truncation was accepted:

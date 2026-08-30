@@ -3,7 +3,7 @@
 Every timestamp in this schema is TEXT. That works only while one spelling is used, and it
 was not: ``server_default=func.now()`` renders ``now()`` on PostgreSQL and
 ``CURRENT_TIMESTAMP`` on SQLite, both producing ``'2026-08-29 12:00:00...'`` with a SPACE,
-while 61 Python call sites write ``'2026-08-29T12:00:00Z'`` with a ``T``. Space is ``0x20``
+while 67 Python call sites write ``'2026-08-29T12:00:00Z'`` with a ``T``. Space is ``0x20``
 and ``T`` is ``0x54``. Every comparison, ``ORDER BY``, ``MIN`` and ``MAX`` over one of these
 columns was therefore decided by the separator character before it reached the clock.
 
@@ -19,11 +19,15 @@ Two statements per column:
    naive render under Asia/Tokyo is nine hours out.
 2. Backfill the existing rows into the same spelling.
 
-**Second precision with no fractional part is load-bearing, not a rounding choice.**
-Lexicographic order equals chronological order only while every value is the same width.
-``'...T12:00:00.5Z'`` sorts BELOW ``'...T12:00:00Z'`` because ``.`` is ``0x2E`` and ``Z`` is
-``0x5A``. A backfill that kept sub-second precision would leave the defect in place for any
-row that had it.
+**Fixed width is load-bearing, not a rounding choice.** Lexicographic order equals
+chronological order only while every value is the same width. ``'...T12:00:00.5Z'`` sorts
+BELOW ``'...T12:00:00Z'`` because ``.`` is ``0x2E`` and ``Z`` is ``0x5A``. A backfill that
+kept the sub-second precision AS RENDERED would leave the defect in place: PostgreSQL
+strips trailing zeros, so ``.500000`` comes back as ``.5`` and the width varies row to row.
+
+Whole seconds is one fixed width that closes it. A padded six-digit fraction is another, and
+this migration does not take it. SQLite's ``strftime('%f')`` renders three digits, never
+six, so the two dialects would disagree on width.
 
 **The backfill converts only what it can read.** A value outside ``_PARSEABLE`` is left
 untouched and counted rather than fed to a cast that would abort the whole migration. The
