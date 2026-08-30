@@ -18,6 +18,7 @@ from sable_platform.db.ts_format import (
     CANONICAL_REGEX,
     ISO_Z_FORMAT,
     canonical_sql,
+    now_canonical_sql,
     utc_now_iso,
     utc_now_iso_sql,
 )
@@ -559,6 +560,56 @@ def test_the_092_name_list_matches_every_table_that_needs_it():
         f"affected but NOT named: {sorted(needs_it - named)}")
     # Power check: an empty list on both sides would satisfy the equality above.
     assert len(needs_it) >= 40, f"only {len(needs_it)} tables found; the sweep is broken"
+
+
+def test_the_postgresql_mask_is_not_read_as_a_bind_parameter():
+    """`HH24:MI:SS` inside a `text()` string must not become bind parameters.
+
+    SQLAlchemy reads `:name` in a `text()` construct as a bind parameter, and the PostgreSQL
+    `to_char` mask is full of colons. It is safe today because the bind pattern ignores a
+    colon preceded by a word character, and every colon in the mask follows one: `HH24:`,
+    `MI:`. That is a property of the mask, not a guarantee, so it is pinned here.
+
+    Edit the mask to put a space or a quote before a colon and this test fails, before the
+    statement reaches a server and fails there instead.
+    """
+    for dialect in ("postgresql", "sqlite"):
+        now_sql = text(f"SELECT {now_canonical_sql(dialect)}")
+        cmp_sql = text(f"SELECT {canonical_sql('some_column', dialect)}")
+        assert not now_sql._bindparams, (dialect, dict(now_sql._bindparams))
+        assert not cmp_sql._bindparams, (dialect, dict(cmp_sql._bindparams))
+
+    # Control. Without this, a change that stopped detecting binds entirely would pass.
+    assert list(text("SELECT :real_param")._bindparams) == ["real_param"]
+    # And the mixed shape every caller actually writes: mask plus a genuine bind.
+    mixed = text(f"UPDATE t SET updated_at = {now_canonical_sql('postgresql')}"
+                 f" WHERE id = :row_id")
+    assert list(mixed._bindparams) == ["row_id"], dict(mixed._bindparams)
+
+
+def test_the_pinned_migration_masks_are_not_read_as_bind_parameters():
+    """Same hazard in the two Alembic migrations, which pin their own copy of the mask.
+
+    ``op.execute()`` coerces a plain string into ``text()``, so a mask that parsed as a bind
+    parameter would break the migration rather than a query. Every ``to_char`` expression in
+    both files is checked, not only the pinned constant, because 090 also builds one inline.
+    """
+    import pathlib
+    import re as _re
+
+    root = pathlib.Path(sa_schema.__file__).parent.parent / "alembic" / "versions"
+    files = ["b0c1d2e3f090_canonical_text_timestamps.py",
+             "c1d2e3f4a091_text_timestamp_type_parity.py"]
+    checked = 0
+    for filename in files:
+        source = (root / filename).read_text(encoding="utf-8")
+        # Collapse the f-string line continuations so a wrapped expression reads as one.
+        flat = _re.sub(r'"\s*\n\s*f?"', "", source).replace('\\"', '"')
+        for match in _re.finditer(r"to_char\([^\n]*?HH24:MI:SS[^\n]*?\)", flat):
+            expr = match.group(0)
+            assert not text(f"SELECT {expr}")._bindparams, (filename, expr)
+            checked += 1
+    assert checked >= 3, f"only {checked} to_char expressions found; the scan is too narrow"
 
 
 def test_migration_092_has_no_semicolon_inside_a_comment():
