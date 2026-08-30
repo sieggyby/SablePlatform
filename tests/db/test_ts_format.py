@@ -93,10 +93,10 @@ def test_no_column_in_the_schema_still_carries_the_old_default():
 
 def test_the_sqlite_default_writes_the_canonical_spelling():
     md = MetaData()
-    probe = Table("ts_probe", md,
-                  Column("id", Text, primary_key=True),
-                  Column("created_at", Text, nullable=False,
-                         server_default=utc_now_iso_sql()))
+    Table("ts_probe", md,
+          Column("id", Text, primary_key=True),
+          Column("created_at", Text, nullable=False,
+                server_default=utc_now_iso_sql()))
     engine = create_engine("sqlite://")
     md.create_all(engine)
     with engine.begin() as conn:

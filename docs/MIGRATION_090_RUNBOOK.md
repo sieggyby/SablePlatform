@@ -1,6 +1,7 @@
-# Migration 090 runbook: canonical TEXT timestamps
+# Migration 090 and 091 runbook: canonical TEXT timestamps
 
-Read this before you run migration 090 against production.
+Read this before you run migration 090 and migration 091 against production.
+Run both. Migration 091 fixes a PostgreSQL-only failure in `api/tokens.py`.
 
 ## What it does
 
@@ -124,7 +125,52 @@ them, because a real timestamp type needs no canonical spelling and `SET DEFAULT
 on one is a hard error. The divergence is DEFECTS_FOUND item 9 and is pinned by
 `tests/postgres/test_pg_ts_format.py`.
 
-## To roll back
+## Then run migration 091
+
+    alembic upgrade c1d2e3f4a091
+
+Run this in the same window. Migration 091 converts the 19 columns 090 skipped, the ones the
+line above reports as `already a real timestamp type`. It prints one line:
+
+    [091] timestamp type parity: 19 columns converted to TEXT, 0 already TEXT,
+    0 absent from this database
+
+**Do not stop at 090.** Before 091, `api/tokens.py` raises on PostgreSQL for every API token
+that carries an expiry:
+
+    '<=' not supported between instances of 'datetime.datetime' and 'str'
+
+The column returns a `datetime` on PostgreSQL and a `str` on SQLite, so the test suite never
+saw it. Migration 091 is the fix.
+
+### 091 truncates to whole seconds
+
+The conversion truncates. It does not round. A stored `12:00:00.999999+00` becomes
+`12:00:00Z`, never `12:00:01Z`. `now()` writes microseconds, so this applies to every row the
+old default created.
+
+A converted value can name an instant up to one second EARLIER than the one it replaced. Two
+rows less than a second apart can land on the same string.
+
+That is the canonical format, for the reason under "Why second precision" above. Four things
+were measured against this schema before the truncation was accepted:
+
+- No unique index or key constraint covers any of the 19 columns.
+- Every `ORDER BY` on them carries an `id` tiebreaker, so the order stays deterministic.
+- No caller compares one of them for equality as a lock token. The two lock tokens are
+  `discord_state_pins.updated_at` and `discord_streaks.updated_at`, and 091 does not touch
+  them.
+- `api_tokens.expires_at` moves EARLIER, never later, so an expiry fails closed.
+
+### To roll back 091
+
+    alembic downgrade b0c1d2e3f090
+
+The columns return to `timestamp with time zone`. A value migration 090 could not read fails
+the cast and stops the downgrade on that row. That is the intended failure. The truncated
+microseconds do not come back.
+
+## To roll back 090
 
     alembic downgrade a9b0c1d2e089
 
@@ -140,11 +186,13 @@ canonical value carries one, and `Z` sorts above the empty string, so a token ex
 exact second reads as valid for up to one more second. That needs a downgrade of the CODE as
 well as this migration, and one second is the whole size of it.
 
-## What this migration does NOT do
+## What migration 090 does NOT do
 
-- It does not change any column TYPE. Native `timestamptz` is the better end state, and it
-  changes what a read RETURNS: `datetime` on PostgreSQL against `str` on SQLite, from the
-  raw `text()` queries this codebase uses everywhere. That breaks callers by the hundred.
+- It does not change any column TYPE. Native `timestamptz` is the WRONG end state here, and
+  the reason is the return type: a raw `text()` query hands back a `datetime` on PostgreSQL
+  and a `str` on SQLite, and this codebase reads through raw `text()` everywhere. That breaks
+  callers by the hundred. Migration 091 moves the other way for 19 columns, from
+  `timestamptz` to canonical TEXT, so both dialects return a `str`.
 - It does not add a CHECK constraint. A constraint turns today's silent wrong answer into a
   hard failure for any writer the migration missed. That trade is yours to make.
 

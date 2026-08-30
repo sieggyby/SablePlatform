@@ -402,13 +402,16 @@ def test_the_pre_16_validity_fallback_answers_the_same_as_pg_input_is_valid(post
                 f"{fallback} vs {builtin}")
 
 
-def test_migration_091_preserves_the_instant_under_a_non_utc_session(postgres_db_url):
+def test_migration_091_renders_the_same_instant_under_any_session_zone(postgres_db_url):
     """The known-answer case for the type conversion.
 
     A `timestamptz` holds an instant, and rendering it to text is where a session timezone
     can silently move it. The conversion goes through `AT TIME ZONE 'UTC'`, so it must give
     the same answer whatever the session is set to. Seeded at revision 090, where the column
     is still `timestamptz`, then converted.
+
+    The seed is a whole second on purpose, so a failure here means the timezone moved and
+    nothing else. Sub-second behaviour is a separate answer, in the next test.
     """
     from sqlalchemy import create_engine
 
@@ -442,6 +445,76 @@ def test_migration_091_preserves_the_instant_under_a_non_utc_session(postgres_db
     assert now_type == "text", now_type
     assert isinstance(got, str), f"still not a str: {type(got).__name__}"
     assert got == "2026-07-30T23:00:00Z", got
+
+
+def test_migration_091_truncates_sub_second_precision_rather_than_rounding(postgres_db_url):
+    """The known-answer case for what the conversion does to a fractional second.
+
+    `now()` gives microseconds, so every row the old `timestamptz` default wrote carries a
+    fractional part. `to_char` truncates it. The migration says so, and this test pins the
+    direction, because rounding and truncating differ by a whole second at `.999999` and
+    rounding would roll a year at the last microsecond of December.
+
+    The truncation is required, not tolerated. Lexicographic order equals chronological
+    order only at a fixed width, so a preserved fractional part would sort BELOW a bare
+    second and reintroduce the defect migration 090 closes.
+    """
+    from sqlalchemy import create_engine
+
+    _upgrade_to(postgres_db_url, "b0c1d2e3f090")
+    engine = create_engine(postgres_db_url)
+    seeded = {
+        # token_id: (seeded timestamptz, expected text after conversion)
+        "frac_max": ("2026-07-30 12:00:00.999999+00", "2026-07-30T12:00:00Z"),
+        "frac_half": ("2026-07-30 12:00:00.500000+00", "2026-07-30T12:00:00Z"),
+        "frac_min": ("2026-07-30 12:00:00.000001+00", "2026-07-30T12:00:00Z"),
+        # Rounding here would roll the day, the month and the year at once.
+        "year_end": ("2026-12-31 23:59:59.999999+00", "2026-12-31T23:59:59Z"),
+        # Two instants 100 microseconds apart. They collapse to one string, by design.
+        "collapse_a": ("2026-07-30 08:00:00.100000+00", "2026-07-30T08:00:00Z"),
+        "collapse_b": ("2026-07-30 08:00:00.200000+00", "2026-07-30T08:00:00Z"),
+    }
+    with engine.begin() as conn:
+        stored_type = conn.execute(text(
+            "SELECT data_type FROM information_schema.columns"
+            " WHERE table_name='api_tokens' AND column_name='created_at'")).scalar()
+        assert stored_type == "timestamp with time zone", (
+            f"the column is already {stored_type}; this test is not exercising a conversion")
+        for token_id, (seed, _expected) in seeded.items():
+            conn.execute(
+                text(
+                    "INSERT INTO api_tokens (token_id, token_hash, label, operator_id,"
+                    " created_by, created_at, enabled, scopes_json, org_scopes_json)"
+                    " VALUES (:tid, :tid, 'l', 'op', 'cb', CAST(:seed AS timestamptz),"
+                    "         1, '[]', '[]')"
+                ),
+                {"tid": token_id, "seed": seed},
+            )
+        # The seeded microseconds are really there before the conversion. Without this the
+        # test would pass against a server that never stored them in the first place.
+        kept = conn.execute(text(
+            "SELECT count(*) FROM api_tokens"
+            " WHERE date_part('microseconds', created_at)::int % 1000000 <> 0")).scalar()
+        assert kept == len(seeded), f"only {kept} of {len(seeded)} rows kept a fraction"
+    engine.dispose()
+
+    _upgrade_to(postgres_db_url, "c1d2e3f4a091")
+
+    engine = create_engine(postgres_db_url)
+    with engine.connect() as conn:
+        rows = dict(conn.execute(text(
+            "SELECT token_id, created_at FROM api_tokens")).fetchall())
+        ordered = [r[0] for r in conn.execute(text(
+            "SELECT token_id FROM api_tokens"
+            " ORDER BY created_at ASC, token_id ASC")).fetchall()]
+    engine.dispose()
+
+    for token_id, (_seed, expected) in seeded.items():
+        assert rows[token_id] == expected, f"{token_id}: {rows[token_id]!r}"
+    # The collapse is the accepted consequence, so state it as an expectation.
+    assert rows["collapse_a"] == rows["collapse_b"], "expected these two to collapse"
+    # And the tiebreaker still gives one total order over the collapsed pair.
+    assert ordered.index("collapse_a") < ordered.index("collapse_b"), ordered
 
 
 def test_token_validation_no_longer_raises_on_postgresql(postgres_conn):

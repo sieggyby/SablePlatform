@@ -25,6 +25,31 @@ The conversion renders through ``AT TIME ZONE 'UTC'`` into the canonical spellin
 090 established, so these columns land in the same shape as every other TEXT timestamp.
 NULL stays NULL.
 
+**This conversion truncates to whole seconds. It does not round.** A stored
+``12:00:00.999999+00`` becomes ``12:00:00Z``, not ``12:00:01Z``, so a converted value can
+represent an instant up to 999999 microseconds earlier than the one it replaced. Two rows
+less than a second apart can land on the same string. ``now()`` supplies microseconds, so
+every row written by the old default carries a fractional part and this applies to all of
+them.
+
+That is the canonical format, not an accident of it. Lexicographic order equals
+chronological order only at a fixed width: ``'...T12:00:00.5Z'`` sorts BELOW
+``'...T12:00:00Z'``, because ``.`` is ``0x2E`` and ``Z`` is ``0x5A``. Keeping the fractional
+part would reintroduce the defect migration 090 exists to close.
+
+Measured against this schema before accepting it:
+
+- No unique index or key constraint covers any of the 19 columns, so a collapse cannot
+  violate one. Those tables do carry unique indexes; none of them names these columns.
+- Every ``ORDER BY`` on these columns carries an ``id`` tiebreaker, so a collapse leaves
+  the order deterministic.
+- No caller compares one of these columns for equality as an optimistic-lock token. The two
+  lock tokens in this schema, ``discord_state_pins.updated_at`` and
+  ``discord_streaks.updated_at``, are not in this list and this migration does not touch
+  them.
+- ``api_tokens.expires_at`` truncates backward, so an expiry moves up to one second earlier
+  and never later. That direction fails closed.
+
 **Not converted: 18 columns where ``schema.py`` says ``Integer`` and PostgreSQL says
 ``bigint``.** That pair returns a Python ``int`` on both dialects and ``bigint`` is the
 better choice for an identity column. It is a declaration that could be tightened, not a
