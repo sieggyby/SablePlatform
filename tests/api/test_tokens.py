@@ -171,6 +171,35 @@ def test_list_tokens_returns_hashes_only(org_db):
         assert "scopes_json" in d
 
 
+def test_list_tokens_orders_deterministically_when_created_at_ties(org_db):
+    """Two tokens issued in the same second must still come back in one fixed order.
+
+    `api_tokens.created_at` is TEXT at second precision on both dialects, and migration
+    091 converts the PostgreSQL column into the same second-precision spelling. Two rows
+    written inside one second therefore share a `created_at` value, and `ORDER BY
+    created_at DESC` alone leaves their relative order to the server.
+    """
+    from sqlalchemy import text
+
+    conn, _ = org_db
+    for token_id in ("aaa", "bbb", "ccc"):
+        conn.execute(
+            text(
+                "INSERT INTO api_tokens (token_id, token_hash, label, operator_id,"
+                " created_by, created_at, enabled, scopes_json, org_scopes_json)"
+                " VALUES (:tid, :tid, 'l', 'op', 'owner', '2026-07-30T12:00:00Z',"
+                "         1, '[]', '[]')"
+            ),
+            {"tid": token_id},
+        )
+    conn.commit()
+
+    got = [r[0] for r in list_tokens(conn)]
+    assert got == ["ccc", "bbb", "aaa"], got
+    # Same query again: a tie broken by the server rather than by SQL is free to differ.
+    assert [r[0] for r in list_tokens(conn)] == got
+
+
 def test_scope_set_matches_documented(org_db):
     assert ALLOWED_SCOPES == frozenset(
         {"read_only", "write_safe", "spend_request", "spend_execute"}

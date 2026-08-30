@@ -32,17 +32,33 @@ less than a second apart can land on the same string. ``now()`` supplies microse
 every row written by the old default carries a fractional part and this applies to all of
 them.
 
-That is the canonical format, not an accident of it. Lexicographic order equals
-chronological order only at a fixed width: ``'...T12:00:00.5Z'`` sorts BELOW
-``'...T12:00:00Z'``, because ``.`` is ``0x2E`` and ``Z`` is ``0x5A``. Keeping the fractional
-part would reintroduce the defect migration 090 exists to close.
+FIXED WIDTH is what makes a text compare chronological. Whole seconds is one fixed width
+among several, and not the only one that works. ``'...T12:00:00.5Z'`` sorts BELOW
+``'...T12:00:00Z'``, because ``.`` is ``0x2E`` and ``Z`` is ``0x5A``, so a VARIABLE fraction
+breaks the order. A fixed six-digit fraction would hold the order AND keep the microseconds.
+
+Second precision is a choice this codebase already made, not a property it requires:
+
+- Migration 090 canonicalized 233 TEXT columns at second precision.
+- 71 call sites in ``sable_platform/`` write the literal ``%Y-%m-%dT%H:%M:%SZ`` themselves.
+- SQLite renders at most three fractional digits. ``strftime('%f')`` gives ``SS.SSS``, so a
+  six-digit canonical needs string surgery in the SQLite default expression.
+
+Widening the format now reopens all three. This paragraph records the alternative because
+it is real, not because it is impossible.
+
+The measured cost of truncating is one query, not a class of them, and that query is fixed
+on this branch. A tiebreaker is the right answer to it at ANY precision, because two rows
+can share a microsecond as easily as they share a second.
 
 Measured against this schema before accepting it:
 
 - No unique index or key constraint covers any of the 19 columns, so a collapse cannot
   violate one. Those tables do carry unique indexes; none of them names these columns.
-- Every ``ORDER BY`` on these columns carries an ``id`` tiebreaker, so a collapse leaves
-  the order deterministic.
+- Ten queries order by one of these columns. Nine carry an ``id`` tiebreaker. The tenth,
+  ``list_tokens`` in ``sable_platform/api/tokens.py``, did not, and this branch adds
+  ``token_id DESC`` to it. A first sweep reported all ten clean, because the sweep itself
+  omitted the four ``api_tokens`` columns.
 - No caller compares one of these columns for equality as an optimistic-lock token. The two
   lock tokens in this schema, ``discord_state_pins.updated_at`` and
   ``discord_streaks.updated_at``, are not in this list and this migration does not touch

@@ -288,6 +288,9 @@ def list_tokens(conn: Connection) -> list:
         text(
             "SELECT token_id, label, operator_id, created_by, created_at,"
             " expires_at, last_used_at, revoked_at, enabled, scopes_json,"
-            " org_scopes_json FROM api_tokens ORDER BY created_at DESC"
+            # token_id breaks the tie. created_at is TEXT at second precision, so two
+            # tokens issued in the same second share a value and ORDER BY created_at
+            # alone leaves their order up to the server.
+            " org_scopes_json FROM api_tokens ORDER BY created_at DESC, token_id DESC"
         )
     ).fetchall()

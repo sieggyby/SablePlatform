@@ -107,6 +107,39 @@ alone and `M` cannot see it. Without this separate count the report would say "0
 unreadable" while corrupt rows sat in the table. If `K` is above zero, those rows need a
 person.
 
+### Find which columns hold them
+
+The report gives totals, not names. Run this to get the count per column. It sweeps exactly
+what migration 090 sweeps: a TEXT column named `*_at`, `timestamp`, `last_seen` or `at_utc`.
+
+    SELECT c.table_name, c.column_name,
+           (xpath('/row/n/text()', query_to_xml(format(
+              'SELECT count(*) AS n FROM %I.%I WHERE %I IS NOT NULL'
+              '   AND btrim(%I) <> '''' AND %I !~ ''^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$''',
+              c.table_schema, c.table_name,
+              c.column_name, c.column_name, c.column_name),
+              false, true, '')))[1]::text::int AS m_not_canonical,
+           (xpath('/row/n/text()', query_to_xml(format(
+              'SELECT count(*) AS n FROM %I.%I WHERE %I ~ ''^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'''
+              '   AND NOT pg_input_is_valid(%I, ''timestamptz'')',
+              c.table_schema, c.table_name, c.column_name, c.column_name),
+              false, true, '')))[1]::text::int AS k_bad_date
+    FROM information_schema.columns c
+    WHERE c.table_schema = 'public'
+      AND c.data_type = 'text'
+      AND (c.column_name LIKE '%\_at'
+           OR c.column_name IN ('timestamp', 'last_seen', 'at_utc'))
+    ORDER BY 3 DESC, 4 DESC, 1, 2;
+
+Every row it returns with a nonzero count is a column that needs a person. `m_not_canonical`
+is the `M` total for that column. `k_bad_date` is the `K` total.
+
+`k_bad_date` needs PostgreSQL 16 or later, for `pg_input_is_valid`. On an older server,
+delete that whole expression and run the `m_not_canonical` half alone. It works on any
+version.
+
+Then read the rows in one named column:
+
 If `M` is above zero, find them and look at each one:
 
     SELECT id, created_at FROM <table>
@@ -129,8 +162,15 @@ on one is a hard error. The divergence is DEFECTS_FOUND item 9 and is pinned by
 
     alembic upgrade c1d2e3f4a091
 
-Run this in the same window. Migration 091 converts the 19 columns 090 skipped, the ones the
-line above reports as `already a real timestamp type`. It prints one line:
+Run this in the same window. Migration 091 converts 19 columns that migration 090 left as a
+real timestamp type.
+
+**That 19 does not match the 12 in the 090 line above.** 090 counts only the columns it
+carries a default for. The other 7 are nullable and have no default, so 090 never names
+them. `api_tokens.expires_at` is one of the 7. Migration 091 carries its own list of all 19
+and reports against that.
+
+It prints one line:
 
     [091] timestamp type parity: 19 columns converted to TEXT, 0 already TEXT,
     0 absent from this database
@@ -152,15 +192,24 @@ old default created.
 A converted value can name an instant up to one second EARLIER than the one it replaced. Two
 rows less than a second apart can land on the same string.
 
-That is the canonical format, for the reason under "Why second precision" above. Four things
-were measured against this schema before the truncation was accepted:
+FIXED WIDTH is what makes a text compare chronological, and whole seconds is one fixed
+width among several. A fixed six-digit fraction would hold the order and keep the
+microseconds. Second precision is what this codebase already runs on: 090 canonicalized 233
+columns at it, 71 call sites write the format literal themselves, and SQLite renders at most
+three fractional digits. Widening the format reopens all three, so this migration keeps it.
+
+Four things were measured against this schema before the truncation was accepted:
 
 - No unique index or key constraint covers any of the 19 columns.
-- Every `ORDER BY` on them carries an `id` tiebreaker, so the order stays deterministic.
+- Ten queries order by one of them. Nine carry an `id` tiebreaker. The tenth, `list_tokens`
+  in `sable_platform/api/tokens.py`, did not, and this branch adds `token_id DESC` to it.
 - No caller compares one of them for equality as a lock token. The two lock tokens are
   `discord_state_pins.updated_at` and `discord_streaks.updated_at`, and 091 does not touch
   them.
 - `api_tokens.expires_at` moves EARLIER, never later, so an expiry fails closed.
+
+A tiebreaker is the right answer at any precision. Two rows can share a microsecond as
+easily as they share a second.
 
 ### To roll back 091
 
