@@ -45,10 +45,10 @@ callers by the hundred, so it is separate work. It also does not add a CHECK con
 constraint converts today's silent wrong answer into a hard failure for any writer this
 migration missed, which is a trade for the operator to make, not this migration.
 
-SQLite keeps the old default. SQLite cannot ``ALTER COLUMN``, and its databases are built
-from ``schema.py`` rather than from this chain, so a new SQLite database already gets the
-canonical default. An existing one gets the backfill and keeps its old default until it is
-rebuilt.
+SQLite keeps the old default through this migration, and it is NOT already correct.
+``ensure_schema`` replays the SQL files in ``_MIGRATIONS`` rather than building from
+``schema.py``, so 48 columns across 42 tables kept the ``datetime('now')`` they were
+created with. Migration 092 rewrites them and backfills what they wrote.
 
 Revision ID: b0c1d2e3f090
 Revises: a9b0c1d2e089

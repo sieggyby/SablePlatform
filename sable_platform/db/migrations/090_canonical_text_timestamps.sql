@@ -23,10 +23,9 @@
 -- offset such as '+00', which is the PostgreSQL spelling, so a row imported from PostgreSQL
 -- is left alone rather than guessed at.
 --
--- The DEFAULT is not altered here. SQLite cannot ALTER a column default, and ensure_schema
--- builds SQLite databases with metadata.create_all, so a new database already carries the
--- canonical default from schema.py. An existing one gets this backfill and keeps its old
--- default until it is rebuilt.
+-- The DEFAULT is not altered here, and it is NOT already correct. ensure_schema replays
+-- these SQL files rather than building from schema.py, so 48 columns across 42 tables kept
+-- their original datetime('now') default. Migration 092 rewrites them.
 --
 -- The Alembic peer is b0c1d2e3f090_canonical_text_timestamps.py, which also sets the
 -- PostgreSQL defaults.

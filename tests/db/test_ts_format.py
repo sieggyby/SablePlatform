@@ -287,3 +287,128 @@ def test_migration_090_skips_a_shape_matching_value_that_is_not_a_real_date():
     _run_090(raw)
     got = raw.execute("SELECT created_at FROM orgs WHERE org_id='o1'").fetchone()[0]
     assert got == bad, f"an out-of-range month was converted to {got!r}"
+
+
+# --- Migration 092: the SQLite column DEFAULT -------------------------------------------
+
+_MIGRATION_092_SQL = "092_sqlite_canonical_defaults.sql"
+_STALE_DEFAULT = "datetime('now')"
+
+
+def _ensure_schema_db():
+    """A SQLite database built the way production builds one: by replaying _MIGRATIONS.
+
+    NOT ``metadata.create_all``. The two disagree, and that disagreement is the defect this
+    migration closes, so a test that builds from ``schema.py`` cannot see it.
+    """
+    import sqlite3
+
+    from sable_platform.db.connection import ensure_schema
+
+    conn = sqlite3.connect(":memory:")
+    ensure_schema(conn)
+    return conn
+
+
+def _timestamp_defaults(conn):
+    """(canonical, stale) default expressions over every timestamp-named column."""
+    canonical, stale = [], []
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    for table in tables:
+        for row in conn.execute(f"PRAGMA table_info({table})"):
+            name, default = row[1], row[4]
+            if not (name.endswith("_at") or name in ("timestamp", "last_seen", "at_utc")):
+                continue
+            if default is None:
+                continue
+            target = canonical if ISO_Z_FORMAT in str(default) else stale
+            target.append((table, name, str(default)))
+    return canonical, stale
+
+
+def test_migration_092_is_registered_for_sqlite():
+    """The dual-migration rule in CLAUDE.md."""
+    from sable_platform.db.connection import _MIGRATIONS
+
+    assert (_MIGRATION_092_SQL, 92) in _MIGRATIONS
+
+
+def test_no_sqlite_default_still_writes_the_old_spelling():
+    """``ensure_schema`` replays SQL migrations. It does not build from ``schema.py``.
+
+    A database created today therefore carries the DDL the early files wrote. Before
+    migration 092 that was 48 columns across 42 tables defaulting to ``datetime('now')``,
+    which renders a SPACE separator and no ``Z``.
+    """
+    conn = _ensure_schema_db()
+    canonical, stale = _timestamp_defaults(conn)
+    assert not stale, f"{len(stale)} stale defaults, e.g. {stale[:3]}"
+    # Power check. A zero above is only meaningful if this database really has defaults.
+    assert len(canonical) >= 150, (
+        f"only {len(canonical)} canonical defaults found; the sweep is not seeing the schema")
+
+
+def test_a_sqlite_default_writes_the_canonical_spelling_end_to_end():
+    """The behaviour, not the DDL text. An INSERT that omits the column is the real case."""
+    conn = _ensure_schema_db()
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('probe', 'P')")
+    stored = conn.execute(
+        "SELECT created_at FROM orgs WHERE org_id='probe'").fetchone()[0]
+    assert _CANON.match(stored), f"the DEFAULT wrote {stored!r}"
+
+
+def test_migration_092_leaves_the_database_intact():
+    """A DDL text rewrite under ``writable_schema`` can corrupt a schema. Prove it did not."""
+    conn = _ensure_schema_db()
+    assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] >= 92
+
+
+def test_migration_092_backfills_what_a_stale_default_wrote():
+    """The DDL rewrite fixes future inserts. Rows written before it still need converting.
+
+    Migration 090 canonicalized the values present when it ran, so the gap is a row a stale
+    default inserted between 090 and 092. Built at version 91 on purpose, so the stale
+    default is still in place when the row is written.
+    """
+    import sqlite3
+
+    import sable_platform.db.connection as connection
+
+    saved = connection._MIGRATIONS
+    conn = sqlite3.connect(":memory:")
+    try:
+        connection._MIGRATIONS = [m for m in saved if m[1] <= 91]
+        connection.ensure_schema(conn)
+        conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('stale', 'S')")
+        written = conn.execute(
+            "SELECT created_at FROM orgs WHERE org_id='stale'").fetchone()[0]
+        assert not _CANON.match(written), (
+            f"the version-91 default already wrote {written!r}; this test proves nothing")
+        # A value the backfill must refuse to convert.
+        conn.execute("UPDATE orgs SET updated_at='not a timestamp' WHERE org_id='stale'")
+
+        connection._MIGRATIONS = saved
+        connection.ensure_schema(conn)
+    finally:
+        connection._MIGRATIONS = saved
+
+    row = conn.execute(
+        "SELECT created_at, updated_at FROM orgs WHERE org_id='stale'").fetchone()
+    assert _CANON.match(row[0]), f"not converted: {row[0]!r}"
+    # Same instant, one spelling. The separator is the only thing that changed.
+    assert row[0] == written.replace(" ", "T") + "Z", f"{written!r} -> {row[0]!r}"
+    assert row[1] == "not a timestamp", "the backfill converted a value it cannot read"
+
+
+def test_migration_092_has_no_semicolon_inside_a_comment():
+    """Same hazard as 090. ``connection.py`` splits on ``;`` with no SQL parser."""
+    import importlib.resources
+
+    sql = (importlib.resources.files("sable_platform.db") / "migrations"
+           / _MIGRATION_092_SQL).read_text(encoding="utf-8")
+    offenders = [ln for ln in sql.split("\n")
+                 if ln.lstrip().startswith("--") and ";" in ln]
+    assert not offenders, offenders

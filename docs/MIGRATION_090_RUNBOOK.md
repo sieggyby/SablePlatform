@@ -266,12 +266,21 @@ stays mixed-width, which is safe here because nothing orders or compares it as a
 
 ## SQLite
 
-SQLite keeps its old default. SQLite cannot `ALTER` a column default, and `ensure_schema`
-builds SQLite databases from `schema.py`, which already carries the canonical one.
+Migration 090 does not change the SQLite defaults. Migration 092 does.
+
+`ensure_schema` does NOT build a SQLite database from `schema.py`. It replays the SQL files
+in `_MIGRATIONS`, so early DDL survives into a database created today. That left 48 columns
+across 42 tables defaulting to `datetime('now')`, which writes a SPACE separator and no `Z`:
+the original defect, still live on this dialect after 090.
+
+Migration 092 closes it. SQLite cannot `ALTER` a column default, so 092 rewrites the stored
+DDL text under `PRAGMA writable_schema`, then backfills the rows a stale default wrote
+between 090 and 092. Verified on a fresh database, on one upgraded from version 91 with
+data, and on a re-run: no stale default survives, `PRAGMA integrity_check` returns `ok`, and
+an INSERT that omits the column stores the canonical spelling.
 
 One SQLite behaviour differs from the PostgreSQL peer and is left as it is. SQLite ROLLS OVER
 an impossible day: `2026-02-30` becomes `2026-03-02` rather than failing. PostgreSQL rejects
 the same value and the peer migration skips it. A stored `2026-02-30` is corrupt either way,
-and this is the local dialect, not production. A new
-SQLite database is correct. An existing one gets the backfill from
-`090_canonical_text_timestamps.sql` and keeps its old default until it is rebuilt.
+and this is the local dialect, not production. After 092 a new SQLite database is correct,
+and an existing one gets both the 090 backfill and the 092 default rewrite.

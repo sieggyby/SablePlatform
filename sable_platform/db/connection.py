@@ -110,6 +110,7 @@ _MIGRATIONS = [
     ("089_cost_events_vendor_units.sql", 89),
     ("090_canonical_text_timestamps.sql", 90),
     ("091_text_timestamp_type_parity.sql", 91),
+    ("092_sqlite_canonical_defaults.sql", 92),
 ]
 
 
