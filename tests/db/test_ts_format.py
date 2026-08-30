@@ -520,6 +520,47 @@ def test_migration_092_rewrites_only_the_tables_it_names():
     assert not stale, stale
 
 
+def test_the_092_name_list_matches_every_table_that_needs_it():
+    """The scoped rewrite names 42 tables. A 43rd would be silently skipped.
+
+    Scoping by name is what makes the migration enforce its own safety claim, and it buys
+    that with a list that can go stale. This pins the list to the schema: build a database at
+    version 91, ask it which tables actually carry the old default, and require the SQL file
+    to name exactly those.
+
+    A migration that adds a 43rd offender fails here, naming the table, rather than in
+    ``test_no_sqlite_default_still_writes_the_old_spelling``, which would only report that a
+    stale default survived.
+    """
+    import importlib.resources
+    import re
+    import sqlite3
+
+    import sable_platform.db.connection as connection
+
+    saved = connection._MIGRATIONS
+    conn = sqlite3.connect(":memory:")
+    try:
+        connection._MIGRATIONS = [m for m in saved if m[1] <= 91]
+        connection.ensure_schema(conn)
+    finally:
+        connection._MIGRATIONS = saved
+    needs_it = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master"
+        " WHERE type='table' AND sql LIKE '%datetime(''now'')%'")}
+
+    sql = (importlib.resources.files("sable_platform.db") / "migrations"
+           / _MIGRATION_092_SQL).read_text(encoding="utf-8")
+    clause = sql.split("AND name IN (")[1].split(")")[0]
+    named = set(re.findall(r"'([a-z0-9_]+)'", clause))
+
+    assert named == needs_it, (
+        f"named but not affected: {sorted(named - needs_it)}; "
+        f"affected but NOT named: {sorted(needs_it - named)}")
+    # Power check: an empty list on both sides would satisfy the equality above.
+    assert len(needs_it) >= 40, f"only {len(needs_it)} tables found; the sweep is broken"
+
+
 def test_migration_092_has_no_semicolon_inside_a_comment():
     """Same hazard as 090. ``connection.py`` splits on ``;`` with no SQL parser."""
     import importlib.resources
