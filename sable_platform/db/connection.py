@@ -126,14 +126,57 @@ def sable_db_path() -> Path:
 _sable_db_path = sable_db_path
 
 
-def get_db(db_path: str | Path | None = None):
-    """Return a database connection for the platform.
+def sqlite_file_for_url(url: str) -> Path | None:
+    """The file a SQLite URL names, or ``None`` if it names no file.
 
-    Returns a :class:`CompatConnection` wrapping a SQLAlchemy connection.
-    The wrapper supports both ``?``-positional and ``:named`` parameter
-    styles plus ``row["col"]`` dict access, so existing code works unchanged.
+    ``None`` covers three cases that are all "there is no file here": the URL is not SQLite,
+    it is in-memory (``sqlite://`` or ``sqlite:///:memory:``), or it is malformed.
+
+    Parse with this, never by splitting on ``"sqlite:///"``. The string version is wrong in
+    ways that look fine until they are not, measured: ``sqlite+pysqlite:///x.db`` is a real
+    SQLite target that a ``startswith("sqlite:///")`` test misses, bare ``sqlite://`` reads
+    as a path, and a query string such as ``?mode=ro`` ends up inside the filename.
+
+    The path comes back EXACTLY as SQLite will see it, with no ``expanduser``. SQLite does
+    not expand ``~``: measured, ``sqlite:///~/probe.db`` creates ``./~/probe.db`` relative to
+    the working directory, not a file in the home directory. Expanding here would point a
+    ``mkdir`` at one directory while the engine opened another, and would answer "does this
+    file exist" about the wrong file. :func:`sable_db_path` does not expand either, so
+    nothing in the platform does.
     """
-    from sable_platform.db.compat_conn import CompatConnection
+    from sqlalchemy.engine import make_url
+
+    try:
+        parsed = make_url(url)
+    except Exception:  # noqa: BLE001 - a malformed URL is the engine's error to raise
+        # Swallowing this is deliberate and narrow. Callers only want the file; a URL bad
+        # enough that make_url rejects it is about to fail in get_engine with a far better
+        # message than anything this function could raise.
+        return None
+    if parsed.get_backend_name() != "sqlite":
+        return None
+    database = parsed.database
+    if not database or database == ":memory:":
+        return None
+    return Path(database)
+
+
+def _mkdir_for_sqlite_url(url: str) -> None:
+    """Create the parent directory of a ``sqlite:///`` file URL, if it names one."""
+    database = sqlite_file_for_url(url)
+    if database is not None:
+        database.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _prepared_engine(db_path: str | Path | None = None):
+    """Resolve the platform database target and make it ready to connect.
+
+    Shared by :func:`get_db` and :func:`get_raw_db` so the two cannot drift. The SQLite
+    setup here is load-bearing: without the ``mkdir`` a fresh ``SABLE_DB_PATH`` has no
+    parent directory, and without ``ensure_schema`` the file has no tables, so the first
+    query fails with ``no such table``. PostgreSQL gets neither, because its schema comes
+    from Alembic.
+    """
     from sable_platform.db.engine import get_engine
 
     if db_path:
@@ -148,6 +191,13 @@ def get_db(db_path: str | Path | None = None):
             path = _sable_db_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             url = f"sqlite:///{path}"
+        else:
+            # A sqlite URL from the environment needs the same parent directory the
+            # SABLE_DB_PATH branch above creates. Without this the two branches disagree:
+            # SABLE_DB_PATH=/missing/x.db works and SABLE_DATABASE_URL=sqlite:////missing/x.db
+            # fails with "unable to open database file". Only a real file gets a mkdir;
+            # ":memory:" and a bare "sqlite://" have no directory to make.
+            _mkdir_for_sqlite_url(url)
 
     engine = get_engine(url)
 
@@ -162,8 +212,71 @@ def get_db(db_path: str | Path | None = None):
         finally:
             raw_proxy.close()
 
-    sa_conn = engine.connect()
-    return CompatConnection(sa_conn)
+    return engine
+
+
+def get_db(db_path: str | Path | None = None):
+    """Return a database connection for the platform.
+
+    Returns a :class:`CompatConnection` wrapping a SQLAlchemy connection.
+    The wrapper supports both ``?``-positional and ``:named`` parameter
+    styles plus ``row["col"]`` dict access, so existing code works unchanged.
+    """
+    from sable_platform.db.compat_conn import CompatConnection
+
+    return CompatConnection(_prepared_engine(db_path).connect())
+
+
+def get_raw_db(db_path: str | Path | None = None):
+    """Return the RAW SQLAlchemy connection, with the same setup :func:`get_db` performs.
+
+    Same target resolution, same SQLite ``mkdir`` and ``ensure_schema``. The ONLY
+    difference from :func:`get_db` is the missing :class:`CompatConnection` wrapper.
+
+    Use this where the caller needs the SQLAlchemy transaction methods that wrapper does
+    not carry: ``in_transaction``, ``exec_driver_sql`` and ``execution_options``. The
+    relay write boundary calls all three on every message, so
+    ``scripts/run_relay_bot.py`` and ``scripts/run_relay_poller.py`` need this rather
+    than ``get_db``. Passing them a ``CompatConnection`` raised
+    ``AttributeError: 'CompatConnection' object has no attribute 'in_transaction'``.
+
+    A caller that goes straight to ``get_engine(...).connect()`` gets a raw connection
+    WITHOUT the SQLite setup, which is a different thing and fails on a fresh database.
+
+    **What deliberately does NOT use this.** Grouped by family rather than counted, because
+    a count goes stale the moment someone adds a command.
+
+    * **Reporting on a database, including reporting it absent.** ``cli/main.py``
+      ``db-health``. Creating the file would make its "Database not found" branch
+      unreachable.
+    * **Connecting to an explicit source and target.** ``db/migrate_pg.py``,
+      ``db/sync_from_local.py``, ``cli/migrate_cmds.py``, ``cli/sync_cmds.py``. These are
+      arbitrary databases rather than "the platform DB", and running the migration path
+      against either end would be wrong.
+    * **Backing one up.** ``db/backup.py`` opens the SQLite file with raw ``sqlite3`` for
+      the online-backup API, and shells out to ``pg_dump`` on PostgreSQL. A backup must
+      copy what is there, never migrate it first.
+    * **Alembic.** ``alembic/env.py`` owns the PostgreSQL schema and must not have it built
+      underneath it.
+    * **The ``schema.py`` build path.** ``get_sa_engine`` and ``get_sa_connection``, used by
+      the two ``scripts/seed_*.py`` tools. ``get_sa_engine`` builds the SQLite schema with
+      ``metadata.create_all`` from ``schema.py``, which is a DIFFERENT path from
+      ``ensure_schema``. The two are not interchangeable: ``create_all`` writes no
+      ``schema_version`` row, so ``ensure_schema`` reads the version as 0 and replays from
+      migration 1 onto existing tables. Measured: ``duplicate column name: cult_run_id``.
+      Pinned by ``tests/db/test_raw_connection_setup.py``.
+
+      **This is an open defect, not a clean split.** A developer who runs a seed script
+      before any other command on a fresh machine gets a ``~/.sable/sable.db`` that
+      ``get_db`` can never open again, and the error names a column rather than the cause.
+      Reversed, the order is harmless. Fixing it means deciding whether the seeds should
+      build from ``schema.py`` or from ``_MIGRATIONS``, which is the question
+      ``DEFECTS_FOUND`` item 9 raised and item 12 records. PostgreSQL is unaffected: none
+      of this runs there.
+
+    Anything else that opens the platform database raw is a defect, not an exception.
+    """
+    return _prepared_engine(db_path).connect()
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

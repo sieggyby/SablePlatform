@@ -14,9 +14,12 @@ holds platform-level authority.
 Connection model: unlike the ``org``/``kol`` commands (which use the sqlite3-
 compatible ``get_db()`` ``CompatConnection``), the relay db helpers and the
 ``immediate_txn`` write boundary take a raw SQLAlchemy ``Connection``. So these
-commands acquire one via ``get_engine(...).connect()`` — exactly like the
-``db-health`` command in ``main.py`` and the relay feed/listener loops — and own
-its lifecycle. Writers (``enable``, ``disable``) wrap their work in a single
+commands acquire one via ``get_raw_db()``, which is also what the relay feed and
+listener loops use, and own its lifecycle. ``get_raw_db`` and NOT
+``get_engine(...).connect()``: only the former performs the SQLite parent ``mkdir``
+and ``ensure_schema`` that ``get_db`` performs, so the bare form fails on a fresh
+database. ``db-health`` in ``main.py`` keeps the bare form deliberately, because it
+must report a missing database rather than create one. Writers (``enable``, ``disable``) wrap their work in a single
 ``immediate_txn`` so the ``relay_clients`` flip, the publication-job fan-out, and
 the audit row commit atomically (PLAN §3.1 / §15.3).
 """
@@ -43,18 +46,20 @@ def _operator_actor() -> str:
 
 
 def _connect():
-    """Open a raw SQLAlchemy ``Connection`` to the configured platform DB.
+    """Open a raw SQLAlchemy ``Connection`` to the configured platform DB (caller closes it).
 
-    Resolves the same target ``main.py`` resolves (``SABLE_DATABASE_URL`` →
-    ``SABLE_DB_PATH`` → ``~/.sable/sable.db``) and returns an open SA connection
-    the relay db helpers + ``immediate_txn`` can use directly. The caller owns
-    closing it.
+    ``get_raw_db`` and NOT ``get_engine(...).connect()``. The two resolve the same URL, but
+    only ``get_raw_db`` performs the SQLite parent ``mkdir`` and ``ensure_schema`` that
+    ``get_db`` performs, so the bare form fails on a fresh database with ``no such table``.
+    On PostgreSQL the two are identical, because that setup runs only on the SQLite branch.
+
+    ``get_db`` itself is wrong here: it returns a ``CompatConnection``, and the relay db
+    helpers and ``immediate_txn`` need the SQLAlchemy transaction methods that wrapper does
+    not carry.
     """
-    from sable_platform.cli.main import _resolve_cli_database_target
-    from sable_platform.db.engine import get_engine
+    from sable_platform.db.connection import get_raw_db
 
-    target = _resolve_cli_database_target(None)
-    return get_engine(target.connection_url).connect()
+    return get_raw_db()
 
 
 @click.group("relay")

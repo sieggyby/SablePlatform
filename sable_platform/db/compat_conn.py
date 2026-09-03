@@ -10,11 +10,15 @@ SQLAlchemy ``text()`` calls, this module can be removed.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+import re
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+
+# A ":name" bind, using SQLAlchemy's own rule: a colon NOT preceded by a word character.
+_NAMED_PLACEHOLDER = re.compile(r"(?<![:\w\\]):(\w+)(?!:)")
 
 
 class CompatRow:
@@ -91,6 +95,34 @@ class CompatResult:
             yield CompatRow(row)
 
 
+class _EmptyBatchResult:
+    """What :meth:`CompatConnection.executemany` returns for an EMPTY batch.
+
+    sqlite3 returns a real cursor for an empty batch, measured: ``rowcount`` is ``0``
+    and ``lastrowid`` is ``None``. SQLAlchemy cannot supply one, because it raises
+    ``StatementError`` on an empty parameter list instead of executing anything. This
+    object stands in, so a caller that reads ``.rowcount`` off the return value keeps
+    working. Returning ``None`` there raised ``AttributeError`` instead.
+    """
+
+    __slots__ = ()
+
+    lastrowid = None
+    rowcount = 0
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+    def mappings(self):
+        return iter(())
+
+    def __iter__(self):
+        return iter(())
+
+
 class CompatConnection:
     """SQLAlchemy :class:`Connection` with sqlite3-compatible execute API.
 
@@ -143,15 +175,31 @@ class CompatConnection:
         """
         rows = list(seq_of_params)
         if not rows:
-            # sqlite3 treats an empty sequence as a no-op. SQLAlchemy raises
-            # StatementError, "A value is required for bind parameter", measured. A
-            # caller that builds its batch from a query gets an empty list routinely,
-            # so matching sqlite3 here is what keeps the promise above true.
-            return None
+            # sqlite3 treats an empty sequence as a no-op and still hands back a cursor.
+            # SQLAlchemy raises StatementError, "A value is required for bind parameter",
+            # measured. A caller that builds its batch from a query gets an empty list
+            # routinely, so matching sqlite3 here is what keeps the promise above true.
+            return _EmptyBatchResult()
 
-        if isinstance(sql, str) and isinstance(rows[0], (list, tuple)):
-            # Positional. Every row shares one placeholder count, so the converted SQL
-            # is the same for all of them and only the values differ.
+        # One parameter style for the whole batch, and every row a type that can carry
+        # parameters at all. sqlite3 raises ProgrammingError on a mixed batch, measured:
+        # "Binding 1 has no name, but you supplied a dictionary". Accepting one silently
+        # is worse than failing, because an int-keyed dict reads as positional data to
+        # SQLAlchemy and the row goes in unchecked.
+        first_style = _row_style(rows[0], 0)
+        for i, row in enumerate(rows[1:], start=1):
+            if _row_style(row, i) != first_style:
+                raise ValueError(
+                    f"executemany got a mixed batch: row 0 is {first_style} but row {i} "
+                    f"is not. Use one parameter style for every row."
+                )
+
+        if isinstance(sql, str) and first_style == "positional":
+            # Positional. sqlite3 accepts any SEQUENCE as a row, ``str`` and ``bytes``
+            # included: measured, ``executemany("... VALUES (?,?)", ["xy"])`` inserts
+            # ``('x', 'y')``. Testing for list/tuple alone rejected that. Every row
+            # shares one placeholder count, so the converted SQL is the same for all of
+            # them and only the values differ.
             sa_sql, first = _positional_to_named(sql, rows[0])
             named = [first]
             named.extend(_positional_to_named(sql, r)[1] for r in rows[1:])
@@ -184,6 +232,27 @@ class CompatConnection:
         return False
 
 
+def _row_style(row: Any, index: int) -> str:
+    """Classify one ``executemany`` row as ``"named"`` or ``"positional"``.
+
+    A row must be a Mapping or a Sequence. "Anything that is not a Mapping" was too
+    loose: a ``set`` passed it, then ``_positional_to_named`` raised
+    ``TypeError: 'set' object is not subscriptable`` from deep inside the conversion,
+    naming neither the row nor its index. sqlite3 rejects a set too, so the answer is
+    the same and only the error is better.
+    """
+    if isinstance(row, Mapping):
+        return "named"
+    if isinstance(row, Sequence):
+        # ``str`` and ``bytes`` are Sequences, and that is deliberate: sqlite3 spreads
+        # them across the placeholders rather than rejecting them.
+        return "positional"
+    raise TypeError(
+        f"executemany row {index} is a {type(row).__name__}, which is neither a mapping "
+        f"(:named) nor a sequence (?-positional)."
+    )
+
+
 def _positional_to_named(sql: str, params: list | tuple) -> tuple[str, dict[str, Any]]:
     """Convert ``?``-style positional placeholders to ``:_p0``, ``:_p1``, etc.
 
@@ -191,6 +260,22 @@ def _positional_to_named(sql: str, params: list | tuple) -> tuple[str, dict[str,
     """
     parts = sql.split("?")
     if len(parts) - 1 != len(params):
+        if len(parts) == 1 and _NAMED_PLACEHOLDER.search(sql):
+            # No "?" at all, and the SQL carries something shaped like a ":name" bind while
+            # the caller passed a sequence. sqlite3 rejects this too, and names the cause:
+            # "Binding 1 (':a') is a named parameter, but you supplied a sequence which
+            # requires nameless (qmark) placeholders." A bare count mismatch does not say
+            # that, and the count is the symptom rather than the problem.
+            #
+            # The wording stays true even when the colon is NOT a bind. A colon inside a
+            # string literal, ``VALUES (1, ' :x')``, matches the regex, and the advice below
+            # is still the right advice: the SQL has no ? placeholders, so a sequence cannot
+            # bind to it either way. Claiming ":named placeholders" outright would be a
+            # guess; this states what was measured.
+            raise ValueError(
+                f"SQL has no ? placeholders but {len(params)} positional parameter(s) were "
+                "given. If the SQL uses :named placeholders, pass a mapping per row."
+            )
         raise ValueError(
             f"Parameter count mismatch: SQL has {len(parts) - 1} ? placeholders "
             f"but {len(params)} params were given"

@@ -41,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sable_platform.db.connection import get_db
+from sable_platform.db.connection import get_raw_db
 from sable_platform.logging_config import configure_logging
 from sable_platform.relay.bot.discord_app import DiscordListener
 from sable_platform.relay.bot.loop import run_listeners
@@ -72,7 +72,7 @@ def _build_listeners(conn, settings):
 def main() -> int:
     configure_logging()
     settings = get_relay_settings()
-    conn = get_db()
+    conn = get_raw_db()
     try:
         telegram, discord_listener, discord_token = _build_listeners(conn, settings)
         if telegram is None and discord_listener is None:

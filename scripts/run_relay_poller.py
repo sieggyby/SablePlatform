@@ -46,7 +46,7 @@ import logging
 import os
 import time
 
-from sable_platform.db.connection import get_db
+from sable_platform.db.connection import get_raw_db
 from sable_platform.logging_config import configure_logging
 from sable_platform.relay.feed.poller import poll_all_enabled
 from sable_platform.relay.feed.publisher import drain_due_jobs
@@ -119,7 +119,7 @@ def _tick(conn, sd_client, sender) -> None:
 def main() -> int:
     configure_logging()
     interval = _interval_seconds()
-    conn = get_db()
+    conn = get_raw_db()
     try:
         sd_client = _build_socialdata_client(conn)
         sender = _build_sender()

@@ -30,12 +30,20 @@ _MAX_DRAIN_BATCHES = 10_000
 
 
 def _connect():
-    """Open a raw SQLAlchemy ``Connection`` to the configured platform DB (caller closes it)."""
-    from sable_platform.cli.main import _resolve_cli_database_target
-    from sable_platform.db.engine import get_engine
+    """Open a raw SQLAlchemy ``Connection`` to the configured platform DB (caller closes it).
 
-    target = _resolve_cli_database_target(None)
-    return get_engine(target.connection_url).connect()
+    ``get_raw_db`` and NOT ``get_engine(...).connect()``. The two resolve the same URL, but
+    only ``get_raw_db`` performs the SQLite parent ``mkdir`` and ``ensure_schema`` that
+    ``get_db`` performs, so the bare form fails on a fresh database with ``no such table``.
+    On PostgreSQL the two are identical, because that setup runs only on the SQLite branch.
+
+    ``get_db`` itself is wrong here: it returns a ``CompatConnection``, and the relay db
+    helpers and ``immediate_txn`` need the SQLAlchemy transaction methods that wrapper does
+    not carry.
+    """
+    from sable_platform.db.connection import get_raw_db
+
+    return get_raw_db()
 
 
 @click.group("deck")
