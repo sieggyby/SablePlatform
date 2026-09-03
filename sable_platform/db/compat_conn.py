@@ -126,6 +126,40 @@ class CompatConnection:
             return CompatResult(self._conn.execute(sql, params))
         return CompatResult(self._conn.execute(sql))
 
+    def executemany(self, sql, seq_of_params):
+        """Execute *sql* once per parameter set, the sqlite3 way.
+
+        :func:`sable_platform.db.connection.get_db` promises that "existing code works
+        unchanged". ``executemany`` was the one method missing from that promise, and
+        ``sable/vault/platform_sync.py`` calls it. On PostgreSQL the ``AttributeError``
+        aborted the surrounding transaction, so the next statement failed too:
+
+            (psycopg2.errors.InFailedSqlTransaction) current transaction is aborted
+
+        That took the weekly automation cycle down with it.
+
+        Accepts the same two parameter styles as :meth:`execute`: ``?``-positional with
+        a sequence per row, or ``:named`` with a dict per row.
+        """
+        rows = list(seq_of_params)
+        if not rows:
+            # sqlite3 treats an empty sequence as a no-op. SQLAlchemy raises
+            # StatementError, "A value is required for bind parameter", measured. A
+            # caller that builds its batch from a query gets an empty list routinely,
+            # so matching sqlite3 here is what keeps the promise above true.
+            return None
+
+        if isinstance(sql, str) and isinstance(rows[0], (list, tuple)):
+            # Positional. Every row shares one placeholder count, so the converted SQL
+            # is the same for all of them and only the values differ.
+            sa_sql, first = _positional_to_named(sql, rows[0])
+            named = [first]
+            named.extend(_positional_to_named(sql, r)[1] for r in rows[1:])
+            return CompatResult(self._conn.execute(text(sa_sql), named))
+
+        statement = text(sql) if isinstance(sql, str) else sql
+        return CompatResult(self._conn.execute(statement, rows))
+
     def commit(self) -> None:
         self._conn.commit()
 
