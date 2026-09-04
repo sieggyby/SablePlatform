@@ -27,6 +27,7 @@ therefore reads a real relay table. ``get_raw_db`` exists to keep the two in ste
 """
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -163,12 +164,77 @@ def test_main_does_not_hand_relay_the_compat_wrapper(module, fresh_sqlite_target
     )
 
 
+def _get_db_calls(path: Path) -> list[str]:
+    """Every call to ``get_db`` in a file, whatever import form reaches it."""
+    tree = ast.parse(path.read_text())
+    local_names = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == "get_db"
+    }
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in local_names:
+            found.append(f"{func.id}() at line {node.lineno}")
+        elif isinstance(func, ast.Attribute) and func.attr == "get_db":
+            found.append(f".get_db() at line {node.lineno}")
+    return found
+
+
 @pytest.mark.parametrize("name", ["run_relay_bot.py", "run_relay_poller.py"], ids=IDS)
-def test_the_entrypoint_does_not_reach_for_get_db(name):
-    """The cheap static guard: keep the wrapper factory out of these two files."""
-    source = (SCRIPTS_DIR / name).read_text()
-    assert "import get_db\n" not in source
-    assert "= get_db()" not in source
+def test_the_entrypoint_never_calls_get_db(name):
+    """The static guard, which earns its place only by catching UNDRIVEN paths.
+
+    The probe tests above drive ``main()`` and read the live connection, so they are the
+    real check. They only cover the path the test drives. A ``get_db()`` call behind a flag
+    or an error branch would not be reached. This one reads the whole file.
+
+    IT WAS A SUBSTRING CHECK AND IT COULD NOT FAIL. It asserted ``"import get_db\\n"`` and
+    ``"= get_db()"`` were absent. A gate named the bypass: write
+    ``from sable_platform.db import connection as db_connection`` and then
+    ``conn = db_connection.get_db()``, and both assertions still pass while the defect is
+    fully present. Substring checks on source were the pattern behind three of the
+    cannot-fail tests found on this branch. This one parses instead.
+    """
+    calls = _get_db_calls(SCRIPTS_DIR / name)
+    assert calls == [], f"{name} calls the wrapper factory: {calls}"
+
+
+def test_the_get_db_detector_actually_detects(tmp_path):
+    """KNOWN ANSWER: run the guard on files whose answer I already know.
+
+    A guard is worth its line count only if it fires on the thing it names. The substring
+    version it replaces missed all three aliased forms below. The final case runs the
+    opposite direction: a detector that fires on ``get_raw_db`` too would flag the CORRECT
+    call and be worthless.
+    """
+    should_fire = {
+        "plain import": "from sable_platform.db.connection import get_db\nconn = get_db()\n",
+        "aliased function": (
+            "from sable_platform.db.connection import get_db as _g\nconn = _g()\n"
+        ),
+        "module alias": (
+            "from sable_platform.db import connection as c\nconn = c.get_db()\n"
+        ),
+        "dotted import": (
+            "import sable_platform.db.connection as c\nconn = c.get_db()\n"
+        ),
+    }
+    for label, source in should_fire.items():
+        probe = tmp_path / "probe.py"
+        probe.write_text(source)
+        assert _get_db_calls(probe), f"detector missed the {label} form"
+
+    correct = tmp_path / "correct.py"
+    correct.write_text(
+        "from sable_platform.db.connection import get_raw_db\nconn = get_raw_db()\n"
+    )
+    assert _get_db_calls(correct) == [], "detector fires on get_raw_db, the CORRECT call"
 
 
 def test_a_compat_connection_would_still_fail():
