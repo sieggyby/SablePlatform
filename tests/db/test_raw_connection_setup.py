@@ -232,6 +232,13 @@ def test_postgresql_gets_no_sqlite_setup(monkeypatch):
     ``_prepared_engine`` runs the ``mkdir`` and ``ensure_schema`` only on the SQLite
     branch, so on PostgreSQL ``get_raw_db`` and ``get_engine(url).connect()`` are the same
     call. This is what makes the relay and deck changes a no-op in production.
+
+    THE URL ASSERTION IS NOT DECORATION. An earlier version of this test discarded the
+    ``url`` the fake was called with, so it could not fail if ``_prepared_engine`` resolved
+    the WRONG target. A fake that reports "postgresql" no matter what it is handed still
+    returns the sentinel, and ``ensure_schema`` still does not run, while the code under
+    test quietly connects to the local SQLite default. Connecting to the wrong database is
+    a worse production failure than running the setup, so the target is checked here.
     """
     from sable_platform.db import connection as conn_mod
 
@@ -248,14 +255,21 @@ def test_postgresql_gets_no_sqlite_setup(monkeypatch):
             return "sentinel-connection"
 
     monkeypatch.setenv("SABLE_DATABASE_URL", "postgresql://u:p@localhost:5432/sable")
-    monkeypatch.setattr(
-        "sable_platform.db.engine.get_engine", lambda url=None, **kw: _FakeEngine()
-    )
+    seen_urls = []
+
+    def _fake_get_engine(url=None, **kw):
+        seen_urls.append(url)
+        return _FakeEngine()
+
+    monkeypatch.setattr("sable_platform.db.engine.get_engine", _fake_get_engine)
     called = []
     monkeypatch.setattr(conn_mod, "ensure_schema", lambda c: called.append(c))
 
     assert conn_mod.get_raw_db() == "sentinel-connection"
     assert called == [], "ensure_schema must not run on PostgreSQL"
+    assert seen_urls == ["postgresql://u:p@localhost:5432/sable"], (
+        f"_prepared_engine connected to the wrong target: {seen_urls}"
+    )
 
 
 def test_the_postgresql_guard_is_load_bearing(monkeypatch):
@@ -277,13 +291,18 @@ def test_the_postgresql_guard_is_load_bearing(monkeypatch):
         def connect(self):  # pragma: no cover - never reached
             return "sentinel-connection"
 
-    monkeypatch.setenv("SABLE_DATABASE_URL", "sqlite:///ignored.db")
-    monkeypatch.setattr(
-        "sable_platform.db.engine.get_engine", lambda url=None, **kw: _FakeEngine()
-    )
+    monkeypatch.setenv("SABLE_DATABASE_URL", "sqlite:///power_check.db")
+    seen_urls = []
+
+    def _fake_get_engine(url=None, **kw):
+        seen_urls.append(url)
+        return _FakeEngine()
+
+    monkeypatch.setattr("sable_platform.db.engine.get_engine", _fake_get_engine)
     with pytest.raises(AssertionError, match="stop here"):
         conn_mod.get_raw_db()
     assert reached == [True]
+    assert seen_urls == ["sqlite:///power_check.db"], seen_urls
 
 
 def test_sqlite_file_for_url_does_not_expand_a_tilde(tmp_path, monkeypatch):
