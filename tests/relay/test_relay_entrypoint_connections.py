@@ -164,25 +164,62 @@ def test_main_does_not_hand_relay_the_compat_wrapper(module, fresh_sqlite_target
     )
 
 
+_CONNECTION_MODULE = "sable_platform.db.connection"
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """Render ``a.b.c`` from an attribute chain, or None if it is not a plain chain."""
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
 def _get_db_calls(path: Path) -> list[str]:
-    """Every call to ``get_db`` in a file, whatever import form reaches it."""
+    """Calls to the ``get_db`` factory in one file, by two routes and no others.
+
+    Route 1 is a name imported as ``get_db``, including an ``as`` alias. Route 2 is
+    ``.get_db()`` on a name bound to the connection module, or on its full dotted path.
+
+    THE ATTRIBUTE ROUTE IS DELIBERATELY NARROW. An earlier version flagged ``.get_db()``
+    on ANY object, so ``settings.get_db()`` in either entrypoint would have failed the
+    guard. A gate named that. Wrong in that direction costs more than the hole it closed,
+    because it fails work that is correct.
+
+    IT DOES NOT CATCH ``getattr(module, "get_db")()``, nor a module rebound through a
+    second variable. That is the point where a static check stops paying. The probe tests
+    above drive ``main()`` and cover the executed path regardless of import form.
+    """
     tree = ast.parse(path.read_text())
-    local_names = {
-        alias.asname or alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-        if alias.name == "get_db"
-    }
+    func_names: set[str] = set()
+    module_names: set[str] = {_CONNECTION_MODULE}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "get_db":
+                    func_names.add(alias.asname or alias.name)
+                elif f"{node.module or ''}.{alias.name}" == _CONNECTION_MODULE:
+                    module_names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _CONNECTION_MODULE:
+                    module_names.add(alias.asname or alias.name)
+
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Name) and func.id in local_names:
+        if isinstance(func, ast.Name) and func.id in func_names:
             found.append(f"{func.id}() at line {node.lineno}")
         elif isinstance(func, ast.Attribute) and func.attr == "get_db":
-            found.append(f".get_db() at line {node.lineno}")
+            owner = _dotted(func.value)
+            if owner in module_names:
+                found.append(f"{owner}.get_db() at line {node.lineno}")
     return found
 
 
@@ -208,10 +245,12 @@ def test_the_entrypoint_never_calls_get_db(name):
 def test_the_get_db_detector_actually_detects(tmp_path):
     """KNOWN ANSWER: run the guard on files whose answer I already know.
 
-    A guard is worth its line count only if it fires on the thing it names. The substring
-    version it replaces missed all three aliased forms below. The final case runs the
-    opposite direction: a detector that fires on ``get_raw_db`` too would flag the CORRECT
-    call and be worthless.
+    A guard is worth its line count only if it fires on the thing it names AND stays quiet
+    on everything else. The substring version it replaces missed every aliased form. The
+    first AST version then failed in the other direction, flagging ``.get_db()`` on any
+    object at all, so ``settings.get_db()`` would have failed a correct file. A gate found
+    that, and it is why ``must_not_fire`` exists. Both directions are checked here, because
+    a guard tested in one direction only has no evidence about the other.
     """
     should_fire = {
         "plain import": "from sable_platform.db.connection import get_db\nconn = get_db()\n",
@@ -221,8 +260,15 @@ def test_the_get_db_detector_actually_detects(tmp_path):
         "module alias": (
             "from sable_platform.db import connection as c\nconn = c.get_db()\n"
         ),
-        "dotted import": (
+        "dotted alias": (
             "import sable_platform.db.connection as c\nconn = c.get_db()\n"
+        ),
+        "unaliased module": (
+            "from sable_platform.db import connection\nconn = connection.get_db()\n"
+        ),
+        "full dotted path": (
+            "import sable_platform.db.connection\n"
+            "conn = sable_platform.db.connection.get_db()\n"
         ),
     }
     for label, source in should_fire.items():
@@ -230,11 +276,17 @@ def test_the_get_db_detector_actually_detects(tmp_path):
         probe.write_text(source)
         assert _get_db_calls(probe), f"detector missed the {label} form"
 
-    correct = tmp_path / "correct.py"
-    correct.write_text(
-        "from sable_platform.db.connection import get_raw_db\nconn = get_raw_db()\n"
-    )
-    assert _get_db_calls(correct) == [], "detector fires on get_raw_db, the CORRECT call"
+    must_not_fire = {
+        "the correct call": (
+            "from sable_platform.db.connection import get_raw_db\nconn = get_raw_db()\n"
+        ),
+        "somebody else's method": "conn = settings.get_db()\n",
+        "a DI container": "import container\nconn = container.get_db()\n",
+    }
+    for label, source in must_not_fire.items():
+        probe = tmp_path / "clean.py"
+        probe.write_text(source)
+        assert _get_db_calls(probe) == [], f"detector wrongly fires on {label}: {source!r}"
 
 
 def test_a_compat_connection_would_still_fail():
