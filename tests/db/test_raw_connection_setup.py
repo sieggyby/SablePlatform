@@ -10,6 +10,7 @@ PostgreSQL ``get_raw_db`` and ``get_engine(url).connect()` are the same thing.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -97,26 +98,74 @@ def test_the_bare_form_is_what_fails(missing_parent_target, monkeypatch):
     assert "unable to open database file" in str(exc.value) or "no such table" in str(exc.value)
 
 
-def test_db_health_deliberately_does_not_use_a_raw_opener():
-    """``db-health`` reports a missing database. It must not CREATE the thing it reports on.
+def test_db_health_does_not_migrate_the_database_it_inspects(tmp_path, monkeypatch):
+    """``db-health`` REPORTS on a database. It must not upgrade the thing it is measuring.
 
     This is why ``cli/main.py`` still calls ``get_engine(...).connect()`` while the relay and
-    deck helpers do not. Swapping it for ``get_raw_db`` would make "Database not found"
-    unreachable.
-    """
-    from pathlib import Path
+    deck helpers use ``get_raw_db``. ``get_raw_db`` runs ``ensure_schema`` on the SQLite
+    branch, so db-health would silently migrate a stale database and then report it healthy.
 
-    source = Path(relay_cmds.__file__).with_name("main.py").read_text()
-    assert "get_engine(target.connection_url).connect()" in source
-    assert "Database not found" in source
+    TWO EARLIER VERSIONS OF THIS TEST COULD NOT FAIL, and the second failure taught me the
+    rationale I had written down was wrong:
+
+    * The first read ``main.py`` and asserted the source CONTAINED
+      ``get_engine(target.connection_url).connect()``. Leave that string in a comment, swap
+      the executable line, and it still passes.
+    * The second ran the command against a MISSING file and asserted nothing was created.
+      That also passes under the swap, because ``db_health`` returns early for a missing
+      SQLite path before it opens anything. So "swapping it would make 'Database not found'
+      unreachable", which is what I had claimed in the docstring and the commit message, is
+      simply false. The early return protects that case, not the choice of opener.
+
+    The hazard is an EXISTING but unmigrated database, which is the one shape that reaches
+    the connect and that the two openers treat differently.
+    """
+    from click.testing import CliRunner
+
+    from sable_platform.cli.main import cli
+
+    stale = tmp_path / "stale.db"
+    stale.touch()  # exists, so the early return does not fire; zero tables
+    monkeypatch.delenv("SABLE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("SABLE_OPERATOR_ID", "test")
+
+    result = CliRunner().invoke(cli, ["db-health", "--db-path", str(stale), "--json"])
+    # Exit 1 is CORRECT here: the database is unhealthy and db-health says so. The point of
+    # this test is what it did NOT do to the file.
+    assert result.exit_code == 1, result.output
+    assert '"ok": false' in result.output
+
+    con = sqlite3.connect(str(stale))
+    try:
+        tables = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+    finally:
+        con.close()
+    assert tables == 0, f"db-health migrated the database it was inspecting: {tables} tables"
+
+
+def test_db_health_still_reports_a_missing_database(tmp_path, monkeypatch):
+    """The early-return branch, kept because it is the behaviour operators rely on."""
+    from click.testing import CliRunner
+
+    from sable_platform.cli.main import cli
+
+    missing = tmp_path / "nowhere" / "sable.db"
+    monkeypatch.delenv("SABLE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("SABLE_OPERATOR_ID", "test")
+
+    result = CliRunner().invoke(cli, ["db-health", "--db-path", str(missing), "--json"])
+    assert "Database not found" in result.output, result.output
+    assert not missing.exists()
 
 
 def test_get_sa_engine_must_not_be_routed_through_prepared_engine(tmp_path):
-    """An audit asked for this and it would BREAK the seed scripts. Here is the evidence.
+    """This branch adds ``_prepared_engine``. It must not absorb ``get_sa_engine``.
 
-    ``get_sa_engine`` builds a SQLite schema with ``metadata.create_all`` from
-    ``schema.py``. ``_prepared_engine`` builds it with ``ensure_schema``, which REPLAYS the
-    SQL files listed in ``_MIGRATIONS``. The two are not interchangeable:
+    The two build DIFFERENT SQLite schemas. ``get_sa_engine`` calls ``metadata.create_all``
+    from ``schema.py``. ``_prepared_engine`` calls ``ensure_schema``, which replays the SQL
+    files listed in ``_MIGRATIONS``. The two are not interchangeable:
 
     * ``metadata.create_all`` writes no ``schema_version`` row, so ``ensure_schema`` reads
       the version as 0 and replays migration 1 onward onto tables that already exist.
@@ -124,8 +173,10 @@ def test_get_sa_engine_must_not_be_routed_through_prepared_engine(tmp_path):
     * The migration path also creates the ``autocm_kb_chunks_fts`` FTS5 virtual table and
       its four shadow tables, which SQLAlchemy metadata cannot declare.
 
-    Routing ``get_sa_engine`` through ``_prepared_engine`` is therefore a schema change, not
-    a plumbing change. It stays a separate decision.
+    Merging them is therefore a schema change, not a plumbing change. This is a tripwire on
+    the function THIS branch introduces. It is deliberately not seed policy: which of the
+    two paths the seed scripts should build from is ``DEFECTS_FOUND`` item 12, and that
+    work sits on the follow-up branch.
     """
     import sqlite3
 

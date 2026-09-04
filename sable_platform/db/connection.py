@@ -246,9 +246,16 @@ def get_raw_db(db_path: str | Path | None = None):
     **What deliberately does NOT use this.** Grouped by family rather than counted, because
     a count goes stale the moment someone adds a command.
 
-    * **Reporting on a database, including reporting it absent.** ``cli/main.py``
-      ``db-health``. Creating the file would make its "Database not found" branch
-      unreachable.
+    * **Reporting on a database.** ``cli/main.py`` ``db-health``. It must not UPGRADE the
+      thing it is measuring: ``get_raw_db`` runs ``ensure_schema`` on the SQLite branch, so
+      db-health would silently migrate a stale database and then report it healthy. Pinned
+      by ``tests/db/test_raw_connection_setup.py``.
+
+      An earlier version of this note said instead that switching openers would make
+      db-health's "Database not found" branch unreachable. That is FALSE, and two tests
+      written from it could not fail. ``db_health`` returns early for a missing SQLite path
+      before it opens anything, so the early return protects that case and the choice of
+      opener does not. The hazard is an EXISTING but unmigrated database.
     * **Connecting to an explicit source and target.** ``db/migrate_pg.py``,
       ``db/sync_from_local.py``, ``cli/migrate_cmds.py``, ``cli/sync_cmds.py``. These are
       arbitrary databases rather than "the platform DB", and running the migration path
@@ -266,13 +273,10 @@ def get_raw_db(db_path: str | Path | None = None):
       migration 1 onto existing tables. Measured: ``duplicate column name: cult_run_id``.
       Pinned by ``tests/db/test_raw_connection_setup.py``.
 
-      **This is an open defect, not a clean split.** A developer who runs a seed script
-      before any other command on a fresh machine gets a ``~/.sable/sable.db`` that
-      ``get_db`` can never open again, and the error names a column rather than the cause.
-      Reversed, the order is harmless. Fixing it means deciding whether the seeds should
-      build from ``schema.py`` or from ``_MIGRATIONS``, which is the question
-      ``DEFECTS_FOUND`` item 9 raised and item 12 records. PostgreSQL is unaffected: none
-      of this runs there.
+      **This split is an open defect**, recorded as ``DEFECTS_FOUND`` item 12. A database
+      built by one path cannot later be opened by the other. Deciding which path the seeds
+      should use is that item's work, not this module's. PostgreSQL is unaffected: none of
+      this runs there.
 
     Anything else that opens the platform database raw is a defect, not an exception.
     """
