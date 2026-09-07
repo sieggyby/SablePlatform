@@ -233,8 +233,13 @@ def _called_names(source: str) -> set[str]:
     while a second schema build path sat in the file. ``getattr(metadata, "create_all")()``
     slipped past for the same reason.
 
-    Three routes are covered now: a plain or aliased imported name, an attribute call, and
-    a ``getattr`` with a string literal.
+    Four routes are covered: a plain or aliased imported name, a simple ``x = y`` or
+    ``x = obj.attr`` rebinding, an attribute call, and a ``getattr`` with a string literal.
+
+    IT STILL DOES NOT follow a rebinding through a container, a conditional, or a call
+    return value. That is deliberate. A static guard stops paying somewhere, and the job
+    here is to catch a second build path someone reintroduces by accident, not to defeat
+    somebody working around it.
     """
     import ast
 
@@ -246,6 +251,29 @@ def _called_names(source: str) -> set[str]:
             for alias in node.names:
                 if alias.asname:
                     aliases[alias.asname] = alias.name
+
+    # Propagate simple rebindings: `builder = ce` and `builder = mod.create_all`. Iterate to
+    # a fixed point so a chain resolves, and bound the loop so a cycle cannot hang the test.
+    for _ in range(10):
+        grew = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            value = node.value
+            if isinstance(value, ast.Name):
+                resolved = aliases.get(value.id, value.id)
+            elif isinstance(value, ast.Attribute):
+                resolved = value.attr
+            else:
+                continue
+            if aliases.get(target.id) != resolved:
+                aliases[target.id] = resolved
+                grew = True
+        if not grew:
+            break
 
     names = set()
     for node in ast.walk(tree):
@@ -336,6 +364,26 @@ def test_the_called_names_helper_sees_through_an_alias(tmp_path):
         "getattr(m, 'create_all')(e)\n"
     )
     assert "create_all" in _called_names(via_getattr), "getattr hides the call"
+
+    # A gate found this one: rebinding the alias through a plain variable.
+    rebound = (
+        "from sqlalchemy import create_engine as ce\n"
+        "builder = ce\n"
+        "engine = builder(url)\n"
+    )
+    assert "create_engine" in _called_names(rebound), "a rebound alias hides the call"
+
+    chained = (
+        "from sqlalchemy import create_engine as ce\n"
+        "a = ce\n"
+        "b = a\n"
+        "engine = b(url)\n"
+    )
+    assert "create_engine" in _called_names(chained), "a chain of rebindings hides the call"
+
+    # A cycle must not hang the fixed-point loop.
+    cyclic = "x = y\ny = x\nz = get_raw_db()\n"
+    assert "get_raw_db" in _called_names(cyclic)
 
     clean = "from sable_platform.db.connection import get_raw_db\nc = get_raw_db()\n"
     called = _called_names(clean)

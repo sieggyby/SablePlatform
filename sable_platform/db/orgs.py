@@ -347,6 +347,43 @@ def find_org_id_ignoring_case(conn, org_id: str) -> str | None:
     return row[0] if row else None
 
 
+def list_org_id_case_variants(conn, org_id: str) -> list[str]:
+    """Every stored ``org_id`` matching *org_id* case-insensitively, sorted.
+
+    Returns more than one only when the database already holds a split, which production
+    does: both ``tig`` and ``TIG`` exist there.
+
+    :func:`find_org_id_ignoring_case` deliberately prefers an EXACT match, so it answers
+    "which row did you mean" and cannot answer "is this client split". A gate pointed out
+    that the preference therefore HIDES the split: with both rows stored, ``org create TIG``
+    reports a plain duplicate and tells the operator nothing about the 40 foreign-key tables
+    partitioned between the two keys. This is the function that can say it.
+    """
+    rows = conn.execute(
+        text(
+            "SELECT org_id FROM orgs WHERE LOWER(org_id) = LOWER(:org_id) ORDER BY org_id"
+        ),
+        {"org_id": org_id},
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def split_warning(variants: list[str]) -> str | None:
+    """The operator-facing notice for a case-split org id, or ``None`` when there is none.
+
+    One string, built in one place, so the CLI commands cannot drift in what they say about
+    the same condition.
+    """
+    if len(variants) < 2:
+        return None
+    listed = ", ".join(f"'{v}'" for v in variants)
+    return (
+        f"WARNING: {len(variants)} orgs differ only in case: {listed}.\n"
+        "         Nothing normalises org_id and 40 tables reference it, so this client's\n"
+        "         data is split between them. Reads that name one key miss the other."
+    )
+
+
 def set_org_status(conn, org_id: str, status: str, *, commit: bool = True) -> str | None:
     """Set one org's ``status``. Returns the PREVIOUS status, or ``None`` if no such org.
 

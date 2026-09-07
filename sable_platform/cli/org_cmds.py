@@ -8,7 +8,13 @@ import sys
 import click
 
 from sable_platform.db.connection import get_db
-from sable_platform.db.orgs import ORG_STATUSES, find_org_id_ignoring_case, set_org_status
+from sable_platform.db.orgs import (
+    ORG_STATUSES,
+    find_org_id_ignoring_case,
+    list_org_id_case_variants,
+    set_org_status,
+    split_warning,
+)
 from sable_platform.errors import SableError
 
 
@@ -31,6 +37,12 @@ def org_create(org_id: str, name: str, status: str) -> None:
     try:
         clash = find_org_id_ignoring_case(conn, org_id)
         if clash is not None:
+            # Report an EXISTING split even when this id matches one row exactly. The
+            # exact-match preference answers "which row did you mean"; without this it
+            # would also hide "this client is already split across two keys".
+            split = split_warning(list_org_id_case_variants(conn, org_id))
+            if split:
+                click.echo(split, err=True)
             if clash == org_id:
                 click.echo(f"Org '{org_id}' already exists.", err=True)
             else:
@@ -302,6 +314,9 @@ def org_set_status(org_id: str, status: str) -> None:
             near = find_org_id_ignoring_case(conn, org_id)
             if near is not None:
                 click.echo(f"Did you mean '{near}'? org_id is case-sensitive.", err=True)
+                split = split_warning(list_org_id_case_variants(conn, org_id))
+                if split:
+                    click.echo(split, err=True)
             sys.exit(1)
 
         if previous == status:

@@ -403,3 +403,77 @@ def test_set_org_status_writes_nothing_for_a_no_op_even_when_it_would_commit():
 
     row = conn.execute("SELECT updated_at FROM orgs WHERE org_id='a'").fetchone()
     assert row[0] == "2020-01-01T00:00:00Z", "a no-op bumped updated_at"
+
+
+# ---------------------------------------------------------------------------
+# An EXISTING split must be surfaced, not hidden by the exact-match preference
+# ---------------------------------------------------------------------------
+
+
+def _add_variant(path: str, org_id: str) -> None:
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            "INSERT INTO orgs (org_id, display_name) VALUES (?, ?)", (org_id, org_id)
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_an_existing_split_is_reported_even_on_an_exact_duplicate(file_db):
+    """A gate found this. Preferring an exact match answers the wrong question alone.
+
+    It answers "which row did you mean". It cannot answer "is this client already split",
+    and with both rows stored the operator was told nothing about the 40 FK tables
+    partitioned between them.
+    """
+    CliRunner().invoke(org_create, ["tig", "--name", "lower"])
+    _add_variant(file_db, "TIG")
+
+    result = CliRunner().invoke(org_create, ["tig", "--name", "again"])
+    assert result.exit_code == 1
+    assert "already exists" in result.output, "the plain-duplicate message was lost"
+    assert "differ only in case: 'TIG', 'tig'" in result.output
+    assert "40 tables reference it" in result.output
+
+
+def test_the_split_warning_stays_quiet_when_there_is_no_split(file_db):
+    """THE OTHER DIRECTION. A warning that always fires tells you nothing."""
+    CliRunner().invoke(org_create, ["myorg", "--name", "My Org"])
+
+    result = CliRunner().invoke(org_create, ["myorg", "--name", "again"])
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert "differ only in case" not in result.output
+
+
+def test_set_status_reports_the_split_on_a_near_miss(file_db):
+    """The other command that meets this data. Both must say the same thing about it."""
+    CliRunner().invoke(org_create, ["tig", "--name", "lower"])
+    _add_variant(file_db, "TIG")
+
+    result = CliRunner().invoke(org_set_status, ["TiG", "inactive"])
+    assert result.exit_code == 1
+    assert "No such org" in result.output
+    assert "differ only in case" in result.output
+
+
+def test_list_org_id_case_variants_both_directions():
+    """KNOWN ANSWER. It must find every variant, and invent none."""
+    from sable_platform.db.orgs import list_org_id_case_variants, split_warning
+
+    conn = make_test_conn()
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('tig', 'a')")
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('TIG', 'b')")
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('tig2', 'c')")
+    conn.commit()
+
+    assert list_org_id_case_variants(conn, "tig") == ["TIG", "tig"]
+    assert list_org_id_case_variants(conn, "TIG") == ["TIG", "tig"]
+    assert list_org_id_case_variants(conn, "tig2") == ["tig2"], "a near name is not a variant"
+    assert list_org_id_case_variants(conn, "nothing") == []
+
+    assert split_warning(["TIG", "tig"]) is not None
+    assert split_warning(["tig"]) is None, "one row is not a split"
+    assert split_warning([]) is None
