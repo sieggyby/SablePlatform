@@ -257,12 +257,23 @@ def test_the_seed_scripts_use_the_one_build_path():
         called = _called_names(source)
 
         assert "get_raw_db" in called, f"{name} does not open through get_raw_db"
-        assert "resolve_platform_url" in called, (
+        assert "resolve_seed_target" in called, (
             f"{name} resolves its own target instead of sharing the opener's precedence, "
             "so its 'Target DB:' line can name a database it is not writing to"
         )
         for banned in ("create_all", "create_engine", "get_sa_engine", "get_sa_connection"):
             assert banned not in called, f"{name} calls {banned}, a second schema build path"
+
+    # The seeds delegate to resolve_seed_target, so the chain is only unbroken if THAT
+    # shares the opener's precedence too. Asserting it on the seeds alone would pass while
+    # seed_guard quietly grew its own copy, which is the duplication this whole check
+    # exists to prevent.
+    from sable_platform.db import seed_guard
+
+    guard_called = _called_names(Path(seed_guard.__file__).read_text())
+    assert "resolve_platform_url" in guard_called, (
+        "seed_guard resolves its own target instead of sharing the opener's precedence"
+    )
 
 
 def test_passing_both_a_path_and_a_url_is_refused():

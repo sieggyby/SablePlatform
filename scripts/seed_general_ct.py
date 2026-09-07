@@ -54,7 +54,8 @@ from typing import Any, Optional
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.connection import get_raw_db, resolve_platform_url
+from sable_platform.db.connection import get_raw_db
+from sable_platform.db.seed_guard import resolve_seed_target
 
 # ---------------------------------------------------------------------------
 # The desired tenant state (declarative — re-running converges to this).
@@ -433,12 +434,20 @@ def main() -> None:
     )
     ap.add_argument("--dry-run", action="store_true", help="Show the plan; write nothing.")
     ap.add_argument("--url", default=None, help="DB URL override (else SABLE_DATABASE_URL / SABLE_DB_PATH / ~/.sable/sable.db).")
+    ap.add_argument("--create-db", action="store_true",
+                    help="Create the SQLite database if it does not exist. Without this, a "
+                         "missing target is refused, because it is more often a wrong path "
+                         "than a missing database.")
     args = ap.parse_args()
 
-    # resolve_platform_url is the SAME precedence the opener uses. This script used to
-    # carry its own copy of it, which is how a "Target DB:" line can name one database
-    # while the write lands in another.
-    url = resolve_platform_url(url=args.url) if args.url else resolve_platform_url()
+    # resolve_seed_target wraps the SAME precedence the opener uses, so the line printed
+    # below always names the database actually written to. This script used to carry its
+    # own copy of that precedence, which is how the two can diverge. The wrapper also
+    # refuses a --dry-run that would create a database, and a missing target without
+    # --create-db.
+    url = resolve_seed_target(
+        args.url, allow_create=args.create_db, dry_run=args.dry_run
+    )
     print(f"Target DB: {url}")
 
     # get_raw_db, NOT get_sa_engine. get_sa_engine built the SQLite schema from schema.py
