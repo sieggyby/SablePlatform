@@ -160,70 +160,139 @@ def test_db_health_still_reports_a_missing_database(tmp_path, monkeypatch):
     assert not missing.exists()
 
 
-def test_get_sa_engine_must_not_be_routed_through_prepared_engine(tmp_path):
-    """This branch adds ``_prepared_engine``. It must not absorb ``get_sa_engine``.
+def test_a_database_built_the_way_the_seeds_build_it_opens_under_get_db(tmp_path):
+    """DEFECTS_FOUND item 12, closed at the root. ONE build path, so this cannot split.
 
-    The two build DIFFERENT SQLite schemas. ``get_sa_engine`` calls ``metadata.create_all``
-    from ``schema.py``. ``_prepared_engine`` calls ``ensure_schema``, which replays the SQL
-    files listed in ``_MIGRATIONS``. The two are not interchangeable:
+    The two seed scripts used ``get_sa_engine``, which built the SQLite schema with
+    ``metadata.create_all`` from ``schema.py``. Every other tool used ``get_db``, which
+    replays the SQL files in ``_MIGRATIONS``. A database built by the first could never
+    afterwards be opened by the second. ``get_sa_engine`` is deleted; the seeds now use
+    ``get_raw_db``, and this asserts the result is openable.
+    """
+    from sable_platform.db.connection import get_db, get_raw_db
 
-    * ``metadata.create_all`` writes no ``schema_version`` row, so ``ensure_schema`` reads
-      the version as 0 and replays migration 1 onward onto tables that already exist.
-      Measured: ``OperationalError: duplicate column name: cult_run_id``.
-    * The migration path also creates the ``autocm_kb_chunks_fts`` FTS5 virtual table and
-      its four shadow tables, which SQLAlchemy metadata cannot declare.
+    db = tmp_path / "seeded.db"
+    with get_raw_db(url=f"sqlite:///{db}") as conn:  # what a seed script now does
+        conn.execute(text("SELECT 1"))
 
-    Merging them is therefore a schema change, not a plumbing change. This is a tripwire on
-    the function THIS branch introduces. It is deliberately not seed policy: which of the
-    two paths the seed scripts should build from is ``DEFECTS_FOUND`` item 12, and that
-    work sits on the follow-up branch.
+    # Prove the url was HONOURED before going further. Without this the test passes when
+    # get_raw_db ignores url entirely: the file is never made, and the get_db call below
+    # then builds it from scratch and reports a healthy schema_version.
+    assert db.exists(), "get_raw_db did not build the database at the url it was given"
+    import sqlite3 as _s
+    _c = _s.connect(str(db))
+    try:
+        built = _c.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+    finally:
+        _c.close()
+    assert built > 100, f"the seed path built only {built} tables"
+
+    conn = get_db(str(db))  # what every other tool does, afterwards
+    try:
+        version = conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        conn.execute("SELECT COUNT(*) FROM orgs").fetchone()
+    finally:
+        conn.close()
+    assert version > 0, "a seed-built database must carry a schema_version"
+
+
+def test_the_deleted_path_really_did_break_it(tmp_path):
+    """KNOWN ANSWER: reproduce the defect the deletion fixes, so the fix is not decorative.
+
+    Without this, the test above could pass on a codebase where the two paths had always
+    agreed, and it would tell you nothing. This builds a database the OLD way and shows
+    ``ensure_schema`` refusing it. ``metadata.create_all`` writes no ``schema_version``
+    row, so ``ensure_schema`` reads the version as 0 and replays migration 1 onto tables
+    that already exist.
     """
     import sqlite3
 
-    from sable_platform.db.connection import ensure_schema, get_sa_engine
+    from sqlalchemy import create_engine
 
-    db = tmp_path / "create_all.db"
-    engine = get_sa_engine(f"sqlite:///{db}")
-    with engine.connect() as conn:
-        assert conn.execute(text("SELECT version FROM schema_version")).fetchone() is None
+    from sable_platform.db.connection import ensure_schema
+    from sable_platform.db.schema import metadata
+
+    db = tmp_path / "old_way.db"
+    metadata.create_all(create_engine(f"sqlite:///{db}"))
 
     raw = sqlite3.connect(str(db))
     try:
+        assert raw.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0
         with pytest.raises(sqlite3.OperationalError, match="duplicate column"):
             ensure_schema(raw)
     finally:
         raw.close()
 
 
-def test_the_two_schema_paths_really_do_differ(tmp_path, monkeypatch):
-    """Name the difference, so the claim above is checked rather than asserted."""
-    from sable_platform.db.connection import _prepared_engine, get_sa_engine
+def _called_names(source: str) -> set[str]:
+    """Every function or method NAME called in *source*, however it was reached."""
+    import ast
 
-    def tables(engine):
-        with engine.connect() as conn:
-            return {
-                r[0]
-                for r in conn.execute(
-                    text(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                    )
-                )
-            }
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+    return names
 
-    from_schema_py = tables(get_sa_engine(f"sqlite:///{tmp_path / 'a.db'}"))
-    monkeypatch.setenv("SABLE_DATABASE_URL", f"sqlite:///{tmp_path / 'b.db'}")
-    from_migrations = tables(_prepared_engine())
 
-    only_in_migrations = from_migrations - from_schema_py
-    assert only_in_migrations == {
-        "autocm_kb_chunks_fts",
-        "autocm_kb_chunks_fts_config",
-        "autocm_kb_chunks_fts_data",
-        "autocm_kb_chunks_fts_docsize",
-        "autocm_kb_chunks_fts_idx",
-    }
-    assert not from_schema_py - from_migrations
+def test_the_seed_scripts_use_the_one_build_path():
+    """Static guard over the whole file, because the tests above cover only what they call.
+
+    A seed could reintroduce a second builder on a branch no test executes.
+
+    IT CHECKS CALLS, NOT JUST IMPORTS. An import-only version of this test was written
+    first and a mutation sweep walked straight past it: a seed that imports ``get_raw_db``
+    and then calls ``create_engine`` plus ``metadata.create_all`` satisfies every
+    import assertion while restoring the exact defect this branch deletes. That is the
+    same weakness that made the relay ``get_db`` guard hollow.
+    """
+    scripts = Path(relay_cmds.__file__).parents[2] / "scripts"
+    for name in ("seed_general_ct.py", "seed_robotmoney.py"):
+        source = (scripts / name).read_text()
+        called = _called_names(source)
+
+        assert "get_raw_db" in called, f"{name} does not open through get_raw_db"
+        assert "resolve_platform_url" in called, (
+            f"{name} resolves its own target instead of sharing the opener's precedence, "
+            "so its 'Target DB:' line can name a database it is not writing to"
+        )
+        for banned in ("create_all", "create_engine", "get_sa_engine", "get_sa_connection"):
+            assert banned not in called, f"{name} calls {banned}, a second schema build path"
+
+
+def test_passing_both_a_path_and_a_url_is_refused():
+    """They would silently disagree, and one of them would win without the caller knowing."""
+    from sable_platform.db.connection import resolve_platform_url
+
+    with pytest.raises(ValueError, match="not both"):
+        resolve_platform_url("/tmp/a.db", "sqlite:////tmp/b.db")
+
+
+def test_the_called_names_helper_sees_through_an_alias(tmp_path):
+    """KNOWN ANSWER for the guard's own instrument, both directions.
+
+    A name collector that misses aliased or attribute calls would make the guard above
+    read clean while a second build path sits in the file.
+    """
+    probe = tmp_path / "p.py"
+    probe.write_text(
+        "from sqlalchemy import create_engine as ce\n"
+        "from x import metadata as m\n"
+        "e = ce('sqlite://')\n"
+        "m.create_all(e)\n"
+    )
+    called = _called_names(probe.read_text())
+    assert "ce" in called and "create_all" in called
+
+    probe.write_text("from sable_platform.db.connection import get_raw_db\nc = get_raw_db()\n")
+    called = _called_names(probe.read_text())
+    assert "get_raw_db" in called
+    assert "create_all" not in called, "the collector invents calls that are not there"
 
 
 def test_postgresql_gets_no_sqlite_setup(monkeypatch):

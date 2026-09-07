@@ -66,7 +66,7 @@ It does NOT own the business logic of any specialized repo. Those stay in:
 
 | File | Purpose |
 |------|---------|
-| `sable_platform/db/connection.py` | DB entry point — get_db(), ensure_schema(), sable_db_path() |
+| `sable_platform/db/connection.py` | DB entry point — get_db(), get_raw_db(), ensure_schema(), sable_db_path(), resolve_platform_url(). **ONE path builds the platform schema:** `_prepared_engine` resolves the target via `resolve_platform_url` and, on SQLite, runs `ensure_schema` to replay `_MIGRATIONS`. `get_db` wraps the result in `CompatConnection`; `get_raw_db` returns it unwrapped; both share `_prepared_engine` so they cannot drift. `get_sa_engine`/`get_sa_connection` were a SECOND path building from `schema.py` via `metadata.create_all`, and a database built by one could never afterwards be opened by the other (`create_all` writes no `schema_version` row, so `ensure_schema` replayed migration 1 onto existing tables: `duplicate column name: cult_run_id`). Both are DELETED — that was DEFECTS_FOUND item 12, fixed by removing the second path rather than reconciling the two. `schema.py` remains the SA-Core model and its `tests/db/test_schema.py` parity tests still run; it no longer BUILDS anything. |
 | `sable_platform/db/backup.py` | SQLite online backup — backup_database(), _prune_old_backups() |
 | `sable_platform/cron.py` | Crontab scheduler — add_entry(), remove_entry(), list_entries() |
 | `sable_platform/db/workflow_store.py` | All workflow table CRUD |

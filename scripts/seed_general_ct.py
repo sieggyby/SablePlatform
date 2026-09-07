@@ -49,14 +49,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from sable_platform.db.connection import get_sa_engine
+from sable_platform.db.connection import get_raw_db, resolve_platform_url
 
 # ---------------------------------------------------------------------------
 # The desired tenant state (declarative — re-running converges to this).
@@ -437,14 +435,18 @@ def main() -> None:
     ap.add_argument("--url", default=None, help="DB URL override (else SABLE_DATABASE_URL / SABLE_DB_PATH / ~/.sable/sable.db).")
     args = ap.parse_args()
 
-    url = args.url or os.environ.get("SABLE_DATABASE_URL")
-    if not url:
-        db_path = os.environ.get("SABLE_DB_PATH") or str(Path.home() / ".sable" / "sable.db")
-        url = f"sqlite:///{db_path}"
+    # resolve_platform_url is the SAME precedence the opener uses. This script used to
+    # carry its own copy of it, which is how a "Target DB:" line can name one database
+    # while the write lands in another.
+    url = resolve_platform_url(url=args.url) if args.url else resolve_platform_url()
     print(f"Target DB: {url}")
 
-    engine = get_sa_engine(url)
-    with engine.connect() as conn:
+    # get_raw_db, NOT get_sa_engine. get_sa_engine built the SQLite schema from schema.py
+    # with metadata.create_all, which writes no schema_version row, so a later
+    # ensure_schema replayed migration 1 onto tables that already existed and the database
+    # could never be opened by any other tool. Measured: duplicate column name:
+    # cult_run_id. DEFECTS_FOUND item 12. That second path is now deleted.
+    with get_raw_db(url=url) as conn:
         seed(conn, dry_run=args.dry_run)
 
 

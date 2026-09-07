@@ -1,8 +1,20 @@
 """Shared connection factory and migration runner for sable.db.
 
-Legacy ``get_db()`` returns a raw ``sqlite3.Connection``.  The new
-``get_sa_engine()`` / ``get_sa_connection()`` functions return SQLAlchemy
-objects and are the migration path toward Postgres support.
+ONE path builds the platform database: ``_prepared_engine`` resolves the target and, on
+SQLite, runs ``ensure_schema`` to replay the SQL files in ``_MIGRATIONS``. ``get_db`` wraps
+the result in the sqlite3-compatible ``CompatConnection``; ``get_raw_db`` returns the
+SQLAlchemy connection unwrapped. They share ``_prepared_engine`` so they cannot drift.
+
+There used to be a SECOND path. ``get_sa_engine`` built the SQLite schema with
+``metadata.create_all`` from ``schema.py``, and the two seed scripts used it. The two paths
+did not agree, and a database built by one could not afterwards be opened by the other:
+``create_all`` writes no ``schema_version`` row, so ``ensure_schema`` read the version as 0
+and replayed migration 1 onto tables that already existed. Measured:
+``OperationalError: duplicate column name: cult_run_id``. That was ``DEFECTS_FOUND`` item
+12, and it is fixed by deleting the second path rather than by reconciling the two.
+
+``schema.py`` remains the SQLAlchemy Core model of the schema, and the parity tests in
+``tests/db/test_schema.py`` keep it honest. It no longer BUILDS anything at runtime.
 """
 from __future__ import annotations
 
@@ -12,9 +24,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from sqlalchemy import Engine
 from sqlalchemy.exc import OperationalError as SAOperationalError
-from sqlalchemy.engine import Connection as SAConnection
 
 log = logging.getLogger(__name__)
 
@@ -168,7 +178,50 @@ def _mkdir_for_sqlite_url(url: str) -> None:
         database.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _prepared_engine(db_path: str | Path | None = None):
+def resolve_platform_url(
+    db_path: str | Path | None = None, url: str | None = None
+) -> str:
+    """The ONE place the platform database target is decided. Also creates its directory.
+
+    Precedence: an explicit *url*, then an explicit *db_path*, then
+    ``SABLE_DATABASE_URL``, then ``SABLE_DB_PATH``, then ``~/.sable/sable.db``.
+
+    It is public because a caller that wants to REPORT the target before opening it must
+    get the same answer the opener will. ``scripts/seed_*.py`` print "Target DB:" before
+    they write, and they used to compute that line with their own copy of this precedence.
+    Two copies of a precedence rule drift, and the failure is a script that truthfully
+    reports one database while writing to another.
+    """
+    if db_path and url:
+        raise ValueError("pass db_path or url, not both")
+
+    if url:
+        _mkdir_for_sqlite_url(url)
+        return url
+
+    if db_path:
+        # Explicit path always wins — don't let env var override a caller's
+        # explicit db_path (important for tests, backup, CLI --db-path).
+        path = Path(db_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{path}"
+
+    env_url = os.environ.get("SABLE_DATABASE_URL")
+    if not env_url:
+        path = _sable_db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{path}"
+
+    # A sqlite URL from the environment needs the same parent directory the
+    # SABLE_DB_PATH branch above creates. Without this the two branches disagree:
+    # SABLE_DB_PATH=/missing/x.db works and SABLE_DATABASE_URL=sqlite:////missing/x.db
+    # fails with "unable to open database file". Only a real file gets a mkdir;
+    # ":memory:" and a bare "sqlite://" have no directory to make.
+    _mkdir_for_sqlite_url(env_url)
+    return env_url
+
+
+def _prepared_engine(db_path: str | Path | None = None, url: str | None = None):
     """Resolve the platform database target and make it ready to connect.
 
     Shared by :func:`get_db` and :func:`get_raw_db` so the two cannot drift. The SQLite
@@ -176,30 +229,15 @@ def _prepared_engine(db_path: str | Path | None = None):
     parent directory, and without ``ensure_schema`` the file has no tables, so the first
     query fails with ``no such table``. PostgreSQL gets neither, because its schema comes
     from Alembic.
+
+    This is the ONLY path that builds the platform schema. ``get_sa_engine`` was a second
+    one, building from ``schema.py`` via ``metadata.create_all``, and a database built by
+    it could never afterwards be opened by ``get_db``. It is deleted; see the module
+    docstring.
     """
     from sable_platform.db.engine import get_engine
 
-    if db_path:
-        # Explicit path always wins — don't let env var override a caller's
-        # explicit db_path (important for tests, backup, CLI --db-path).
-        path = Path(db_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        url = f"sqlite:///{path}"
-    else:
-        url = os.environ.get("SABLE_DATABASE_URL")
-        if not url:
-            path = _sable_db_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            url = f"sqlite:///{path}"
-        else:
-            # A sqlite URL from the environment needs the same parent directory the
-            # SABLE_DB_PATH branch above creates. Without this the two branches disagree:
-            # SABLE_DB_PATH=/missing/x.db works and SABLE_DATABASE_URL=sqlite:////missing/x.db
-            # fails with "unable to open database file". Only a real file gets a mkdir;
-            # ":memory:" and a bare "sqlite://" have no directory to make.
-            _mkdir_for_sqlite_url(url)
-
-    engine = get_engine(url)
+    engine = get_engine(resolve_platform_url(db_path, url))
 
     if engine.dialect.name == "sqlite":
         # For SQLite, ensure schema via legacy migration path on the raw
@@ -227,7 +265,7 @@ def get_db(db_path: str | Path | None = None):
     return CompatConnection(_prepared_engine(db_path).connect())
 
 
-def get_raw_db(db_path: str | Path | None = None):
+def get_raw_db(db_path: str | Path | None = None, url: str | None = None):
     """Return the RAW SQLAlchemy connection, with the same setup :func:`get_db` performs.
 
     Same target resolution, same SQLite ``mkdir`` and ``ensure_schema``. The ONLY
@@ -265,22 +303,9 @@ def get_raw_db(db_path: str | Path | None = None):
       copy what is there, never migrate it first.
     * **Alembic.** ``alembic/env.py`` owns the PostgreSQL schema and must not have it built
       underneath it.
-    * **The ``schema.py`` build path.** ``get_sa_engine`` and ``get_sa_connection``, used by
-      the two ``scripts/seed_*.py`` tools. ``get_sa_engine`` builds the SQLite schema with
-      ``metadata.create_all`` from ``schema.py``, which is a DIFFERENT path from
-      ``ensure_schema``. The two are not interchangeable: ``create_all`` writes no
-      ``schema_version`` row, so ``ensure_schema`` reads the version as 0 and replays from
-      migration 1 onto existing tables. Measured: ``duplicate column name: cult_run_id``.
-      Pinned by ``tests/db/test_raw_connection_setup.py``.
-
-      **This split is an open defect**, recorded as ``DEFECTS_FOUND`` item 12. A database
-      built by one path cannot later be opened by the other. Deciding which path the seeds
-      should use is that item's work, not this module's. PostgreSQL is unaffected: none of
-      this runs there.
-
     Anything else that opens the platform database raw is a defect, not an exception.
     """
-    return _prepared_engine(db_path).connect()
+    return _prepared_engine(db_path, url).connect()
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -327,35 +352,3 @@ def _warn_migration_027_autofails(conn: sqlite3.Connection) -> None:
         pass  # workflow_runs table absent — migration applied to empty DB
 
 
-# ---------------------------------------------------------------------------
-# SQLAlchemy connection path (new — coexists with legacy get_db)
-# ---------------------------------------------------------------------------
-
-
-def get_sa_engine(url: str | None = None) -> Engine:
-    """Return a SQLAlchemy :class:`Engine` for the platform database.
-
-    For SQLite engines the schema is created via :func:`metadata.create_all`
-    (idempotent).  For Postgres, Alembic manages migrations separately.
-
-    .. important::
-        ``schema.py`` must stay in sync with the SQL migration files listed
-        in ``_MIGRATIONS``.  The parity tests in ``tests/db/test_schema.py``
-        verify this mechanically.
-    """
-    from sable_platform.db.engine import get_engine
-    from sable_platform.db.schema import metadata
-
-    engine = get_engine(url)
-    if engine.dialect.name == "sqlite":
-        metadata.create_all(engine)
-    return engine
-
-
-def get_sa_connection(url: str | None = None) -> SAConnection:
-    """Convenience: return an open SQLAlchemy :class:`Connection`.
-
-    Callers are responsible for calling ``conn.close()`` when done (or using
-    the connection as a context manager).
-    """
-    return get_sa_engine(url).connect()
