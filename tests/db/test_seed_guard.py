@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from sable_platform.db.seed_guard import resolve_seed_target
 
@@ -212,3 +213,49 @@ def test_a_created_database_is_schema_correct_and_opens_under_get_db(tmp_path):
         conn.execute("SELECT COUNT(*) FROM orgs").fetchone()
     finally:
         conn.close()
+
+
+def test_a_refusal_leaves_no_trace_on_disk(tmp_path, monkeypatch):
+    """A gate found this. Refusing a target must not create its parent directory either.
+
+    ``resolve_platform_url`` used to mkdir while RESOLVING, so a refused run still left the
+    directory behind: the guard said no and the filesystem said something happened anyway.
+    Directory creation now belongs to the code that opens a database.
+    """
+    monkeypatch.delenv("SABLE_DATABASE_URL", raising=False)
+    missing_dir = tmp_path / "never" / "made"
+    monkeypatch.setenv("SABLE_DB_PATH", str(missing_dir / "sable.db"))
+
+    for kwargs in ({"dry_run": True}, {}):
+        with pytest.raises(SystemExit):
+            resolve_seed_target(**kwargs)
+        assert not missing_dir.exists(), f"a refusal with {kwargs} created {missing_dir}"
+        assert not missing_dir.parent.exists()
+
+
+def test_resolving_a_target_creates_nothing_at_all(tmp_path, monkeypatch):
+    """The pure-resolution claim, stated directly rather than only through the guard."""
+    from sable_platform.db.connection import resolve_platform_url
+
+    monkeypatch.delenv("SABLE_DATABASE_URL", raising=False)
+    nowhere = tmp_path / "nowhere"
+    url = resolve_platform_url(db_path=str(nowhere / "x.db"))
+
+    assert url == f"sqlite:///{nowhere / 'x.db'}"
+    assert not nowhere.exists(), "resolve_platform_url created a directory"
+
+
+def test_opening_a_target_still_creates_its_directory(tmp_path, monkeypatch):
+    """POWER CHECK: the mkdir MOVED, it did not disappear.
+
+    Without this, deleting the mkdir entirely would pass every test above while a fresh
+    SABLE_DB_PATH failed with "unable to open database file".
+    """
+    from sable_platform.db.connection import get_raw_db
+
+    monkeypatch.delenv("SABLE_DATABASE_URL", raising=False)
+    fresh = tmp_path / "brand" / "new"
+    with get_raw_db(url=f"sqlite:///{fresh / 'sable.db'}") as conn:
+        conn.execute(text("SELECT 1"))
+
+    assert (fresh / "sable.db").exists(), "the mkdir was lost, not moved"

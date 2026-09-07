@@ -289,3 +289,117 @@ def test_org_create_still_accepts_a_genuinely_different_id(file_db):
     for org_id in ("tig2", "stig", "robotmoney", "ti"):
         result = CliRunner().invoke(org_create, [org_id, "--name", org_id])
         assert result.exit_code == 0, f"wrongly refused {org_id!r}: {result.output}"
+
+
+# ---------------------------------------------------------------------------
+# The status change and its audit row are ONE transaction
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_audit_rolls_back_the_status_change(file_db, monkeypatch):
+    """A gate found this. Committing the status and auditing afterwards is TWO writes.
+
+    ``set_org_status`` used to commit before the CLI wrote the audit row, so a failure
+    between them left the org deactivated with no record of who did it. That is the worst
+    shape for an audit trail: the change is real and the history says it never happened.
+    """
+    CliRunner().invoke(org_create, ["tig", "--name", "TIG"])
+
+    def _explode(*a, **k):
+        raise RuntimeError("audit_log is unavailable")
+
+    monkeypatch.setattr("sable_platform.db.audit.log_audit", _explode)
+
+    result = CliRunner().invoke(org_set_status, ["tig", "inactive"])
+    assert result.exit_code != 0
+
+    assert "tig" in _sweep(file_db), (
+        "the status change survived a failed audit, so the two are not one transaction"
+    )
+
+
+def test_a_no_op_writes_nothing_at_all(file_db):
+    """Setting the status it already has must not bump updated_at either.
+
+    A timestamp moved by a change that did not happen makes the column lie about when the
+    row last moved.
+    """
+    CliRunner().invoke(org_create, ["myorg", "--name", "My Org"])
+
+    con = sqlite3.connect(file_db)
+    try:
+        before = con.execute("SELECT updated_at FROM orgs WHERE org_id='myorg'").fetchone()[0]
+    finally:
+        con.close()
+
+    CliRunner().invoke(org_set_status, ["myorg", "active"])
+
+    con = sqlite3.connect(file_db)
+    try:
+        after = con.execute("SELECT updated_at FROM orgs WHERE org_id='myorg'").fetchone()[0]
+    finally:
+        con.close()
+    assert after == before
+
+
+# ---------------------------------------------------------------------------
+# Production already holds BOTH tig and TIG
+# ---------------------------------------------------------------------------
+
+
+def test_an_exact_match_wins_when_both_case_variants_exist():
+    """A gate found this, and it only bites on the database we actually have.
+
+    With both rows present, a bare ``LOWER(org_id) = LOWER(:org_id)`` returns whichever the
+    planner reaches first. Every test that seeds only ONE row passes regardless.
+    """
+    conn = make_test_conn()
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('tig', 'lower')")
+    conn.execute("INSERT INTO orgs (org_id, display_name) VALUES ('TIG', 'upper')")
+    conn.commit()
+
+    assert find_org_id_ignoring_case(conn, "tig") == "tig"
+    assert find_org_id_ignoring_case(conn, "TIG") == "TIG"
+
+    # A probe matching NEITHER exactly must still be deterministic across runs.
+    assert find_org_id_ignoring_case(conn, "TiG") == "TIG"
+    assert find_org_id_ignoring_case(conn, "TiG") == "TIG"
+
+
+def test_org_create_still_reports_a_plain_duplicate_on_the_split_prod_data(file_db):
+    """The behaviour regression the exact-match rule prevents, on prod's actual state."""
+    CliRunner().invoke(org_create, ["tig", "--name", "lower"])
+    con = sqlite3.connect(file_db)
+    try:
+        con.execute("INSERT INTO orgs (org_id, display_name) VALUES ('TIG', 'upper')")
+        con.commit()
+    finally:
+        con.close()
+
+    result = CliRunner().invoke(org_create, ["tig", "--name", "again"])
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert "differs from it only in case" not in result.output, (
+        "an exact duplicate was reported as a case collision"
+    )
+
+
+def test_set_org_status_writes_nothing_for_a_no_op_even_when_it_would_commit():
+    """The no-op must be enforced in the DB layer, not only by the CLI's early return.
+
+    A sweep caught this. The CLI-level no-op test could not fail, because the CLI passes
+    commit=False and returns before committing, so an UPDATE issued anyway is discarded
+    either way. This calls the function directly with commit=True, where the UPDATE would
+    actually land.
+    """
+    conn = make_test_conn()
+    conn.execute(
+        "INSERT INTO orgs (org_id, display_name, status, updated_at) "
+        "VALUES ('a', 'A', 'active', '2020-01-01T00:00:00Z')"
+    )
+    conn.commit()
+
+    assert set_org_status(conn, "a", "active", commit=True) == "active"
+
+    row = conn.execute("SELECT updated_at FROM orgs WHERE org_id='a'").fetchone()
+    assert row[0] == "2020-01-01T00:00:00Z", "a no-op bumped updated_at"

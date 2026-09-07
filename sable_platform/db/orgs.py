@@ -318,15 +318,36 @@ def find_org_id_ignoring_case(conn, org_id: str) -> str | None:
 
     ``org create`` produced the pair because it checks ``WHERE org_id = :org_id``, an exact
     match. This is the lookup that check should have used.
+
+    AN EXACT MATCH WINS. Production already holds BOTH ``tig`` and ``TIG``, so a bare
+    case-insensitive query there returns whichever row the planner reaches first. That would
+    make ``org create tig`` report a case collision against ``TIG`` instead of the plain
+    "already exists" it has always reported.
+
+    The ``ORDER BY`` on the fallback is defensive and I could NOT test it. It only runs for
+    a probe matching neither row exactly, such as ``TiG`` against ``tig`` and ``TIG``, and
+    on SQLite the ``org_id`` primary-key index already returns that order, so removing the
+    clause changes no answer there. Whether PostgreSQL agrees is untested: I did not run
+    this against a PostgreSQL instance. The clause costs nothing and the case it guards is
+    advisory output, not a decision.
     """
+    exact = conn.execute(
+        text("SELECT org_id FROM orgs WHERE org_id = :org_id"), {"org_id": org_id}
+    ).fetchone()
+    if exact:
+        return exact[0]
+
     row = conn.execute(
-        text("SELECT org_id FROM orgs WHERE LOWER(org_id) = LOWER(:org_id)"),
+        text(
+            "SELECT org_id FROM orgs WHERE LOWER(org_id) = LOWER(:org_id) "
+            "ORDER BY org_id LIMIT 1"
+        ),
         {"org_id": org_id},
     ).fetchone()
     return row[0] if row else None
 
 
-def set_org_status(conn, org_id: str, status: str) -> str | None:
+def set_org_status(conn, org_id: str, status: str, *, commit: bool = True) -> str | None:
     """Set one org's ``status``. Returns the PREVIOUS status, or ``None`` if no such org.
 
     Returning the previous status rather than a row count is deliberate. A caller needs to
@@ -343,6 +364,11 @@ def set_org_status(conn, org_id: str, status: str) -> str | None:
     WHY THIS MATTERS: ``weekly run --all`` selects ``WHERE status='active'``
     (``cli/workflow_cmds.py``), and until this function existed there was no supported way
     to leave that set. ``org create --status`` was the only writer, and only at creation.
+
+    PASS ``commit=False`` WHEN AN AUDIT ROW MUST LAND WITH THE CHANGE. Committing here and
+    auditing afterwards is two transactions: a failure between them leaves the status
+    changed with no history of who changed it. ``log_audit`` commits, so a caller that
+    passes ``commit=False`` and then audits gets both writes in one transaction.
     """
     if status not in ORG_STATUSES:
         raise ValueError(
@@ -356,6 +382,11 @@ def set_org_status(conn, org_id: str, status: str) -> str | None:
         return None
     previous = row[0]
 
+    if previous == status:
+        # A genuine no-op writes NOTHING, not even updated_at. Bumping a timestamp for a
+        # change that did not happen makes the column lie about when the row last moved.
+        return previous
+
     conn.execute(
         text(
             "UPDATE orgs SET status = :status, "
@@ -364,5 +395,6 @@ def set_org_status(conn, org_id: str, status: str) -> str | None:
         ),
         {"org_id": org_id, "status": status},
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return previous

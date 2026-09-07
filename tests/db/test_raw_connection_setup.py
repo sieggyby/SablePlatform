@@ -225,18 +225,46 @@ def test_the_deleted_path_really_did_break_it(tmp_path):
 
 
 def _called_names(source: str) -> set[str]:
-    """Every function or method NAME called in *source*, however it was reached."""
+    """Every function or method called in *source*, resolved back through import aliases.
+
+    A GATE FOUND THE FIRST VERSION HOLLOW. It collected the LOCAL name at the call site, so
+    ``from sqlalchemy import create_engine as ce`` followed by ``ce(url)`` yielded ``ce``.
+    The banned-name check downstream looks for ``create_engine``, so the guard read clean
+    while a second schema build path sat in the file. ``getattr(metadata, "create_all")()``
+    slipped past for the same reason.
+
+    Three routes are covered now: a plain or aliased imported name, an attribute call, and
+    a ``getattr`` with a string literal.
+    """
     import ast
 
+    tree = ast.parse(source)
+
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.asname:
+                    aliases[alias.asname] = alias.name
+
     names = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         if isinstance(func, ast.Name):
             names.add(func.id)
+            names.add(aliases.get(func.id, func.id))
+            # getattr(obj, "create_all") names its target in a string, not in the AST call.
+            if func.id == "getattr" and len(node.args) >= 2:
+                target = node.args[1]
+                if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                    names.add(target.value)
         elif isinstance(func, ast.Attribute):
             names.add(func.attr)
+            value = func.value
+            if isinstance(value, ast.Name):
+                names.add(f"{aliases.get(value.id, value.id)}.{func.attr}")
     return names
 
 
@@ -290,20 +318,30 @@ def test_the_called_names_helper_sees_through_an_alias(tmp_path):
     A name collector that misses aliased or attribute calls would make the guard above
     read clean while a second build path sits in the file.
     """
-    probe = tmp_path / "p.py"
-    probe.write_text(
+    # THE ASSERTION THAT MATTERS IS THE RESOLVED NAME. An earlier version of this test
+    # asserted only that the ALIAS "ce" was collected, which the banned-name check never
+    # looks for, so it claimed alias coverage the guard did not have.
+    aliased = (
         "from sqlalchemy import create_engine as ce\n"
         "from x import metadata as m\n"
         "e = ce('sqlite://')\n"
         "m.create_all(e)\n"
     )
-    called = _called_names(probe.read_text())
-    assert "ce" in called and "create_all" in called
+    called = _called_names(aliased)
+    assert "create_engine" in called, "an aliased import is not resolved to its real name"
+    assert "create_all" in called
 
-    probe.write_text("from sable_platform.db.connection import get_raw_db\nc = get_raw_db()\n")
-    called = _called_names(probe.read_text())
+    via_getattr = (
+        "from x import metadata as m\n"
+        "getattr(m, 'create_all')(e)\n"
+    )
+    assert "create_all" in _called_names(via_getattr), "getattr hides the call"
+
+    clean = "from sable_platform.db.connection import get_raw_db\nc = get_raw_db()\n"
+    called = _called_names(clean)
     assert "get_raw_db" in called
-    assert "create_all" not in called, "the collector invents calls that are not there"
+    for absent in ("create_all", "create_engine", "getattr"):
+        assert absent not in called, f"the collector invented a call to {absent}"
 
 
 def test_postgresql_gets_no_sqlite_setup(monkeypatch):

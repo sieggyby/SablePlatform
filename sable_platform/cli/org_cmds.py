@@ -281,7 +281,10 @@ def org_set_status(org_id: str, status: str) -> None:
     actor = os.environ.get("SABLE_OPERATOR_ID", "unknown")
     conn = get_db()
     try:
-        previous = set_org_status(conn, org_id, status)
+        # commit=False: log_audit commits, so the status change and its audit row land
+        # in ONE transaction. Committing here first would leave a window where the
+        # status is changed and nothing records who changed it.
+        previous = set_org_status(conn, org_id, status, commit=False)
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         conn.close()
@@ -302,6 +305,7 @@ def org_set_status(org_id: str, status: str) -> None:
             sys.exit(1)
 
         if previous == status:
+            # set_org_status wrote nothing in this case, so there is nothing to commit.
             click.echo(f"Org '{org_id}' was already {status}. Nothing changed.")
             return
 

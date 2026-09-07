@@ -181,44 +181,39 @@ def _mkdir_for_sqlite_url(url: str) -> None:
 def resolve_platform_url(
     db_path: str | Path | None = None, url: str | None = None
 ) -> str:
-    """The ONE place the platform database target is decided. Also creates its directory.
+    """The ONE place the platform database target is decided. PURE: it creates nothing.
 
-    Precedence: an explicit *url*, then an explicit *db_path*, then
-    ``SABLE_DATABASE_URL``, then ``SABLE_DB_PATH``, then ``~/.sable/sable.db``.
+    Precedence: an explicit *url*, then an explicit *db_path*, then ``SABLE_DATABASE_URL``,
+    then ``SABLE_DB_PATH``, then ``~/.sable/sable.db``.
 
-    It is public because a caller that wants to REPORT the target before opening it must
+    It is public because a caller that wants to REPORT the target, or to REFUSE it, must
     get the same answer the opener will. ``scripts/seed_*.py`` print "Target DB:" before
-    they write, and they used to compute that line with their own copy of this precedence.
+    they write, and they used to compute that line from their own copy of this precedence.
     Two copies of a precedence rule drift, and the failure is a script that truthfully
     reports one database while writing to another.
+
+    IT USED TO MKDIR, AND A GATE WAS RIGHT TO CALL THAT A SURPRISE. A function named
+    "resolve" that touches the filesystem meant a REFUSED seed run still left its target's
+    parent directory behind: ``SABLE_DB_PATH=/tmp/miss/sable.db seed_robotmoney.py
+    --dry-run`` refused the database and created ``/tmp/miss``. Directory creation now
+    belongs to :func:`_prepared_engine`, which is the thing that actually opens a database.
     """
     if db_path and url:
         raise ValueError("pass db_path or url, not both")
 
     if url:
-        _mkdir_for_sqlite_url(url)
         return url
 
     if db_path:
         # Explicit path always wins — don't let env var override a caller's
         # explicit db_path (important for tests, backup, CLI --db-path).
-        path = Path(db_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{path}"
+        return f"sqlite:///{Path(db_path)}"
 
     env_url = os.environ.get("SABLE_DATABASE_URL")
-    if not env_url:
-        path = _sable_db_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return f"sqlite:///{path}"
+    if env_url:
+        return env_url
 
-    # A sqlite URL from the environment needs the same parent directory the
-    # SABLE_DB_PATH branch above creates. Without this the two branches disagree:
-    # SABLE_DB_PATH=/missing/x.db works and SABLE_DATABASE_URL=sqlite:////missing/x.db
-    # fails with "unable to open database file". Only a real file gets a mkdir;
-    # ":memory:" and a bare "sqlite://" have no directory to make.
-    _mkdir_for_sqlite_url(env_url)
-    return env_url
+    return f"sqlite:///{_sable_db_path()}"
 
 
 def _prepared_engine(db_path: str | Path | None = None, url: str | None = None):
@@ -237,7 +232,15 @@ def _prepared_engine(db_path: str | Path | None = None, url: str | None = None):
     """
     from sable_platform.db.engine import get_engine
 
-    engine = get_engine(resolve_platform_url(db_path, url))
+    target = resolve_platform_url(db_path, url)
+
+    # The mkdir lives HERE, with the thing that opens a database, not with the thing that
+    # names one. Without it a fresh SABLE_DB_PATH has no parent directory and SQLite fails
+    # with "unable to open database file". Only a real file gets one: ":memory:" and a bare
+    # "sqlite://" have no directory to make, and a PostgreSQL URL names no file at all.
+    _mkdir_for_sqlite_url(target)
+
+    engine = get_engine(target)
 
     if engine.dialect.name == "sqlite":
         # For SQLite, ensure schema via legacy migration path on the raw
