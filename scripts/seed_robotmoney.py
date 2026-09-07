@@ -251,6 +251,24 @@ def _js(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+
+def _now_sql(conn) -> str:
+    """Dialect-safe SQL for "now", in the canonical spelling, for an inline fragment.
+
+    These UPDATE branches used ``strftime('%Y-%m-%dT%H:%M:%SZ','now')``, which is
+    SQLite-only. PostgreSQL has no ``strftime``, so every idempotent re-run against
+    PostgreSQL failed the moment a row already existed and the INSERT fell through to an
+    UPDATE. This module's own docstring documents that replay as a use case:
+    "set SABLE_DATABASE_URL=postgresql://... and re-run".
+
+    A gate found it. It is not new, and it is not reachable on a first run, which is why a
+    SQLite-only test suite never saw it.
+    """
+    from sable_platform.db.compat import get_dialect
+    from sable_platform.db.ts_format import now_canonical_sql
+
+    return now_canonical_sql(get_dialect(conn))
+
 def upsert_org(conn: Connection, plan: Plan, *, dry_run: bool) -> None:
     config_json = _js({"sector": SECTOR, "stage": STAGE})
     existing = _scalar(conn, "SELECT org_id FROM orgs WHERE org_id = :o", {"o": ORG_ID})
@@ -270,7 +288,7 @@ def upsert_org(conn: Connection, plan: Plan, *, dry_run: bool) -> None:
             conn.execute(
                 text(
                     "UPDATE orgs SET display_name = :dn, twitter_handle = :tw, config_json = :cfg, "
-                    "status = 'active', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE org_id = :o"
+                    f"status = 'active', updated_at = {_now_sql(conn)} WHERE org_id = :o"
                 ),
                 {"o": ORG_ID, "dn": DISPLAY_NAME, "tw": TWITTER_HANDLE, "cfg": config_json},
             )
@@ -298,7 +316,7 @@ def upsert_persona(conn: Connection, plan: Plan, *, dry_run: bool) -> Optional[i
             conn.execute(
                 text(
                     "UPDATE autocm_personas SET description = :d, calm_prompt = :cp, reactive_prompt = :rp, "
-                    "calibration_set = :cs, config = :cfg, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+                    f"calibration_set = :cs, config = :cfg, updated_at = {_now_sql(conn)} "
                     "WHERE name = :n"
                 ),
                 {"n": PERSONA_NAME, "d": PERSONA_DESCRIPTION, "cp": CALM_PROMPT,
@@ -349,7 +367,7 @@ def upsert_autocm_client(conn: Connection, plan: Plan, persona_id: Optional[int]
                 text(
                     "UPDATE autocm_clients SET persona_id = :p, display_name = :dn, autonomy_state = 'paused', "
                     "incident_active = 0, surface_config = :sc, kb_config = :kc, enabled = 0, "
-                    "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE org_id = :o"
+                    f"updated_at = {_now_sql(conn)} WHERE org_id = :o"
                 ),
                 {"o": ORG_ID, "p": persona_id, "dn": DISPLAY_NAME, "sc": sc, "kc": kc},
             )
@@ -378,7 +396,7 @@ def upsert_kb_constants(conn: Connection, plan: Plan, client_id: int, *, dry_run
                 conn.execute(
                     text(
                         "UPDATE autocm_kb_constants SET value = :v, description = :d, updated_by = :u, "
-                        "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE client_id = :c AND key = :k"
+                        f"updated_at = {_now_sql(conn)} WHERE client_id = :c AND key = :k"
                     ),
                     {"c": client_id, "k": key, "v": value, "d": desc, "u": OPERATOR},
                 )

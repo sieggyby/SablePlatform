@@ -259,3 +259,117 @@ def test_opening_a_target_still_creates_its_directory(tmp_path, monkeypatch):
         conn.execute(text("SELECT 1"))
 
     assert (fresh / "sable.db").exists(), "the mkdir was lost, not moved"
+
+
+# ---------------------------------------------------------------------------
+# The seeds double as the PostgreSQL replay step, and could not do it twice
+# ---------------------------------------------------------------------------
+
+SEEDS = ("seed_general_ct.py", "seed_robotmoney.py")
+
+
+def _sql_string_literals(source: str) -> list[str]:
+    """Every string constant in *source* that is not a docstring.
+
+    Docstrings are excluded on purpose: the code under test explains this defect by quoting
+    the literal it must not emit, and a guard that bans its own explanation is worse than
+    the hole it closes.
+    """
+    import ast
+
+    tree = ast.parse(source)
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc is not None:
+                docstrings.add(doc)
+
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value not in docstrings
+    ]
+
+
+
+def test_the_seeds_emit_no_sqlite_only_timestamp():
+    """A gate found this. ``strftime`` is SQLite-only and PostgreSQL has no such function.
+
+    Both seeds document PostgreSQL replay in their module docstring: "set
+    SABLE_DATABASE_URL=postgresql://... and re-run". Every idempotent re-run against
+    PostgreSQL died the moment a row already existed and the INSERT fell through to an
+    UPDATE carrying this literal.
+
+    The literal they inlined is exactly ``ts_format.SQLITE_NOW_CANONICAL``, one half of a
+    constant that already had a dialect-safe accessor in this codebase.
+
+    IT CHECKS EXECUTABLE STRINGS, NOT PROSE. A plain substring version of this test failed
+    on its first run against a DOCSTRING that quotes the literal while explaining the
+    defect. A guard that forbids documenting the thing it forbids is wrong in the expensive
+    direction, so this reads string constants from the AST and skips docstrings.
+    """
+    from sable_platform.db.ts_format import SQLITE_NOW_CANONICAL
+
+    for name in SEEDS:
+        for literal in _sql_string_literals((REPO / "scripts" / name).read_text()):
+            assert SQLITE_NOW_CANONICAL not in literal, (
+                f"{name} hardcodes the SQLite spelling in SQL; use _now_sql(conn)"
+            )
+            assert "strftime(" not in literal, f"{name} emits strftime in SQL"
+
+
+def test_now_sql_actually_switches_on_the_dialect():
+    """KNOWN ANSWER, both dialects. The guard above is a substring check and proves nothing
+    about behaviour on its own: a seed could drop ``strftime`` and still emit SQLite-only
+    SQL some other way.
+    """
+    from sable_platform.db.ts_format import PG_NOW_CANONICAL, SQLITE_NOW_CANONICAL
+
+    sys.path.insert(0, str(REPO / "scripts"))
+    try:
+        import seed_robotmoney
+    finally:
+        sys.path.pop(0)
+
+    class _Dialect:
+        def __init__(self, name):
+            self.name = name
+
+    class _Conn:
+        def __init__(self, name):
+            self.dialect = _Dialect(name)
+
+    assert seed_robotmoney._now_sql(_Conn("postgresql")) == PG_NOW_CANONICAL
+    assert "strftime" not in seed_robotmoney._now_sql(_Conn("postgresql"))
+    assert seed_robotmoney._now_sql(_Conn("sqlite")) == SQLITE_NOW_CANONICAL
+
+
+def test_a_second_run_reaches_the_update_branch(tmp_path):
+    """REACHABILITY, and it is why the defect survived a SQLite-only suite for months.
+
+    The two tests above would pass against dead code. This proves the UPDATE branch runs:
+    the first seed INSERTs, the second finds the rows and takes the UPDATE path that carried
+    the SQLite-only timestamp. On a first run the defect is unreachable, which is exactly
+    why nobody hit it locally.
+    """
+    first = _run_seed(tmp_path, "--create-db")
+    assert first.returncode == 0, first.stdout + first.stderr
+
+    second = _run_seed(tmp_path)  # the database exists now, so no flag is needed
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "UPDATE orgs" in second.stdout, (
+        "the second run did not take the UPDATE branch, so this proves nothing"
+    )
+
+    import sqlite3
+
+    con = sqlite3.connect(str(tmp_path / "sable.db"))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM orgs").fetchone()[0] == 1, (
+            "the idempotent re-run duplicated the org"
+        )
+    finally:
+        con.close()

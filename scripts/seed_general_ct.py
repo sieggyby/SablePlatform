@@ -147,6 +147,24 @@ def _norm(handle: str) -> str:
     return handle.strip().lstrip("@").lower()
 
 
+
+def _now_sql(conn) -> str:
+    """Dialect-safe SQL for "now", in the canonical spelling, for an inline fragment.
+
+    These UPDATE branches used ``strftime('%Y-%m-%dT%H:%M:%SZ','now')``, which is
+    SQLite-only. PostgreSQL has no ``strftime``, so every idempotent re-run against
+    PostgreSQL failed the moment a row already existed and the INSERT fell through to an
+    UPDATE. This module's own docstring documents that replay as a use case:
+    "set SABLE_DATABASE_URL=postgresql://... and re-run".
+
+    A gate found it. It is not new, and it is not reachable on a first run, which is why a
+    SQLite-only test suite never saw it.
+    """
+    from sable_platform.db.compat import get_dialect
+    from sable_platform.db.ts_format import now_canonical_sql
+
+    return now_canonical_sql(get_dialect(conn))
+
 def upsert_org(conn: Connection, plan: Plan, *, dry_run: bool) -> None:
     config_json = _js({"sector": SECTOR})
     existing = _scalar(conn, "SELECT org_id FROM orgs WHERE org_id = :o", {"o": ORG_ID})
@@ -166,7 +184,7 @@ def upsert_org(conn: Connection, plan: Plan, *, dry_run: bool) -> None:
             conn.execute(
                 text(
                     "UPDATE orgs SET display_name = :dn, config_json = :cfg, status = 'active', "
-                    "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE org_id = :o"
+                    f"updated_at = {_now_sql(conn)} WHERE org_id = :o"
                 ),
                 {"o": ORG_ID, "dn": DISPLAY_NAME, "cfg": config_json},
             )
