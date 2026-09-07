@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import click
 
 from sable_platform.db.connection import get_db
+from sable_platform.db.orgs import ORG_STATUSES, find_org_id_ignoring_case, set_org_status
 from sable_platform.errors import SableError
 
 
@@ -27,9 +29,24 @@ def org_create(org_id: str, name: str, status: str) -> None:
     """
     conn = get_db()
     try:
-        existing = conn.execute("SELECT 1 FROM orgs WHERE org_id=?", (org_id,)).fetchone()
-        if existing:
-            click.echo(f"Org '{org_id}' already exists.", err=True)
+        clash = find_org_id_ignoring_case(conn, org_id)
+        if clash is not None:
+            if clash == org_id:
+                click.echo(f"Org '{org_id}' already exists.", err=True)
+            else:
+                # The check here used to be an exact match, which is how production ended
+                # up holding BOTH 'tig' and 'TIG'. Nothing normalises org_id, and 40 tables
+                # carry a foreign key to it, so the pair partitions one client's data
+                # across all 40 with no reader told which key holds what.
+                click.echo(
+                    f"Org '{clash}' already exists, and '{org_id}' differs from it only in "
+                    "case.\n"
+                    "orgs.org_id is the primary key and nothing normalises its case, so "
+                    "both rows would exist and 40 foreign-key tables would split this "
+                    "client's data between them.\n"
+                    f"Use '{clash}', or choose an id that is distinct in more than case.",
+                    err=True,
+                )
             sys.exit(1)
         conn.execute(
             "INSERT INTO orgs (org_id, display_name, status) VALUES (?, ?, ?)",
@@ -240,5 +257,61 @@ def org_graduate(prospect_project_id: str) -> None:
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    finally:
+        conn.close()
+
+
+@org.command("set-status")
+@click.argument("org_id")
+@click.argument("status", type=click.Choice(list(ORG_STATUSES)))
+def org_set_status(org_id: str, status: str) -> None:
+    """Set an org's status. 'inactive' removes it from every --all sweep.
+
+    ORG_ID is the exact stored id, case-sensitively. STATUS is active or inactive.
+
+    Until this command existed there was NO supported way to change an org's status.
+    ``org create --status`` was the only writer, and only at creation time. ``org reject``
+    and ``org graduate`` stamp ``prospect_scores`` rows and never touch ``orgs.status``.
+
+    That gap is why ``sable-weekly`` failed on every run: ``weekly run --all`` selects
+    ``WHERE status='active'``, and six orgs that should have left that set could not.
+    """
+    from sable_platform.db.audit import log_audit
+
+    actor = os.environ.get("SABLE_OPERATOR_ID", "unknown")
+    conn = get_db()
+    try:
+        previous = set_org_status(conn, org_id, status)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        conn.close()
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        conn.close()
+        sys.exit(1)
+
+    try:
+        if previous is None:
+            # A typo in ORG_ID must NOT read as success. An UPDATE matching no row is a
+            # silent no-op, so the miss is reported here instead.
+            click.echo(f"No such org: '{org_id}'.", err=True)
+            near = find_org_id_ignoring_case(conn, org_id)
+            if near is not None:
+                click.echo(f"Did you mean '{near}'? org_id is case-sensitive.", err=True)
+            sys.exit(1)
+
+        if previous == status:
+            click.echo(f"Org '{org_id}' was already {status}. Nothing changed.")
+            return
+
+        log_audit(
+            conn,
+            actor,
+            "org_status_changed",
+            org_id=org_id,
+            detail={"from": previous, "to": status},
+        )
+        click.echo(f"Org '{org_id}': {previous} -> {status}.")
     finally:
         conn.close()

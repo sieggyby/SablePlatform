@@ -299,3 +299,70 @@ def upsert_client_org(
         },
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Org lifecycle: status, and the casing collision that produced two TIG rows
+# ---------------------------------------------------------------------------
+
+ORG_STATUSES = ("active", "inactive")
+
+
+def find_org_id_ignoring_case(conn, org_id: str) -> str | None:
+    """The stored ``org_id`` matching *org_id* case-insensitively, or ``None``.
+
+    ``orgs.org_id`` is the primary key and nothing normalises its case, so ``tig`` and
+    ``TIG`` are two rows. Forty tables carry a foreign key to it, which means the two keys
+    partition a client's data across all forty. That happened in production: both ``tig``
+    and ``TIG`` exist, and no reader is told which one holds what.
+
+    ``org create`` produced the pair because it checks ``WHERE org_id = :org_id``, an exact
+    match. This is the lookup that check should have used.
+    """
+    row = conn.execute(
+        text("SELECT org_id FROM orgs WHERE LOWER(org_id) = LOWER(:org_id)"),
+        {"org_id": org_id},
+    ).fetchone()
+    return row[0] if row else None
+
+
+def set_org_status(conn, org_id: str, status: str) -> str | None:
+    """Set one org's ``status``. Returns the PREVIOUS status, or ``None`` if no such org.
+
+    Returning the previous status rather than a row count is deliberate. A caller needs to
+    tell three cases apart: the org does not exist, the org changed, and the org already had
+    that status. A rowcount collapses the first and third into ``0`` on some drivers, and a
+    command that reports success for a typo'd ``org_id`` is the failure this exists to
+    prevent.
+
+    ``status`` is validated against :data:`ORG_STATUSES` here as well as at the CLI, because
+    the column is plain ``Text`` with no CHECK constraint. An unrecognised value would be
+    stored and would then be invisible to every ``WHERE status='active'`` sweep AND to every
+    listing that looks for ``'inactive'``.
+
+    WHY THIS MATTERS: ``weekly run --all`` selects ``WHERE status='active'``
+    (``cli/workflow_cmds.py``), and until this function existed there was no supported way
+    to leave that set. ``org create --status`` was the only writer, and only at creation.
+    """
+    if status not in ORG_STATUSES:
+        raise ValueError(
+            f"status must be one of {', '.join(ORG_STATUSES)}, got {status!r}"
+        )
+
+    row = conn.execute(
+        text("SELECT status FROM orgs WHERE org_id = :org_id"), {"org_id": org_id}
+    ).fetchone()
+    if row is None:
+        return None
+    previous = row[0]
+
+    conn.execute(
+        text(
+            "UPDATE orgs SET status = :status, "
+            f"updated_at = {now_canonical_sql(get_dialect(conn))} "
+            "WHERE org_id = :org_id"
+        ),
+        {"org_id": org_id, "status": status},
+    )
+    conn.commit()
+    return previous
