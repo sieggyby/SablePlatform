@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import collections
 import sqlite3
+import sys
 
 import pytest
 from sqlalchemy import bindparam, create_engine, text
@@ -178,7 +179,10 @@ def test_the_offending_row_is_named_by_index(conn):
 
 
 def test_named_sql_with_sequence_rows_is_rejected_like_sqlite3(conn):
-    """An audit called this "sqlite3-valid". It is not. Measured, sqlite3 rejects it too.
+    """An audit called this "sqlite3-valid". Python 3.14 rejects it.
+
+    Python 3.12 and 3.13 insert the row with a ``DeprecationWarning``. Python 3.14 and
+    later raise ``ProgrammingError``. The wrapper rejects the input on every version.
 
     ``ProgrammingError: Binding 1 (':a') is a named parameter, but you supplied a sequence
     which requires nameless (qmark) placeholders.`` Teaching the wrapper to ACCEPT it would
@@ -186,8 +190,13 @@ def test_named_sql_with_sequence_rows_is_rejected_like_sqlite3(conn):
     """
     db = sqlite3.connect(":memory:")
     db.execute("CREATE TABLE t (a INTEGER, b TEXT)")
-    with pytest.raises(sqlite3.ProgrammingError, match="named parameter"):
-        db.executemany("INSERT INTO t (a,b) VALUES (:a,:b)", [(1, "x")])
+    if sys.version_info >= (3, 14):
+        with pytest.raises(sqlite3.ProgrammingError, match="named parameter"):
+            db.executemany("INSERT INTO t (a,b) VALUES (:a,:b)", [(1, "x")])
+    else:
+        with pytest.warns(DeprecationWarning):
+            db.executemany("INSERT INTO t (a,b) VALUES (:a,:b)", [(1, "x")])
+        assert db.execute("SELECT a, b FROM t").fetchall() == [(1, "x")]
 
     with pytest.raises(ValueError, match="no . placeholders but 2 positional parameter"):
         conn.executemany("INSERT INTO t (a, b) VALUES (:a, :b)", [(1, "x")])
