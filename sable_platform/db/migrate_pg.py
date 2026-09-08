@@ -2,7 +2,7 @@
 
 Reads all rows from a SQLite sable.db, creates the Postgres schema via
 Alembic, copies data in FK-safe order, resets sequences, and validates
-row counts.
+row counts and foreign key references.
 
 Usage (via CLI):
     sable-platform migrate to-postgres --target-url postgresql://...
@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import Connection, Engine, text
+from sqlalchemy import Connection, Engine, MetaData, text
 
 log = logging.getLogger(__name__)
 
@@ -449,7 +449,7 @@ def run_migration(
       3. Check target is empty (or ``--force`` to truncate)
       4. Copy all tables in FK-safe order
       5. Reset Postgres sequences for autoincrement tables
-      6. Validate row counts match
+      6. Validate row counts match and probe for orphan FK references
 
     Returns a :class:`MigrationReport`.  Raises :class:`MigrationError` on
     failure (transaction is rolled back, target is unchanged).
@@ -554,6 +554,15 @@ def run_migration(
             report.error = f"Row count mismatch: {details}"
             raise MigrationError(report.error)
 
+        # Copying with FK triggers suspended can admit orphan child rows.
+        # Check before commit so rejection rolls back the copied rows.
+        orphans = _find_orphan_references(conn, TABLE_LOAD_ORDER)
+        if orphans:
+            details = "; ".join(orphans)
+            report.status = "failed"
+            report.error = f"Referential integrity violations: {details}"
+            raise MigrationError(report.error)
+
     report.total_source_rows = sum(r.source_rows for r in report.tables)
     report.total_target_rows = sum(r.target_rows for r in report.tables)
     return report
@@ -653,6 +662,42 @@ def _validate_counts(
             error=f"count mismatch: {src_count} vs {tgt_count}" if status == "error" else None,
         ))
     return results
+
+
+def _find_orphan_references(tgt_conn: Connection, tables: list[str]) -> list[str]:
+    """Find child rows whose foreign key points at no parent row.
+
+    Reflect target constraints and probe each with a LEFT JOIN limited to one hit.
+    A NULL referencing column satisfies MATCH SIMPLE constraints.
+    Separate aliases also support self-references.
+    """
+    reflected = MetaData()
+    reflected.reflect(bind=tgt_conn, only=tables)
+    offenders: list[str] = []
+    for table_name in tables:
+        table = reflected.tables[table_name]
+        for fk in table.foreign_key_constraints:
+            pairs = [(el.parent.name, el.column.name) for el in fk.elements]
+            on_clause = " AND ".join(
+                f'c."{child_col}" = p."{parent_col}"'
+                for child_col, parent_col in pairs
+            )
+            not_null_clause = " AND ".join(
+                f'c."{child_col}" IS NOT NULL' for child_col, _ in pairs
+            )
+            first_parent_col = pairs[0][1]
+            found = tgt_conn.execute(text(
+                f'SELECT 1 FROM "{fk.table.name}" AS c '
+                f'LEFT JOIN "{fk.referred_table.name}" AS p ON {on_clause} '
+                f"WHERE {not_null_clause} "
+                f'AND p."{first_parent_col}" IS NULL LIMIT 1'
+            )).fetchone()
+            if found is not None:
+                child_cols = ", ".join(child_col for child_col, _ in pairs)
+                offenders.append(
+                    f"{fk.table.name}.{child_cols} -> {fk.referred_table.name}"
+                )
+    return offenders
 
 
 def _check_target_empty(engine: Engine, tables: list[str]) -> bool:

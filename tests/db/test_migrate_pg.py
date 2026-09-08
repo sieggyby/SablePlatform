@@ -63,6 +63,23 @@ def target_engine():
     engine.dispose()
 
 
+@pytest.fixture
+def fk_off_engines(tmp_path):
+    """Temporary databases model a dirty source and suspended target FK triggers."""
+    source = create_engine(f"sqlite:///{tmp_path / 'dirty_source.db'}")
+    target = create_engine(f"sqlite:///{tmp_path / 'fk_off_target.db'}")
+    try:
+        for engine in (source, target):
+            metadata.create_all(engine)
+            with engine.connect() as conn:
+                conn.execute(text("PRAGMA foreign_keys=OFF"))
+                assert conn.execute(text("PRAGMA foreign_keys")).scalar() == 0
+        yield source, target
+    finally:
+        source.dispose()
+        target.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -294,6 +311,37 @@ class TestValidationInsideTransaction:
         assert _count_rows(target_engine, "entities") == 0
         assert _count_rows(source_engine, "orgs") == 1
         assert _count_rows(source_engine, "entities") == 1
+
+
+class TestOrphanReferenceDetection:
+    def test_orphan_child_row_fails_migration(self, fk_off_engines):
+        source, target = fk_off_engines
+        org_id = _insert_org(source)
+        valid_entity = _insert_entity(source, org_id)
+        _insert_handle(source, valid_entity)
+        _insert_entity(source, "org_missing", entity_id="orphan_ent")
+
+        with pytest.raises(
+            MigrationError, match="Referential integrity violations"
+        ) as excinfo:
+            run_migration(source, target)
+        assert "entities.org_id -> orgs" in str(excinfo.value)
+
+        assert all(_count_rows(target, table) == 0 for table in TABLE_LOAD_ORDER)
+        assert _count_rows(source, "entities") == 2
+
+    def test_valid_chain_and_null_references_succeed(self, fk_off_engines):
+        source, target = fk_off_engines
+        org_id = _insert_org(source)
+        entity_id = _insert_entity(source, org_id)
+        _insert_handle(source, entity_id)
+        _insert_action(source, org_id)  # Nullable entity and content references.
+
+        report = run_migration(source, target)
+
+        assert report.status == "success"
+        for table in ("orgs", "entities", "entity_handles", "actions"):
+            assert _count_rows(target, table) == 1
 
 
 class TestValidateCountsMismatch:
