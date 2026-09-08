@@ -38,7 +38,7 @@ def _check_column_ref(value: str, kind: str = "column") -> None:
 
 
 def _check_identifier(value: str, kind: str) -> None:
-    if not isinstance(value, str) or not _IDENT_RE.match(value):
+    if not isinstance(value, str) or not _IDENT_RE.fullmatch(value):
         raise ValueError(f"{kind} must be a plain SQL identifier, got {value!r}")
 
 

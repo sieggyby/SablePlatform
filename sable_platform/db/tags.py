@@ -33,15 +33,23 @@ _REPLACE_CURRENT_TAGS: frozenset[str] = frozenset({
 #     '2026-08-27T10:00:00' > '2026-08-27 23:00:00'  ->  true   (text)
 #     the same values as timestamps                  ->  false
 # Compare real timestamps instead, per dialect.
-def active_predicate(dialect: str) -> str:
-    """`is_current` plus a not-yet-expired check that compares TIMESTAMPS, not text."""
-    from sable_platform.db.compat import ts_column
+def active_predicate(dialect: str, alias: str = "") -> str:
+    """Return a current-tag predicate that compares timestamps.
+
+    To qualify columns in a join, pass a plain table alias without a dot.
+    The default leaves columns unqualified for existing callers.
+    """
+    from sable_platform.db.compat import _check_identifier, ts_column
+
+    if alias:
+        _check_identifier(alias, "alias")
+    prefix = f"{alias}." if alias else ""
 
     if dialect == "sqlite":
-        return ("is_current = 1 AND (expires_at IS NULL"
-                " OR julianday(NULLIF(expires_at, '')) > julianday('now'))")
-    return ("is_current = 1 AND (expires_at IS NULL"
-            f" OR {ts_column('expires_at', dialect)} > NOW())")
+        return (f"{prefix}is_current = 1 AND ({prefix}expires_at IS NULL"
+                f" OR julianday(NULLIF({prefix}expires_at, '')) > julianday('now'))")
+    return (f"{prefix}is_current = 1 AND ({prefix}expires_at IS NULL"
+            f" OR {ts_column(f'{prefix}expires_at', dialect)} > NOW())")
 
 
 def _record_tag_history(
@@ -213,8 +221,7 @@ def get_entities_by_tag(
         JOIN entity_tags t ON e.entity_id = t.entity_id
         WHERE e.org_id = :org_id
           AND t.tag = :tag
-          AND {active_predicate(conn.dialect.name).replace('is_current', 't.is_current')
-               .replace('expires_at', 't.expires_at')}
+          AND {active_predicate(conn.dialect.name, 't')}
           AND e.status != 'archived'
         """),
         {"org_id": org_id, "tag": tag},
