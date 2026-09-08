@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from sable_platform.cli.main import cli
@@ -80,6 +81,30 @@ def test_preflight_missing_org(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli, ["workflow", "preflight", "--org", "nonexistent"])
     assert result.exit_code == 1
     assert "not found" in result.output.lower()
+
+
+@pytest.mark.parametrize("status", [None, "paused"], ids=["empty", "paused_only"])
+def test_preflight_no_active_orgs_fails(tmp_path, monkeypatch, status):
+    """An empty active-org result must fail and report that zero orgs were checked."""
+    db_path, conn = _setup_db(tmp_path)
+    if status is not None:
+        conn.execute(
+            "INSERT INTO orgs (org_id, display_name, status) VALUES ('t', 'T', ?)",
+            (status,),
+        )
+        conn.commit()
+    conn.close()
+    monkeypatch.delenv("SABLE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("SABLE_DB_PATH", db_path)
+    for var in ["SABLE_TRACKING_PATH", "SABLE_SLOPPER_PATH",
+                "SABLE_CULT_GRADER_PATH", "SABLE_LEAD_IDENTIFIER_PATH"]:
+        monkeypatch.delenv(var, raising=False)
+
+    result = CliRunner().invoke(cli, ["workflow", "preflight"])
+    assert result.exit_code == 1, result.output
+    assert "no active orgs" in result.output.lower()
+    assert "checked zero orgs" in result.output.lower()
+    assert "OK:" not in result.output
 
 
 def test_preflight_all_orgs(tmp_path, monkeypatch):

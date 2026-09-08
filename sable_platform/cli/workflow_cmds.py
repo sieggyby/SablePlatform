@@ -224,13 +224,20 @@ def workflow_preflight(org_id: str | None) -> None:
 
     conn = get_db()
     try:
+        any_fail = False
+
         if org_id:
             org_ids = [org_id]
         else:
             rows = conn.execute("SELECT org_id FROM orgs WHERE status='active'").fetchall()
             org_ids = [r["org_id"] for r in rows]
+            if not org_ids:
+                any_fail = True
+                click.echo(
+                    "FAIL: suite -- orgs -- "
+                    "no active orgs found; preflight checked zero orgs"
+                )
 
-        any_fail = False
         for oid in org_ids:
             failures: list[str] = []
 
