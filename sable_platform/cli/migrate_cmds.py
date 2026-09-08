@@ -28,7 +28,11 @@ def migrate() -> None:
     "--force",
     is_flag=True,
     default=False,
-    help="Truncate target tables before migration.",
+    help=(
+        "Truncate target tables before migration. On failure, the entire migration "
+        "transaction rolls back and the target is left unchanged. "
+        "It is empty only if it was empty before the transaction."
+    ),
 )
 @click.option(
     "--skip-backup",
