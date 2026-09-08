@@ -21,7 +21,7 @@ def cron() -> None:
 @click.option("--extra-args", default="", help="Additional CLI args after --org")
 def add(org: str, workflow: str | None, schedule: str | None, preset_name: str | None, extra_args: str) -> None:
     """Add a scheduled workflow run to crontab."""
-    from sable_platform.cron import add_entry, add_preset, SCHEDULE_PRESETS
+    from sable_platform.cron import CrontabReadError, add_entry, add_preset, SCHEDULE_PRESETS
 
     if preset_name:
         if workflow or schedule:
@@ -30,7 +30,7 @@ def add(org: str, workflow: str | None, schedule: str | None, preset_name: str |
         try:
             entry = add_preset(preset_name, org)
             click.echo(f"Added preset '{preset_name}': {entry.to_line()}")
-        except (ValueError, FileNotFoundError) as e:
+        except (ValueError, FileNotFoundError, CrontabReadError) as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
         return
@@ -44,7 +44,7 @@ def add(org: str, workflow: str | None, schedule: str | None, preset_name: str |
         click.echo(f"Added: {entry.to_line()}")
         if schedule in SCHEDULE_PRESETS:
             click.echo(f"  (preset '{schedule}' → {SCHEDULE_PRESETS[schedule]})")
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError, CrontabReadError) as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -52,9 +52,13 @@ def add(org: str, workflow: str | None, schedule: str | None, preset_name: str |
 @cron.command("list")
 def list_cmd() -> None:
     """List all sable-platform cron entries."""
-    from sable_platform.cron import list_entries
+    from sable_platform.cron import CrontabReadError, list_entries
 
-    entries = list_entries()
+    try:
+        entries = list_entries()
+    except CrontabReadError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     if not entries:
         click.echo("No sable-platform cron entries found.")
         return
@@ -68,9 +72,14 @@ def list_cmd() -> None:
 @click.option("--workflow", required=True, help="Workflow name")
 def remove(org: str, workflow: str) -> None:
     """Remove a scheduled workflow run from crontab."""
-    from sable_platform.cron import remove_entry
+    from sable_platform.cron import CrontabReadError, remove_entry
 
-    if remove_entry(org, workflow):
+    try:
+        removed = remove_entry(org, workflow)
+    except CrontabReadError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if removed:
         click.echo(f"Removed cron entry for {org}:{workflow}")
     else:
         click.echo(f"No cron entry found for {org}:{workflow}", err=True)

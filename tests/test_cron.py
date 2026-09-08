@@ -1,6 +1,7 @@
 """Tests for sable_platform.cron module."""
 from __future__ import annotations
 
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
@@ -8,10 +9,12 @@ import pytest
 from sable_platform.cron import (
     CronEntry,
     add_entry,
+    add_preset,
     list_entries,
     remove_entry,
     SCHEDULE_PRESETS,
     _MARKER,
+    _read_crontab,
     _validate_identifier,
 )
 
@@ -278,6 +281,172 @@ class TestRemoveEntry:
     def test_rejects_injection_in_remove(self):
         with pytest.raises(ValueError, match="alphanumeric"):
             remove_entry("tig; evil", "weekly_client_loop")
+
+
+# ---------------------------------------------------------------------------
+# crontab read failures
+# ---------------------------------------------------------------------------
+
+class TestCrontabReadError:
+    @pytest.mark.parametrize("stream", ["stdout", "stderr", "both"])
+    @pytest.mark.parametrize("operation,args", [
+        ("list", ["list"]),
+        ("add", ["add", "--org", "test_org", "--workflow", "weekly_client_loop", "--schedule", "daily"]),
+        ("preset", ["add", "--org", "test_org", "--preset", "backup"]),
+        ("remove", ["remove", "--org", "test_org", "--workflow", "backup"]),
+    ])
+    def test_failed_read_omits_credentials_without_write(self, stream, operation, args):
+        """Failed reads keep credential-bearing output out of exceptions and CLI errors."""
+        from click.testing import CliRunner
+        from sable_platform.cli.cron_cmds import cron
+
+        credentials = ("fake-bot-credential", "fake-health-credential")
+        partial = (
+            f"SABLE_TELEGRAM_BOT_TOKEN={credentials[0]}\n"
+            f"SABLE_HEALTH_TOKEN={credentials[1]}\n"
+            "0 * * * * /usr/bin/other-tool\n"
+        )
+        fake = CompletedProcess(
+            ["crontab", "-l"], -9,
+            partial if stream in ("stdout", "both") else "",
+            partial if stream in ("stderr", "both") else "",
+        )
+        operations = {
+            "list": list_entries,
+            "add": lambda: add_entry("test_org", "weekly_client_loop", "daily"),
+            "preset": lambda: add_preset("backup", "test_org"),
+            "remove": lambda: remove_entry("test_org", "backup"),
+        }
+        with patch("sable_platform.cron.subprocess.run", return_value=fake) as run, \
+             patch("sable_platform.cron._write_crontab") as write, \
+             patch("sable_platform.cron._find_cli_binary", return_value="/usr/bin/sable-platform"):
+            with pytest.raises(RuntimeError, match="cannot read crontab") as exc:
+                operations[operation]()
+            assert type(exc.value).__name__ == "CrontabReadError"
+            for credential in credentials:
+                assert credential not in str(exc.value)
+            assert str(exc.value) == "cannot read crontab (exit -9)"
+            result = CliRunner().invoke(cron, args)
+            assert result.exit_code == 1
+            for credential in credentials:
+                assert credential not in result.output
+            assert result.output == "Error: cannot read crontab (exit -9)\n"
+            write.assert_not_called()
+            assert run.call_count == 2
+            for call in run.call_args_list:
+                assert call.args == (["crontab", "-l"],)
+                assert call.kwargs == {"capture_output": True, "text": True}
+
+    @pytest.mark.parametrize("operation", ["list", "add", "preset", "remove"])
+    @pytest.mark.parametrize("returncode,stdout,stderr", [
+        pytest.param(
+            2,
+            "# no crontab for retired_user\n0 * * * * /usr/bin/other-tool\n",
+            "crontab: spool read error",
+            id="verifier-partial-output",
+        ),
+        pytest.param(
+            1, "no crontab for test_user\n", "crontab: spool read error",
+            id="absence-stdout-with-error",
+        ),
+        pytest.param(
+            1, "0 * * * * /usr/bin/other-tool\n", "crontab: no crontab for test_user\n",
+            id="absence-stderr-with-partial-output",
+        ),
+        pytest.param(
+            1, "", "crontab: no crontab for test_user\ncrontab: spool read error\n",
+            id="mixed-stderr",
+        ),
+        pytest.param(
+            1, "# no crontab for retired_user\n", "",
+            id="comment-only",
+        ),
+        pytest.param(
+            2, "", "crontab: no crontab for test_user\n",
+            id="unexpected-exit-status",
+        ),
+    ])
+    def test_partial_or_mixed_absence_diagnostic_raises_without_write(
+        self, operation, returncode, stdout, stderr,
+    ):
+        """Absence text must not override read errors or partial crontab content."""
+        fake = CompletedProcess(["crontab", "-l"], returncode, stdout, stderr)
+        operations = {
+            "list": list_entries,
+            "add": lambda: add_entry("test_org", "weekly_client_loop", "daily"),
+            "preset": lambda: add_preset("backup", "test_org"),
+            "remove": lambda: remove_entry("test_org", "backup"),
+        }
+        with patch("sable_platform.cron.subprocess.run", return_value=fake) as run, \
+             patch("sable_platform.cron._write_crontab") as write, \
+             patch("sable_platform.cron._find_cli_binary", return_value="/usr/bin/sable-platform"):
+            with pytest.raises(RuntimeError, match="cannot read crontab") as exc:
+                operations[operation]()
+            assert type(exc.value).__name__ == "CrontabReadError"
+            write.assert_not_called()
+            run.assert_called_once_with(["crontab", "-l"], capture_output=True, text=True)
+
+    @pytest.mark.parametrize("operation", ["list", "add", "preset", "remove"])
+    @pytest.mark.parametrize("returncode,stdout,stderr", [
+        (1, "", "crontab: permission denied"),
+        (2, "crontab: spool unavailable", ""),
+        (1, "", ""),
+    ])
+    def test_read_failure_raises_without_write(self, operation, returncode, stdout, stderr):
+        """Failed reads abort every public operation before any write."""
+        fake = CompletedProcess(["crontab", "-l"], returncode, stdout, stderr)
+        operations = {
+            "list": list_entries,
+            "add": lambda: add_entry("test_org", "weekly_client_loop", "daily"),
+            "preset": lambda: add_preset("backup", "test_org"),
+            "remove": lambda: remove_entry("test_org", "backup"),
+        }
+        with patch("sable_platform.cron.subprocess.run", return_value=fake) as run, \
+             patch("sable_platform.cron._write_crontab") as write, \
+             patch("sable_platform.cron._find_cli_binary", return_value="/usr/bin/sable-platform"):
+            with pytest.raises(RuntimeError, match="cannot read crontab") as exc:
+                operations[operation]()
+            assert type(exc.value).__name__ == "CrontabReadError"
+            assert str(returncode) in str(exc.value)
+            assert str(exc.value) == f"cannot read crontab (exit {returncode})"
+            write.assert_not_called()
+            run.assert_called_once_with(["crontab", "-l"], capture_output=True, text=True)
+
+    @pytest.mark.parametrize("args", [
+        ["list"],
+        ["add", "--org", "test_org", "--workflow", "weekly_client_loop", "--schedule", "daily"],
+        ["add", "--org", "test_org", "--preset", "backup"],
+        ["remove", "--org", "test_org", "--workflow", "backup"],
+    ])
+    def test_cli_reports_read_failure_without_write(self, args):
+        """CLI read failures report the exit status and exit unsuccessfully."""
+        from click.testing import CliRunner
+        from sable_platform.cli.cron_cmds import cron
+
+        fake = CompletedProcess(["crontab", "-l"], 1, "", "crontab: permission denied")
+        with patch("sable_platform.cron.subprocess.run", return_value=fake), \
+             patch("sable_platform.cron._write_crontab") as write, \
+             patch("sable_platform.cron._find_cli_binary", return_value="/usr/bin/sable-platform"):
+            result = CliRunner().invoke(cron, args)
+        assert result.exit_code == 1
+        assert result.output == "Error: cannot read crontab (exit 1)\n"
+        write.assert_not_called()
+
+    @pytest.mark.parametrize("stdout,stderr", [
+        ("", "crontab: no crontab for test_user"),
+        ("no crontab for test_user", ""),
+    ])
+    def test_no_crontab_message_still_returns_empty(self, stdout, stderr):
+        """An absent crontab still permits first installation."""
+        fake = CompletedProcess(["crontab", "-l"], 1, stdout, stderr)
+        with patch("sable_platform.cron.subprocess.run", return_value=fake):
+            assert _read_crontab() == ""
+
+    def test_successful_read_preserves_content(self):
+        content = "MAILTO=test@example.invalid\n0 * * * * /usr/bin/other-tool\n"
+        fake = CompletedProcess(["crontab", "-l"], 0, content, "")
+        with patch("sable_platform.cron.subprocess.run", return_value=fake):
+            assert _read_crontab() == content
 
 
 # ---------------------------------------------------------------------------

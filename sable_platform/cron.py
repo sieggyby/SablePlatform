@@ -41,6 +41,7 @@ class WorkflowPreset:
     workflow: str
     description: str
     command_template: str  # {cli_bin} placeholder replaced at install time
+    org_scoped: bool = True   # False when command_template ignores {org}
 
 
 # Bundled presets — `sable-platform cron add --preset <name> --org <org>` installs these.
@@ -50,18 +51,21 @@ WORKFLOW_PRESETS: dict[str, WorkflowPreset] = {
         workflow="backup",
         description="Daily SQLite backup at 03:00 UTC",
         command_template="{cli_bin} backup",
+        org_scoped=False,
     ),
     "alert_check": WorkflowPreset(
         schedule="0 */4 * * *",  # every 4 hours
         workflow="alert_check",
         description="Evaluate alerts every 4 hours",
         command_template="{cli_bin} alerts evaluate",
+        org_scoped=False,
     ),
     "gc": WorkflowPreset(
         schedule="0 4 * * 0",  # Sunday 04:00 UTC
         workflow="gc",
         description="Weekly data retention GC on Sundays at 04:00 UTC",
         command_template="{cli_bin} gc",
+        org_scoped=False,
     ),
     "lead_discovery": WorkflowPreset(
         schedule="0 22 * * 1",  # Monday 22:00 UTC
@@ -105,14 +109,25 @@ def _find_cli_binary() -> str:
     )
 
 
+class CrontabReadError(RuntimeError):
+    """`crontab -l` failed for a reason other than 'no crontab for user'."""
+
+
+_NO_CRONTAB_RE = re.compile(r"(?:crontab: )?no crontab for \S+", re.IGNORECASE)
+
+
 def _read_crontab() -> str:
-    """Read current user crontab.  Returns empty string if none exists."""
-    result = subprocess.run(
-        ["crontab", "-l"], capture_output=True, text=True
-    )
+    """Read current user crontab. Returns '' only when the user has none."""
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
     if result.returncode != 0:
-        # "no crontab for user" is not an error for our purposes.
-        return ""
+        # Accept only a complete absence diagnostic, without errors or partial content.
+        combined = "\n".join(
+            stream.strip() for stream in (result.stderr, result.stdout) if stream.strip()
+        )
+        if result.returncode == 1 and _NO_CRONTAB_RE.fullmatch(combined):
+            return ""
+        # Either stream can contain credentials from partial crontab content.
+        raise CrontabReadError(f"cannot read crontab (exit {result.returncode})")
     return result.stdout
 
 
@@ -218,7 +233,8 @@ def add_preset(preset_name: str, org: str) -> CronEntry:
 
     Args:
         preset_name: Key in ``WORKFLOW_PRESETS``.
-        org: Org ID (used for the cron marker; some presets ignore it in the command).
+        org: Org ID (validated always; used as the cron marker for org-scoped
+            presets, non-org-scoped presets are stamped with marker org ``global``).
 
     Returns:
         The created CronEntry.
@@ -233,17 +249,23 @@ def add_preset(preset_name: str, org: str) -> CronEntry:
     _validate_identifier(org, "org")
 
     wp = WORKFLOW_PRESETS[preset_name]
+
+    marker_org = org if wp.org_scoped else "global"
+
     cli_bin = _find_cli_binary()
     command = wp.command_template.format(cli_bin=shlex.quote(cli_bin), org=shlex.quote(org))
 
     current = _read_crontab()
     for existing in _parse_entries(current):
-        if existing.org == org and existing.workflow == wp.workflow:
+        if ((existing.org == marker_org and existing.workflow == wp.workflow)
+                or existing.command == command):
             raise ValueError(
-                f"Entry already exists for {org}:{wp.workflow} — remove it first"
+                f"Entry already exists for {existing.org}:{existing.workflow} "
+                f"(runs the same command), remove it first"
             )
 
-    entry = CronEntry(schedule=wp.schedule, command=command, org=org, workflow=wp.workflow)
+    entry = CronEntry(schedule=wp.schedule, command=command,
+                      org=marker_org, workflow=wp.workflow)
 
     if current and not current.endswith("\n"):
         current += "\n"
