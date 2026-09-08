@@ -65,7 +65,7 @@ class PollResult:
 
     org_id: str
     skipped_over_cap: bool  # True iff the proactive daily cap skipped this org
-    polled: bool  # True iff a SocialData timeline fetch happened
+    polled: bool  # True iff a SocialData timeline HTTP attempt happened
     new_tweets: int = 0
     jobs_enqueued: int = 0
     error: str | None = None
@@ -120,6 +120,7 @@ def poll_org(
     since_id = org_row.get("last_seen_x_id")
 
     # --- 3. External fetch (OUTSIDE any txn) ---
+    calls_before = client.http_call_count
     try:
         tweets = client.fetch_timeline(org_id, source_x_id, since_id=since_id)
     except SocialDataBudgetExhausted as exc:
@@ -142,17 +143,24 @@ def poll_org(
         with immediate_txn(conn):
             relay_db.update_poll_cursor(conn, org_id, last_error="socialdata 402 (balance exhausted)")
         return PollResult(
-            org_id=org_id, skipped_over_cap=False, polled=True,
+            org_id=org_id, skipped_over_cap=False,
+            polled=client.http_call_count > calls_before,
             error="socialdata_402",
         )
     except SocialDataRateLimited:
         with immediate_txn(conn):
             relay_db.update_poll_cursor(conn, org_id, last_error="socialdata 429 (rate limited)")
-        return PollResult(org_id=org_id, skipped_over_cap=False, polled=True, error="socialdata_429")
+        return PollResult(
+            org_id=org_id, skipped_over_cap=False,
+            polled=client.http_call_count > calls_before, error="socialdata_429",
+        )
     except SocialDataError as exc:
         with immediate_txn(conn):
             relay_db.update_poll_cursor(conn, org_id, last_error=f"socialdata error: {exc}")
-        return PollResult(org_id=org_id, skipped_over_cap=False, polled=True, error=str(exc))
+        return PollResult(
+            org_id=org_id, skipped_over_cap=False,
+            polled=client.http_call_count > calls_before, error=str(exc),
+        )
 
     # --- 4. Hydrate/upsert + enqueue (DB only, inside one txn) ---
     bindings = relay_db.list_active_destination_bindings(conn, org_id)
@@ -207,7 +215,7 @@ def poll_org(
     return PollResult(
         org_id=org_id,
         skipped_over_cap=False,
-        polled=True,
+        polled=client.http_call_count > calls_before,
         new_tweets=new_tweets,
         jobs_enqueued=jobs_enqueued,
     )
@@ -302,7 +310,9 @@ def track_reply_followups(
 
         conversation_x_id = notif["conversation_x_id"]
         try:
-            replies = client.fetch_conversation_replies(org_id, str(conversation_x_id))
+            replies = client.fetch_conversation_replies(
+                org_id, str(conversation_x_id), fresh=True
+            )
         except SocialDataBudgetExhausted as exc:
             if exc.gate == "daily_cap":
                 result.skipped_over_cap = True

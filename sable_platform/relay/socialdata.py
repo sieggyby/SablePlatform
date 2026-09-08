@@ -226,12 +226,15 @@ class SocialDataClient:
         tweet_id: str,
         *,
         since_id: str | None = None,
+        fresh: bool = False,
         on_unknown: Literal["block", "allow"] = "block",
     ) -> list[dict]:
         """Fetch replies in a tweet's conversation (Flow D reply-tracking, §4.6).
 
         Uses ``conversation_id:{tweet_id}`` search (best-practices §5). Same
         since_id cursor-dedupe semantics as :meth:`fetch_timeline`.
+        With ``fresh=True``, bypass the page cache read and replace the stored
+        page after fetching. Reply tracking uses this to detect later replies.
         """
         return self._fetch_tweet_list(
             org_id,
@@ -240,6 +243,7 @@ class SocialDataClient:
             path="/twitter/search",
             params={"query": f"conversation_id:{tweet_id}"},
             since_id=since_id,
+            fresh=fresh,
             on_unknown=on_unknown,
         )
 
@@ -295,6 +299,7 @@ class SocialDataClient:
         params: Mapping[str, Any],
         since_id: str | None,
         on_unknown: Literal["block", "allow"],
+        fresh: bool = False,
     ) -> list[dict]:
         # since_id cursor dedupe (best-practices §10): if we have already seen a
         # since_id >= the requested cursor for this (org, kind), the provider has
@@ -318,7 +323,7 @@ class SocialDataClient:
         # Cache-aware path (best-practices §9 / anti-pattern #6): a repeat of the
         # exact (path, params, since_id) tuple returns the cached page with no call.
         cache_key = _cache_key_for(path, params, since_id)
-        cached = self._cache_get(cache_key)
+        cached = _CACHE_MISS if fresh else self._cache_get(cache_key)
         if cached is not _CACHE_MISS:
             return list(cached)
 

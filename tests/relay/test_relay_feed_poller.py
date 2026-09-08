@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 
+import pytest
 from sqlalchemy import text
 
 from sable_platform import socialdata_balance
@@ -251,6 +252,37 @@ def test_flow_a_no_source_id_skips_poll(sa_conn):
     assert len(http.calls) == 0
 
 
+@pytest.mark.parametrize("tweet_ids", [[], ["701"]], ids=["page_cache", "cursor_dedupe"])
+def test_poll_org_reports_no_attempt_on_cached_or_cursor_pass(sa_conn, tweet_ids):
+    _seed_org(sa_conn, "orgrepeat", source_x_id="55")
+    sa_conn.commit()
+    http = FakeHttp(lambda *_: _timeline_resp(tweet_ids))
+    client = _client(sa_conn, http)
+
+    [first] = poller.poll_all_enabled(sa_conn, client)
+    [second] = poller.poll_all_enabled(sa_conn, client)
+
+    assert len(http.calls) == client.http_call_count == 1
+    assert first.polled is True
+    assert second.polled is False
+    assert second.error is None
+
+
+def test_poll_org_reports_first_402_attempt_but_not_latched_skip(sa_conn):
+    _seed_org(sa_conn, "orglatch", source_x_id="55")
+    sa_conn.commit()
+    http = FakeHttp(lambda *_: sd.HttpResponse(status_code=402))
+    client = _client(sa_conn, http)
+
+    [first] = poller.poll_all_enabled(sa_conn, client)
+    [second] = poller.poll_all_enabled(sa_conn, client)
+
+    assert len(http.calls) == client.http_call_count == 1
+    assert first.polled is True
+    assert first.error == second.error == "socialdata_402"
+    assert second.polled is False
+
+
 # ==========================================================================
 # Flow D 4.6 — reply follow-through tracking
 # ==========================================================================
@@ -345,6 +377,47 @@ def test_reply_tracking_no_match_leaves_notification_open(sa_conn):
         {"id": notif_id},
     ).fetchone()
     assert row[0] is None  # still open
+
+
+@pytest.mark.parametrize("initial_ids", [[], ["6000"]], ids=["empty_page", "unmatched_page"])
+def test_reply_tracking_refreshes_page_to_find_later_reply(sa_conn, initial_ids):
+    _seed_org(sa_conn, "orgrefresh", source_x_id="55")
+    notif_id, _ = _seed_reply_opportunity(
+        sa_conn, "orgrefresh", source_x_id="2002", member_x_user_id="987"
+    )
+    sa_conn.commit()
+    replies = [_tweet(t, author_id="222") for t in initial_ids]
+    http = FakeHttp(
+        lambda *_: sd.HttpResponse(status_code=200, json_body={"tweets": list(replies)})
+    )
+    client = _client(sa_conn, http)
+
+    first = poller.track_reply_followups(sa_conn, client, "orgrefresh")
+    assert first.followthroughs_recorded == 0
+    assert first.calls_made == 1
+    replies.append(_tweet("6001", author_id="987"))
+    second = poller.track_reply_followups(sa_conn, client, "orgrefresh")
+
+    assert second.followthroughs_recorded == 1
+    assert second.matched_notification_ids == [notif_id]
+    assert second.calls_made == 1
+    assert len(http.calls) == client.http_call_count == 2
+    assert http.calls == [("/twitter/search", {"query": "conversation_id:2002"})] * 2
+    row = sa_conn.execute(
+        text("SELECT replied_at, replied_tweet_id FROM relay_reply_notifications WHERE id = :id"),
+        {"id": notif_id},
+    ).fetchone()
+    assert row[0] is not None
+    assert row[1] == "6001"
+    costs = sa_conn.execute(
+        text("SELECT credits, credit_rate_usd, cost_usd FROM cost_events "
+             "WHERE org_id = 'orgrefresh' AND call_type = :ct ORDER BY event_id"),
+        {"ct": sd.CALL_TYPE_REPLIES},
+    ).fetchall()
+    assert [tuple(row) for row in costs] == [
+        (len(initial_ids), 0.0002, len(initial_ids) * 0.0002),
+        (len(replies), 0.0002, len(replies) * 0.0002),
+    ]
 
 
 def test_reply_tracking_honors_per_opportunity_call_cap(sa_conn):
