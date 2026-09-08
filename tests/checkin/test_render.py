@@ -1,6 +1,8 @@
 """Tests for sable_platform.checkin.render — deterministic, no LLM."""
 from __future__ import annotations
 
+import pytest
+
 from sable_platform.checkin.collector import CheckinInputs
 from sable_platform.checkin.deltas import compute_deltas
 from sable_platform.checkin.render import render_data_sections
@@ -101,3 +103,23 @@ def test_actions_table_handles_empty():
     deltas = compute_deltas(inputs.tier1, inputs.tier2, inputs.previous_metrics)
     table = render_data_sections(inputs, deltas)["tier3_table"]
     assert "No actions logged this week" in table
+
+
+@pytest.mark.parametrize("cult_stale,pulse_stale", [(True, True), (True, False), (False, True), (False, False)])
+def test_header_labels_each_source_freshness(cult_stale, pulse_stale):
+    inputs = _inputs(cult_grader_meta={
+        "run_id": "r-abc",
+        "run_date": "2026-04-01" if cult_stale else "2026-04-30",
+        "discord_pulse_date": "2026-04-10" if pulse_stale else "2026-04-30",
+        "cult_grader_stale": cult_stale,
+        "discord_pulse_stale": pulse_stale,
+    })
+    deltas = compute_deltas(inputs.tier1, inputs.tier2, inputs.previous_metrics)
+    lines = render_data_sections(inputs, deltas)["header"].splitlines()
+    cult_line = next(line for line in lines if "Cult Grader run:" in line)
+    pulse_lines = [line for line in lines if "Discord pulse:" in line]
+    assert pulse_lines, "Header must identify the Discord pulse source date"
+    assert inputs.cult_grader_meta["run_date"] in cult_line
+    assert inputs.cult_grader_meta["discord_pulse_date"] in pulse_lines[0]
+    assert ("STALE, more than 7 days old" in cult_line) is cult_stale
+    assert ("STALE, more than 7 days old" in pulse_lines[0]) is pulse_stale

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +83,19 @@ def _read_json(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+STALE_AFTER_DAYS = 7
+
+
+def _week_cutoff(run_date: str) -> str:
+    return (date.fromisoformat(run_date) - timedelta(days=STALE_AFTER_DAYS)).isoformat()
+
+
+def _is_stale(input_date: str | None, run_date: str) -> bool:
+    if not input_date:
+        return False
+    return input_date[:10] < _week_cutoff(run_date)
 
 
 def extract_tier1_tier2(
@@ -223,6 +237,10 @@ def collect_inputs(
             "run_date": run_meta.get("run_date"),
             "checkpoint_path": str(run_dir),
             "discord_pulse_date": discord_pulse.get("run_date") if discord_pulse else None,
+            "cult_grader_stale": _is_stale(run_meta.get("run_date"), run_date),
+            "discord_pulse_stale": _is_stale(
+                discord_pulse.get("run_date") if discord_pulse else None, run_date
+            ),
         }
 
     prev = snapshot_store.get_latest_snapshot(conn, org_id, before_date=run_date)
@@ -231,7 +249,8 @@ def collect_inputs(
         inputs.previous_snapshot_date = prev.get("snapshot_date")
 
     inputs.actions_this_week = collect_actions_this_week(
-        conn, org_id, since=inputs.previous_snapshot_date
+        conn, org_id,
+        since=inputs.previous_snapshot_date or _week_cutoff(run_date),
     )
     inputs.strategy_brief_path = latest_strategy_brief_path(conn, org_id)
 

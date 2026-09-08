@@ -17,6 +17,7 @@ from sable_platform.checkin.synthesize import (
     DEFAULT_MODEL,
     SYSTEM_PROMPT,
     SynthesisResult,
+    _build_user_prompt,
     _compute_cost_usd,
     _split_sections,
     synthesize,
@@ -198,3 +199,26 @@ def test_synthesize_no_api_key_raises_invalid_config(monkeypatch):
     with pytest.raises(SableError) as exc:
         synthesize(inputs, deltas, sections)  # no client → tries to build one
     assert exc.value.code == INVALID_CONFIG
+
+
+@pytest.mark.parametrize("cult_stale,pulse_stale", [(True, True), (True, False), (False, True)])
+def test_build_user_prompt_qualifies_only_stale_sources(cult_stale, pulse_stale):
+    inputs = _inputs()
+    inputs.cult_grader_meta.update({
+        "run_date": "2026-04-01",
+        "discord_pulse_date": "2026-04-10",
+        "cult_grader_stale": cult_stale,
+        "discord_pulse_stale": pulse_stale,
+    })
+    deltas = compute_deltas(inputs.tier1, inputs.tier2, inputs.previous_metrics)
+    # Neutral sections prove the qualification comes from the prompt builder.
+    sections = {key: "" for key in ("header", "tier1_table", "tier2_table", "tier3_table")}
+    prompt = _build_user_prompt(inputs, deltas, sections)
+    assert "Do not present those values as current-week." in prompt
+    assert ("Cult Grader data (dated 2026-04-01)" in prompt) is cult_stale
+    assert ("Discord pulse data (dated 2026-04-10)" in prompt) is pulse_stale
+
+    inputs.cult_grader_meta.update(cult_grader_stale=False, discord_pulse_stale=False)
+    fresh_prompt = _build_user_prompt(inputs, deltas, sections)
+    assert "NOTE:" not in fresh_prompt
+    assert "Do not present those values as current-week." not in fresh_prompt

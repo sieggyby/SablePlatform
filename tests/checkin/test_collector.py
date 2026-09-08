@@ -250,3 +250,78 @@ def test_as_metrics_payload_serializable():
     assert payload["cult_grader_run_id"] == "r1"
     # JSON-serializable round-trip
     json.dumps(payload)
+
+
+def test_collect_inputs_action_window_uses_run_date_then_baseline(org_db, tmp_path):
+    conn, org_id = org_db
+    for title, created_at in (
+        ("Old", "2026-04-01T12:00:00Z"),
+        ("Before week", "2026-04-23T23:59:59Z"),
+        ("Week boundary", "2026-04-24T00:00:00Z"),
+        ("Recent", "2026-04-30T12:00:00Z"),
+    ):
+        action_id = create_action(conn, org_id, title)
+        conn.execute(
+            "UPDATE actions SET created_at=? WHERE action_id=?",
+            (created_at, action_id),
+        )
+    conn.commit()
+
+    def collect_titles():
+        inputs = collect_inputs(
+            conn, org_id, run_date="2026-05-01",
+            cult_grader_repo=tmp_path, project_slug="missing_slug",
+        )
+        return {a["title"] for a in inputs.actions_this_week}
+
+    assert collect_titles() == {"Week boundary", "Recent"}
+    # An older baseline extends the window beyond seven days.
+    snapshot_store.upsert_metric_snapshot(conn, org_id, "2026-04-15", {}, source="pipeline")
+    conn.commit()
+    assert collect_titles() == {"Before week", "Week boundary", "Recent"}
+    # A newer baseline narrows it.
+    snapshot_store.upsert_metric_snapshot(conn, org_id, "2026-04-28", {}, source="pipeline")
+    conn.commit()
+    assert collect_titles() == {"Recent"}
+
+
+@pytest.mark.parametrize(
+    "cult_date,pulse_date,expected_flags",
+    [
+        ("2026-04-01", "2026-04-10", (True, True)),
+        ("2026-04-23T23:59:59Z", "2026-04-30", (True, False)),
+        ("2026-04-30", "2026-04-23", (False, True)),
+        ("2026-04-30", "2026-04-30", (False, False)),
+        ("2026-04-24T00:00:00Z", "2026-04-24", (False, False)),
+        (None, None, (False, False)),
+    ],
+)
+def test_collect_inputs_source_freshness(
+    org_db, tmp_path, cult_date, pulse_date, expected_flags,
+):
+    conn, org_id = org_db
+    run_dir = _seed_cult_grader_run(tmp_path)
+    (run_dir / "run_meta.json").write_text(json.dumps({
+        "run_id": "run_abc", "run_date": cult_date,
+    }))
+    if pulse_date:
+        conn.execute(
+            """INSERT INTO discord_pulse_runs
+               (org_id, project_slug, run_date, weekly_active_posters, retention_delta)
+               VALUES (?, ?, ?, 47, 0.12)""",
+            (org_id, "the-innovation-game_tigfoundation", pulse_date),
+        )
+        conn.commit()
+
+    inputs = collect_inputs(
+        conn, org_id, run_date="2026-05-01", cult_grader_repo=tmp_path,
+        project_slug="the-innovation-game_tigfoundation",
+    )
+    assert (
+        inputs.cult_grader_meta.get("cult_grader_stale"),
+        inputs.cult_grader_meta.get("discord_pulse_stale"),
+    ) == expected_flags
+    # Stale values remain available for comparison and snapshot persistence.
+    assert inputs.tier1["tig_followers"] == 8538
+    assert inputs.tier1["discord_active_posters_weekly"] == (47 if pulse_date else None)
+    assert inputs.as_metrics_payload()["cult_grader_run_date"] == cult_date

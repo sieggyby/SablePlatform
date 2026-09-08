@@ -108,9 +108,12 @@ def render_data_sections(inputs: CheckinInputs, deltas: DeltaReport) -> dict[str
       - header     : run-date / cult_grader-run-id stamp
     """
     cg = inputs.cult_grader_meta
+    cg_stale = " (STALE, more than 7 days old)" if cg.get("cult_grader_stale") else ""
+    pulse_stale = " (STALE, more than 7 days old)" if cg.get("discord_pulse_stale") else ""
     header_lines = [
         f"**Check-in date:** {inputs.run_date}",
-        f"**Cult Grader run:** `{cg.get('run_id') or 'n/a'}` ({cg.get('run_date') or 'n/a'})",
+        f"**Cult Grader run:** `{cg.get('run_id') or 'n/a'}` ({cg.get('run_date') or 'n/a'}){cg_stale}",
+        f"**Discord pulse:** ({cg.get('discord_pulse_date') or 'n/a'}){pulse_stale}",
     ]
     if inputs.previous_snapshot_date:
         header_lines.append(f"**Last week's baseline:** {inputs.previous_snapshot_date}")

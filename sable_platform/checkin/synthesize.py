@@ -83,11 +83,26 @@ def _build_user_prompt(
         for a in inputs.actions_this_week
     ) or "_none_"
 
+    cg = inputs.cult_grader_meta
+    stale_parts = []
+    if cg.get("cult_grader_stale"):
+        stale_parts.append(f"the Cult Grader data (dated {cg.get('run_date') or 'n/a'})")
+    if cg.get("discord_pulse_stale"):
+        stale_parts.append(
+            f"the Discord pulse data (dated {cg.get('discord_pulse_date') or 'n/a'})"
+        )
+    stale_note = ""
+    if stale_parts:
+        stale_note = (
+            "\nNOTE: " + " and ".join(stale_parts)
+            + " are more than 7 days old. Do not present those values as current-week."
+        )
+
     return f"""Org: {inputs.org_id}
 Run date: {inputs.run_date}
 Last baseline: {inputs.previous_snapshot_date or "none — first check-in"}
 
-{data_sections["header"]}
+{data_sections["header"]}{stale_note}
 
 {data_sections["tier1_table"]}
 
