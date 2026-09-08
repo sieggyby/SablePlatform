@@ -277,16 +277,25 @@ def org_graduate(prospect_project_id: str) -> None:
 @click.argument("org_id")
 @click.argument("status", type=click.Choice(list(ORG_STATUSES)))
 def org_set_status(org_id: str, status: str) -> None:
-    """Set an org's status. 'inactive' removes it from every --all sweep.
+    """Set an org's status. 'inactive' removes it from the PLATFORM --all sweep.
 
     ORG_ID is the exact stored id, case-sensitively. STATUS is active or inactive.
 
     Until this command existed there was NO supported way to change an org's status.
     ``org create --status`` was the only writer, and only at creation time. ``org reject``
     and ``org graduate`` stamp ``prospect_scores`` rows and never touch ``orgs.status``.
+    That gap is real and this command closes it.
 
-    That gap is why ``sable-weekly`` failed on every run: ``weekly run --all`` selects
-    ``WHERE status='active'``, and six orgs that should have left that set could not.
+    READ THIS BEFORE YOU REACH FOR THIS COMMAND TO STOP A SCHEDULED JOB. It affects
+    ``sable_platform.cli.workflow_cmds`` only, which selects ``WHERE status='active'``.
+    It does NOT affect the ``sable-weekly`` systemd unit. That unit runs the SLOPPER
+    CLI, whose ``discover_orgs`` reads ``roster.yaml`` from disk and never consults
+    ``orgs.status``. I originally justified this command by that unit and I was wrong.
+
+    STATUS VOCABULARY IS NARROWER HERE THAN IN THE DATABASE. ``ORG_STATUSES`` holds
+    two values, inherited from ``org create`` in ``a5b7d8c``. Production ``orgs.status``
+    also holds ``trial`` and ``archived``, so this command cannot restore an org to the
+    status it had. Widen the tuple before you use it on a ``trial`` or ``archived`` row.
     """
     from sable_platform.db.audit import log_audit
 
