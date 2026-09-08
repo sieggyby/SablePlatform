@@ -785,10 +785,8 @@ def test_get_deck_duel_pair_require_image(sa_conn):
     assert len(allc) == 2  # length-matched pair from the full pool of 4
 
 
-def test_get_deck_duel_pair_length_matched(sa_conn):
-    """Similar-length cards pair together: a one-liner never duels a wall-of-text. With a
-    short-heavy pool + one long card, repeated draws never pair the long card with a short
-    one (its 0.5x–2x band has no short cards)."""
+def test_get_deck_duel_pair_length_matched(sa_conn, monkeypatch):
+    """Short-first draws match another short card; the lone long card falls back."""
     _seed(sa_conn, "lorg"); sa_conn.commit()
     short = '{"text":"gm $tig","lang":"en"}'                        # ~7 chars
     longtext = '{"text":"' + ("x" * 300) + '","lang":"en"}'         # 300 chars
@@ -796,22 +794,25 @@ def test_get_deck_duel_pair_length_matched(sa_conn):
         s_ids = {_mk(sa_conn, org="lorg", kind="community_tweet", payload=short) for _ in range(6)}
         long_id = _mk(sa_conn, org="lorg", kind="community_tweet", payload=longtext)
     sa_conn.commit()
-    # the lone long card can't find a same-length partner → it should never be served in a
-    # pair with a short one across many draws (its band is empty → closest = a short, BUT it
-    # only appears when picked FIRST; the invariant we assert is that a served PAIR is never
-    # long+short when a same-length partner exists for the short side).
-    long_short_pairs = 0
-    for _ in range(40):
+    # Force each first card by ID, independent of SQL's RANDOM() row order.
+    for first_id in [*sorted(s_ids), long_id]:
+        choices = []
+
+        def choose(cards):
+            choices.append({card["id"] for card in cards})
+            if len(choices) == 1:
+                return next(card for card in cards if card["id"] == first_id)
+            return min(cards, key=lambda card: card["id"])
+
+        monkeypatch.setattr(cd.random, "choice", choose)
         pair = cd.get_deck_duel_pair(sa_conn, "lorg")
         assert len(pair) == 2
-        lens = sorted(cd._text_len(p) for p in pair)
-        if lens[0] < 50 and lens[1] > 200:
-            long_short_pairs += 1
-    # a short-picked-first never grabs the long one (its band has 5 other shorts); only a
-    # long-picked-first (1/7 of draws) falls back to a short. So mismatches are rare, not the norm.
-    assert long_short_pairs <= 8   # ~1/7 * 40 ≈ 6; comfortably not the default behavior
-    # two shorts always pair cleanly
-    for _ in range(10):
-        pair = cd.get_deck_duel_pair(sa_conn, "lorg")
-        if all(cd._text_len(p) < 50 for p in pair):
-            assert {p["id"] for p in pair} <= s_ids
+        assert pair[0]["id"] == first_id
+        assert choices[0] == s_ids | {long_id}
+        if first_id in s_ids:
+            assert choices == [s_ids | {long_id}, s_ids - {first_id}]
+            assert pair[1]["id"] in s_ids - {first_id}
+        else:
+            # The empty length band uses the closest card without a second draw.
+            assert len(choices) == 1
+            assert pair[1]["id"] in s_ids

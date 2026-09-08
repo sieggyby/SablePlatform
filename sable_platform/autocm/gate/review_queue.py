@@ -95,6 +95,9 @@ CALLBACK_PREFIX = "autocm:review:"
 # is auto-expired — the bot posts NOTHING and a "missed window" note is recorded.
 STALE_AFTER_MINUTES = 15
 
+# HITL_UX §3 assigns the stale-review SLA to tier 2 only.
+STALE_TIER = 2
+
 # log_audit verbs (audit-everything; source="sable-autocm").
 AUDIT_SOURCE = "sable-autocm"
 ACTION_REVIEW_DECISION = "hitl_review_decision"
@@ -681,7 +684,7 @@ class ReviewQueueController:
       * **[Approve]** — record ``approve`` (clean) into ``autocm_reviews``, mark the
         draft ``approved`` (the C3.6 publisher reads approved drafts and enqueues —
         this controller never enqueues), update the queue message to
-        "✅ APPROVED & POSTED".
+        "✅ APPROVED · queued for publish".
       * **[Edit]** — start a stateful edit: prompt the operator to reply with the
         edited text. When the edited text arrives (``submit_edit``), record ``edit``
         with ``edit_diff_ratio``; a heavy edit (> 0.30) is flagged; mark the draft
@@ -760,6 +763,10 @@ class ReviewQueueController:
         if already_reviewed(self._conn, draft_id):
             return
 
+        draft = _load_draft(self._conn, draft_id)
+        if draft is not None and draft.get("status") == STATUS_SUPPRESSED:
+            return
+
         if action == "edit":
             self._begin_edit(draft_id, event)
             return
@@ -772,6 +779,9 @@ class ReviewQueueController:
     ) -> None:
         draft = _load_draft(self._conn, draft_id)
         if draft is None:
+            return
+        # A suppressed draft's review window is closed, including for late clicks.
+        if draft.get("status") == STATUS_SUPPRESSED:
             return
         client_id = int(draft["client_id"])
         org_id = event.org_id or self._org_id_for_client(client_id)
@@ -797,7 +807,7 @@ class ReviewQueueController:
             # Mark approved — the C3.6 publisher reads approved drafts and enqueues.
             # This controller NEVER touches the relay outbox (C3.5b/C3.6 boundary).
             _set_draft_status(self._conn, draft_id, STATUS_APPROVED)
-            self._update_queue(draft_id, reviewer, "✅ APPROVED & POSTED")
+            self._update_queue(draft_id, reviewer, "✅ APPROVED · queued for publish")
         elif action == "reject":
             # Bot posts NOTHING; the draft is dropped.
             _set_draft_status(self._conn, draft_id, STATUS_REJECTED)
@@ -863,6 +873,9 @@ class ReviewQueueController:
         if draft is None:
             self._pending_edits.pop(draft_id, None)
             return None
+        if draft.get("status") == STATUS_SUPPRESSED:
+            self._pending_edits.pop(draft_id, None)
+            return None
         client_id = int(draft["client_id"])
         org_id = self._pending_edits[draft_id].org_id or self._org_id_for_client(client_id)
         cited = self._parse_cited(draft.get("cited_chunk_ids"))
@@ -888,7 +901,7 @@ class ReviewQueueController:
         _set_draft_status(self._conn, draft_id, STATUS_APPROVED)
         ratio = edit_diff_ratio(draft.get("draft_text"), edited_text)
         flag = " (heavy edit ⚠️)" if is_heavy_edit(ratio) else ""
-        self._update_queue(draft_id, rev, f"✅ EDITED & POSTED{flag}")
+        self._update_queue(draft_id, rev, f"✏️ EDITED · queued for publish{flag}")
         self._pending_edits.pop(draft_id, None)
         self._conn.commit()
         return review_id
@@ -937,7 +950,7 @@ class ReviewQueueController:
     ) -> List[int]:
         """Auto-expire tier-2 drafts untouched for ``stale_after_minutes`` (HITL_UX §3).
 
-        For every ``hitl_pending`` draft of the client older than the SLA with NO
+        For every tier-2 ``hitl_pending`` draft older than the SLA with NO
         decision row, mark it ``suppressed`` (the bot posts NOTHING) and write a
         "missed window" audit note (``ACTION_REVIEW_EXPIRED``) — better to silently
         miss than to post stale. NO ``final_text`` is recorded (nothing was posted).
@@ -956,12 +969,18 @@ class ReviewQueueController:
                 "SELECT d.id, d.category, d.tier, d.source_message_id "
                 "FROM autocm_drafts d "
                 "WHERE d.client_id = :c AND d.status = :pending "
+                "  AND d.tier = :sla_tier "
                 f"  AND {ts_compare('d.created_at', '<=', 'cutoff', get_dialect(self._conn))} "
                 "  AND NOT EXISTS ("
                 "    SELECT 1 FROM autocm_reviews r WHERE r.draft_id = d.id) "
                 "ORDER BY d.id"
             ),
-            {"c": client_id, "pending": STATUS_HITL_PENDING, "cutoff": cutoff},
+            {
+                "c": client_id,
+                "pending": STATUS_HITL_PENDING,
+                "cutoff": cutoff,
+                "sla_tier": STALE_TIER,
+            },
         ).fetchall()
 
         expired: List[int] = []

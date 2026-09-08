@@ -271,7 +271,7 @@ def test_approve_records_clean_decision_and_marks_approved(sa_conn):
         text("SELECT status FROM autocm_drafts WHERE id = :d"), {"d": draft_id}
     ).fetchone()[0]
     assert status == "approved"
-    # the queue message was updated in place (HITL_UX §2 "✅ APPROVED & POSTED").
+    # The queue message reports approval while publication remains pending.
     assert any("APPROVED" in e["body"] for e in bot.edits)
 
 
@@ -735,3 +735,115 @@ def test_post_raises_when_no_bot_sender_wired(sa_conn):
     )
     with pytest.raises(RuntimeError):
         surface.post_review(item)
+
+
+@pytest.mark.parametrize("action", ["approve", "edit"])
+def test_decision_status_line_never_claims_posted(sa_conn, action):
+    """Approval records a decision; the publisher has not sent the reply."""
+    org_id, client_id = _seed(sa_conn)
+    draft_id = _seed_draft(sa_conn, client_id)
+    registry, bot, _surface, controller = _make_controller(sa_conn, org_id)
+    controller.post(ReviewItem(
+        draft_id=draft_id, org_id=org_id, source_message_row_id=1,
+        draft_text="hi", category="mechanics", tier=2, confidence=0.72,
+    ))
+    registry.dispatch_callback(**_cb(org_id, action, draft_id, update_id=13001))
+    if action == "edit":
+        assert controller.submit_edit(draft_id, "The vault uses vetted strategies.") is not None
+
+    assert len(bot.edits) == 1
+    body = bot.edits[0]["body"]
+    assert "POSTED" not in body.upper()
+    assert "queued for publish" in body
+    assert len(bot.sent) == 1  # Only the initial queue message.
+    assert all(call["chat_id"] == OPERATOR_CHAT for call in bot.sent + bot.replies + bot.edits)
+    assert sa_conn.execute(text("SELECT COUNT(*) FROM relay_publication_jobs")).scalar_one() == 0
+    assert sa_conn.execute(
+        text("SELECT status FROM autocm_drafts WHERE id = :d"), {"d": draft_id}
+    ).scalar_one() == "approved"
+
+
+@pytest.mark.parametrize("action", ["approve", "reject", "punt", "edit"])
+def test_late_callback_after_expiration_does_not_resurrect(sa_conn, action):
+    """An expired draft stays suppressed and produces no review or transport calls."""
+    org_id, client_id = _seed(sa_conn)
+    now = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
+    draft_id = _seed_draft(
+        sa_conn, client_id, tier=2, created_at=_iso(now - timedelta(minutes=16)),
+    )
+    registry, bot, _surface, controller = _make_controller(sa_conn, org_id)
+    controller.post(ReviewItem(
+        draft_id=draft_id, org_id=org_id, source_message_row_id=1,
+        draft_text="hi", category="mechanics", tier=2, confidence=0.72,
+    ))
+    assert controller.expire_stale_reviews(client_id, now=now) == [draft_id]
+    before = sa_conn.execute(
+        text("SELECT status, resolved_at FROM autocm_drafts WHERE id = :d"), {"d": draft_id}
+    ).one()
+
+    registry.dispatch_callback(**_cb(org_id, action, draft_id, update_id=14001))
+
+    assert controller.has_pending_edit(draft_id) is False
+    assert sa_conn.execute(
+        text("SELECT status, resolved_at FROM autocm_drafts WHERE id = :d"), {"d": draft_id}
+    ).one() == before
+    assert before.status == "suppressed"
+    assert sa_conn.execute(text("SELECT COUNT(*) FROM autocm_reviews")).scalar_one() == 0
+    assert sa_conn.execute(text("SELECT COUNT(*) FROM autocm_escalations")).scalar_one() == 0
+    assert list_audit_log(sa_conn, action="hitl_review_decision") == []
+    assert len(bot.sent) == 1
+    assert bot.edits == []
+    assert bot.replies == []
+
+
+def test_submit_edit_after_external_suppression_does_not_resurrect(sa_conn):
+    """A pending edit must recheck persisted suppression before recording approval."""
+    org_id, client_id = _seed(sa_conn)
+    draft_id = _seed_draft(sa_conn, client_id)
+    registry, bot, _surface, controller = _make_controller(sa_conn, org_id)
+    registry.dispatch_callback(**_cb(org_id, "edit", draft_id, update_id=14002))
+    assert controller.has_pending_edit(draft_id)
+    # Another controller can suppress the draft while this edit session remains open.
+    sa_conn.execute(
+        text("UPDATE autocm_drafts SET status = 'suppressed' WHERE id = :d"), {"d": draft_id}
+    )
+    sa_conn.commit()
+    before_replies = list(bot.replies)
+
+    assert controller.submit_edit(draft_id, "a late replacement") is None
+
+    assert controller.has_pending_edit(draft_id) is False
+    assert sa_conn.execute(
+        text("SELECT status FROM autocm_drafts WHERE id = :d"), {"d": draft_id}
+    ).scalar_one() == "suppressed"
+    assert sa_conn.execute(text("SELECT COUNT(*) FROM autocm_reviews")).scalar_one() == 0
+    assert list_audit_log(sa_conn, action="hitl_review_decision") == []
+    assert bot.sent == []
+    assert bot.edits == []
+    assert bot.replies == before_replies
+
+
+def test_stale_expiration_spares_non_tier2(sa_conn):
+    """Only tier 2 has the fifteen-minute expiry policy."""
+    org_id, client_id = _seed(sa_conn)
+    now = datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc)
+    drafts = {
+        tier: _seed_draft(
+            sa_conn, client_id, tier=tier, created_at=_iso(now - timedelta(minutes=16)),
+        )
+        for tier in (1, 2, 3)
+    }
+    _registry, bot, _surface, controller = _make_controller(sa_conn, org_id)
+
+    assert controller.expire_stale_reviews(client_id, now=now) == [drafts[2]]
+
+    for tier, draft_id in drafts.items():
+        assert sa_conn.execute(
+            text("SELECT status FROM autocm_drafts WHERE id = :d"), {"d": draft_id}
+        ).scalar_one() == ("suppressed" if tier == 2 else "hitl_pending")
+    audit = list_audit_log(sa_conn, action=ACTION_REVIEW_EXPIRED)
+    assert len(audit) == 1
+    assert audit[0]._mapping["entity_id"] == str(drafts[2])
+    assert bot.sent == []
+    assert bot.edits == []
+    assert bot.replies == []
