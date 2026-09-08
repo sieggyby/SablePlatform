@@ -273,6 +273,29 @@ class TestMigrateRollbackOnError:
         assert _count_rows(target_engine, "orgs") == 0
 
 
+class TestValidationInsideTransaction:
+    def test_count_mismatch_rolls_back_copied_rows(self, source_engine, target_engine):
+        org_id = _insert_org(source_engine, org_id="source_org")
+        _insert_entity(source_engine, org_id, entity_id="source_entity")
+        with target_engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TRIGGER inject_extra_org AFTER INSERT ON orgs
+                WHEN NEW.org_id = 'source_org'
+                BEGIN
+                    INSERT INTO orgs (org_id, display_name)
+                    VALUES ('extra_org', 'Injected Org');
+                END
+            """))
+
+        with pytest.raises(MigrationError, match=r"Row count mismatch: orgs \(src=1, tgt=2\)"):
+            run_migration(source_engine, target_engine)
+
+        assert _count_rows(target_engine, "orgs") == 0
+        assert _count_rows(target_engine, "entities") == 0
+        assert _count_rows(source_engine, "orgs") == 1
+        assert _count_rows(source_engine, "entities") == 1
+
+
 class TestValidateCountsMismatch:
     def test_detects_mismatch(self, source_engine, target_engine):
         _insert_org(source_engine, org_id="org_a")
@@ -280,7 +303,8 @@ class TestValidateCountsMismatch:
         # Target has only one org (simulating a partial copy)
         _insert_org(target_engine, org_id="org_a")
 
-        results = _validate_counts(source_engine, target_engine, ["orgs"])
+        with source_engine.connect() as src_conn, target_engine.connect() as tgt_conn:
+            results = _validate_counts(src_conn, tgt_conn, ["orgs"])
         assert len(results) == 1
         assert results[0].status == "error"
         assert results[0].source_rows == 2

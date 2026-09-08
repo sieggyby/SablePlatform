@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 
 log = logging.getLogger(__name__)
 
@@ -541,17 +541,18 @@ def run_migration(
             report.error = str(exc)
             raise MigrationError(f"Migration failed during copy: {exc}") from exc
 
-    # 6. Validate counts
-    validation = _validate_counts(source_engine, target_engine, TABLE_LOAD_ORDER)
-    mismatches = [r for r in validation if r.source_rows != r.target_rows]
-    if mismatches:
-        details = ", ".join(
-            f"{r.table_name} (src={r.source_rows}, tgt={r.target_rows})"
-            for r in mismatches
-        )
-        report.status = "failed"
-        report.error = f"Row count mismatch: {details}"
-        raise MigrationError(report.error)
+        # 6. Validate before commit so a mismatch rolls back copied rows.
+        with source_engine.connect() as source_conn:
+            validation = _validate_counts(source_conn, conn, TABLE_LOAD_ORDER)
+        mismatches = [r for r in validation if r.source_rows != r.target_rows]
+        if mismatches:
+            details = ", ".join(
+                f"{r.table_name} (src={r.source_rows}, tgt={r.target_rows})"
+                for r in mismatches
+            )
+            report.status = "failed"
+            report.error = f"Row count mismatch: {details}"
+            raise MigrationError(report.error)
 
     report.total_source_rows = sum(r.source_rows for r in report.tables)
     report.total_target_rows = sum(r.target_rows for r in report.tables)
@@ -630,21 +631,19 @@ def _reset_sequences(conn: Any, tables: dict[str, str]) -> None:
 
 
 def _validate_counts(
-    source_engine: Engine,
-    target_engine: Engine,
+    src_conn: Connection,
+    tgt_conn: Connection,
     tables: list[str],
 ) -> list[TableResult]:
-    """Compare row counts per table between source and target."""
+    """Compare row counts using the caller's open connections."""
     results: list[TableResult] = []
     for table_name in tables:
-        with source_engine.connect() as src_conn:
-            src_count = src_conn.execute(
-                text(f'SELECT COUNT(*) FROM "{table_name}"')
-            ).scalar() or 0
-        with target_engine.connect() as tgt_conn:
-            tgt_count = tgt_conn.execute(
-                text(f'SELECT COUNT(*) FROM "{table_name}"')
-            ).scalar() or 0
+        src_count = src_conn.execute(
+            text(f'SELECT COUNT(*) FROM "{table_name}"')
+        ).scalar() or 0
+        tgt_count = tgt_conn.execute(
+            text(f'SELECT COUNT(*) FROM "{table_name}"')
+        ).scalar() or 0
         status = "ok" if src_count == tgt_count else "error"
         results.append(TableResult(
             table_name=table_name,
