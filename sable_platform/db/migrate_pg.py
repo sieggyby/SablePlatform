@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -447,9 +449,12 @@ def run_migration(
       1. Validate engines (source=SQLite, target=Postgres or SQLite for tests)
       2. Run Alembic upgrade head on target (Postgres only)
       3. Check target is empty (or ``--force`` to truncate)
-      4. Copy all tables in FK-safe order
+      4. Pin a source read transaction, then copy tables in FK-safe order
       5. Reset Postgres sequences for autoincrement tables
-      6. Validate row counts match and probe for orphan FK references
+      6. Validate counts against the same snapshot and probe for orphan references
+
+    The snapshot reflects the first source read. Operators must quiesce
+    source writers if that snapshot must match cutover time.
 
     Returns a :class:`MigrationReport`.  Raises :class:`MigrationError` on
     failure (transaction is rolled back, target is unchanged).
@@ -480,88 +485,88 @@ def run_migration(
             )
         needs_truncate = True
 
-    # 4. Copy all tables (single transaction — truncate + copy are atomic)
+    # 4. Truncate and copy atomically while holding one source snapshot.
     report = MigrationReport(status="success")
-    with target_engine.begin() as conn:
-        try:
-            if needs_truncate:
-                log.warning("--force: truncating target tables...")
-                _truncate_target(conn, TABLE_LOAD_ORDER, is_pg=is_pg)
-            # Disable FK triggers for the duration of the copy (Postgres only)
-            if is_pg:
-                for tbl in TABLE_LOAD_ORDER:
-                    conn.execute(text(f'ALTER TABLE "{tbl}" DISABLE TRIGGER ALL'))
+    with _source_snapshot(source_engine) as src_conn:
+        with target_engine.begin() as conn:
+            try:
+                if needs_truncate:
+                    log.warning("--force: truncating target tables...")
+                    _truncate_target(conn, TABLE_LOAD_ORDER, is_pg=is_pg)
+                # Disable FK triggers for the duration of the copy (Postgres only)
+                if is_pg:
+                    for tbl in TABLE_LOAD_ORDER:
+                        conn.execute(text(f'ALTER TABLE "{tbl}" DISABLE TRIGGER ALL'))
 
-            for table_name in TABLE_LOAD_ORDER:
-                rows = _read_all_rows(source_engine, table_name)
-                if not rows:
+                for table_name in TABLE_LOAD_ORDER:
+                    rows = _read_all_rows(src_conn, table_name)
+                    if not rows:
+                        report.tables.append(TableResult(
+                            table_name=table_name, source_rows=0,
+                            target_rows=0, status="skipped",
+                        ))
+                        continue
+
+                    # Fix NULL Text PKs — SQLite allows them, Postgres doesn't.
+                    pk_col = _TEXT_PK_COLUMNS.get(table_name)
+                    if pk_col:
+                        fixed = 0
+                        for row in rows:
+                            if row.get(pk_col) is None:
+                                row[pk_col] = uuid.uuid4().hex
+                                fixed += 1
+                        if fixed:
+                            log.warning(
+                                "Fixed %d NULL %s values in %s",
+                                fixed, pk_col, table_name,
+                            )
+
+                    columns = list(rows[0].keys())
+                    inserted = 0
+                    for i in range(0, len(rows), BATCH_SIZE):
+                        batch = rows[i : i + BATCH_SIZE]
+                        inserted += _insert_batch(conn, table_name, columns, batch)
+
                     report.tables.append(TableResult(
-                        table_name=table_name, source_rows=0,
-                        target_rows=0, status="skipped",
+                        table_name=table_name, source_rows=len(rows),
+                        target_rows=inserted, status="ok",
                     ))
-                    continue
+                    log.info("Copied %s: %d rows", table_name, inserted)
 
-                # Fix NULL Text PKs — SQLite allows them, Postgres doesn't.
-                pk_col = _TEXT_PK_COLUMNS.get(table_name)
-                if pk_col:
-                    fixed = 0
-                    for row in rows:
-                        if row.get(pk_col) is None:
-                            row[pk_col] = uuid.uuid4().hex
-                            fixed += 1
-                    if fixed:
-                        log.warning(
-                            "Fixed %d NULL %s values in %s",
-                            fixed, pk_col, table_name,
-                        )
+                # 5. Reset sequences (Postgres only)
+                if is_pg:
+                    _reset_sequences(conn, SEQUENCE_TABLES)
 
-                columns = list(rows[0].keys())
-                inserted = 0
-                for i in range(0, len(rows), BATCH_SIZE):
-                    batch = rows[i : i + BATCH_SIZE]
-                    inserted += _insert_batch(conn, table_name, columns, batch)
+                # Re-enable FK triggers (Postgres only)
+                if is_pg:
+                    for tbl in TABLE_LOAD_ORDER:
+                        conn.execute(text(f'ALTER TABLE "{tbl}" ENABLE TRIGGER ALL'))
 
-                report.tables.append(TableResult(
-                    table_name=table_name, source_rows=len(rows),
-                    target_rows=inserted, status="ok",
-                ))
-                log.info("Copied %s: %d rows", table_name, inserted)
+            except Exception as exc:
+                report.status = "failed"
+                report.error = str(exc)
+                raise MigrationError(f"Migration failed during copy: {exc}") from exc
 
-            # 5. Reset sequences (Postgres only)
-            if is_pg:
-                _reset_sequences(conn, SEQUENCE_TABLES)
+            # 6. Validate before commit so a mismatch rolls back copied rows.
+            validation = _validate_counts(src_conn, conn, TABLE_LOAD_ORDER)
+            mismatches = [r for r in validation if r.source_rows != r.target_rows]
+            if mismatches:
+                details = ", ".join(
+                    f"{r.table_name} (src={r.source_rows}, tgt={r.target_rows})"
+                    for r in mismatches
+                )
+                report.status = "failed"
+                report.error = f"Row count mismatch: {details}"
+                raise MigrationError(report.error)
 
-            # Re-enable FK triggers (Postgres only)
-            if is_pg:
-                for tbl in TABLE_LOAD_ORDER:
-                    conn.execute(text(f'ALTER TABLE "{tbl}" ENABLE TRIGGER ALL'))
-
-        except Exception as exc:
-            report.status = "failed"
-            report.error = str(exc)
-            raise MigrationError(f"Migration failed during copy: {exc}") from exc
-
-        # 6. Validate before commit so a mismatch rolls back copied rows.
-        with source_engine.connect() as source_conn:
-            validation = _validate_counts(source_conn, conn, TABLE_LOAD_ORDER)
-        mismatches = [r for r in validation if r.source_rows != r.target_rows]
-        if mismatches:
-            details = ", ".join(
-                f"{r.table_name} (src={r.source_rows}, tgt={r.target_rows})"
-                for r in mismatches
-            )
-            report.status = "failed"
-            report.error = f"Row count mismatch: {details}"
-            raise MigrationError(report.error)
-
-        # Copying with FK triggers suspended can admit orphan child rows.
-        # Check before commit so rejection rolls back the copied rows.
-        orphans = _find_orphan_references(conn, TABLE_LOAD_ORDER)
-        if orphans:
-            details = "; ".join(orphans)
-            report.status = "failed"
-            report.error = f"Referential integrity violations: {details}"
-            raise MigrationError(report.error)
+            # Copying with FK triggers suspended can admit orphan child rows.
+            # Check before commit so rejection rolls back the copied rows.
+            orphans = _find_orphan_references(conn, TABLE_LOAD_ORDER)
+            if orphans:
+                details = "; ".join(orphans)
+                report.status = "failed"
+                report.error = f"Referential integrity violations: {details}"
+                raise MigrationError(report.error)
 
     report.total_source_rows = sum(r.source_rows for r in report.tables)
     report.total_target_rows = sum(r.target_rows for r in report.tables)
@@ -573,11 +578,33 @@ def run_migration(
 # ---------------------------------------------------------------------------
 
 
-def _read_all_rows(engine: Engine, table_name: str) -> list[dict[str, Any]]:
-    """Read all rows from a table as a list of dicts."""
-    with engine.connect() as conn:
-        result = conn.execute(text(f'SELECT * FROM "{table_name}"'))
-        return [dict(row._mapping) for row in result]
+@contextmanager
+def _source_snapshot(engine: Engine) -> Iterator[Connection]:
+    """Pin one source transaction and close any explicit transaction we start."""
+    with engine.connect() as conn, conn.begin():
+        # Legacy SQLite transaction mode does not begin a transaction for SELECT.
+        # Keep the caller's engine listeners and transaction settings unchanged.
+        raw = conn.connection.dbapi_connection
+        explicit_begin = not raw.in_transaction
+        if explicit_begin:
+            conn.exec_driver_sql("BEGIN")
+        try:
+            if not raw.in_transaction:
+                raise MigrationError(
+                    "Failed to pin a snapshot read transaction on the SQLite source"
+                )
+            yield conn
+        finally:
+            if explicit_begin and raw.in_transaction:
+                # With sqlite3 autocommit=True, DBAPI commit/rollback are no-ops.
+                # SQL ROLLBACK releases our read transaction before pool return.
+                conn.exec_driver_sql("ROLLBACK")
+
+
+def _read_all_rows(conn: Connection, table_name: str) -> list[dict[str, Any]]:
+    """Read table rows using the caller's open transaction."""
+    result = conn.execute(text(f'SELECT * FROM "{table_name}"'))
+    return [dict(row._mapping) for row in result]
 
 
 def _insert_batch(

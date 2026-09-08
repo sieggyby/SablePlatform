@@ -1,6 +1,6 @@
 """Tests for SQLite -> Postgres data migration (sable_platform.db.migrate_pg).
 
-All tests use two in-memory SQLite engines to exercise the core migration
+Tests use in-memory engines and temporary SQLite files to exercise migration
 logic.  Postgres-specific codepaths (DISABLE TRIGGER ALL, setval) are
 skipped when the target is SQLite — those require manual integration testing
 against a real Postgres instance.
@@ -8,6 +8,7 @@ against a real Postgres instance.
 from __future__ import annotations
 
 import importlib.resources
+import sys
 import uuid
 from unittest.mock import patch
 
@@ -290,6 +291,209 @@ class TestMigrateRollbackOnError:
         assert _count_rows(target_engine, "orgs") == 0
 
 
+class TestSourceSnapshotPinning:
+    """F4: copy and validation must read one pinned source snapshot."""
+
+    def _make_wal_source(self, tmp_path):
+        """File-backed source engine: in-memory SQLite ignores WAL."""
+        engine = create_engine(f"sqlite:///{tmp_path / 'wal_source.db'}")
+
+        @event.listens_for(engine, "connect")
+        def _set_pragmas(dbapi_conn, connection_record):  # noqa: ARG001
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        metadata.create_all(engine)
+        return engine
+
+    def test_single_source_checkout_during_copy_and_validation(
+        self, tmp_path, target_engine
+    ):
+        source = self._make_wal_source(tmp_path)
+        _insert_org(source)
+
+        checkouts: list[int] = []
+
+        @event.listens_for(source, "checkout")
+        def _count_checkouts(dbapi_conn, record, proxy):  # noqa: ARG001
+            checkouts.append(1)
+
+        try:
+            report = run_migration(source, target_engine)
+            assert report.status == "success"
+        finally:
+            source.dispose()
+
+        assert len(checkouts) == 1
+
+    def test_reads_see_one_snapshot_instant(self, tmp_path, target_engine, monkeypatch):
+        import sable_platform.db.migrate_pg as migrate_pg_mod
+
+        source = self._make_wal_source(tmp_path)
+        org_id = _insert_org(source, org_id="snap_org")
+        _insert_entity(source, org_id, entity_id="ent_e1")
+
+        real_read_all_rows = migrate_pg_mod._read_all_rows
+        mutated = {"done": False}
+
+        def read_then_mutate_live_source(conn, table_name):
+            rows = real_read_all_rows(conn, table_name)
+            if table_name == "orgs" and not mutated["done"]:
+                mutated["done"] = True
+                # Concurrent writer on a second connection: retires the org
+                # and adds entity E2 after the org table has been read.
+                writer = create_engine(f"sqlite:///{tmp_path / 'wal_source.db'}")
+                try:
+                    with writer.begin() as wconn:
+                        wconn.execute(text("UPDATE orgs SET status='retired'"))
+                        wconn.execute(text(
+                            'INSERT INTO entities (entity_id, org_id, display_name) '
+                            "VALUES ('ent_e2', 'snap_org', 'Late Entity')"
+                        ))
+                finally:
+                    writer.dispose()
+            return rows
+
+        monkeypatch.setattr(migrate_pg_mod, "_read_all_rows", read_then_mutate_live_source)
+
+        try:
+            report = run_migration(source, target_engine)
+            assert report.status == "success"
+            assert mutated["done"]
+            assert _count_rows(source, "entities") == 2
+            with source.connect() as conn:
+                assert conn.execute(text(
+                    "SELECT status FROM orgs WHERE org_id='snap_org'"
+                )).scalar_one() == "retired"
+        finally:
+            source.dispose()
+
+        # The pair must come from one instant: pre-mutation status AND no E2.
+        with target_engine.connect() as conn:
+            status = conn.execute(
+                text("SELECT status FROM orgs WHERE org_id='snap_org'")
+            ).scalar_one()
+            entities_count = conn.execute(
+                text("SELECT COUNT(*) FROM entities")
+            ).scalar_one()
+        assert status == "active"
+        assert entities_count == 1
+
+
+class TestSourceSnapshotCleanup:
+    @pytest.mark.skipif(sys.version_info < (3, 12), reason="sqlite3 autocommit requires Python 3.12")
+    @pytest.mark.parametrize("failure", [None, "copy", "validation"])
+    def test_autocommit_snapshot_releases_transaction(
+        self, tmp_path, target_engine, monkeypatch, failure
+    ):
+        import sable_platform.db.migrate_pg as migrate_pg_mod
+
+        source = create_engine(
+            f"sqlite:///{tmp_path / 'autocommit_source.db'}",
+            connect_args={"autocommit": True},
+        )
+        metadata.create_all(source)
+        _insert_org(source)
+        _insert_entity(source, "test_org")
+        checkouts = []
+
+        @event.listens_for(source, "checkout")
+        def count_checkouts(dbapi_conn, record, proxy):
+            checkouts.append(dbapi_conn)
+
+        connect_listeners = tuple(source.pool.dispatch.connect)
+        begin_listeners = tuple(source.dispatch.begin)
+
+        insert_batch = migrate_pg_mod._insert_batch
+
+        def fail(*args):
+            if failure == "copy" and args[1] != "entities":
+                return insert_batch(*args)
+            raise RuntimeError("injected failure")
+
+        if failure:
+            helper = "_insert_batch" if failure == "copy" else "_validate_counts"
+            monkeypatch.setattr(migrate_pg_mod, helper, fail)
+        try:
+            if failure:
+                error = MigrationError if failure == "copy" else RuntimeError
+                with pytest.raises(error, match="injected failure"):
+                    run_migration(source, target_engine)
+            else:
+                assert run_migration(source, target_engine).status == "success"
+
+            migration_checkouts = len(checkouts)
+            assert tuple(source.pool.dispatch.connect) == connect_listeners
+            assert tuple(source.dispatch.begin) == begin_listeners
+            with source.begin() as conn:
+                raw = conn.connection.dbapi_connection
+                transaction_open = raw.in_transaction
+                assert raw.autocommit is True
+                conn.execute(text("UPDATE orgs SET display_name='Later'"))
+            source.dispose()
+            with source.connect() as conn:
+                committed_name = conn.execute(text(
+                    "SELECT display_name FROM orgs"
+                )).scalar_one()
+            assert (migration_checkouts, transaction_open, committed_name) == (1, False, "Later")
+        finally:
+            source.dispose()
+
+    @pytest.mark.parametrize("failure", [None, "copy", "validation"])
+    @pytest.mark.parametrize("fresh_connection", [False, True])
+    def test_source_listeners_and_transaction_restored(
+        self, tmp_path, target_engine, monkeypatch, failure, fresh_connection
+    ):
+        import sable_platform.db.migrate_pg as migrate_pg_mod
+
+        source = create_engine(f"sqlite:///{tmp_path / 'source.db'}")
+        metadata.create_all(source)
+        _insert_org(source)
+        begins = []
+
+        @event.listens_for(source, "begin")
+        def caller_begin(conn):
+            begins.append(conn)
+
+        with source.connect() as conn:
+            isolation_level = conn.connection.dbapi_connection.isolation_level
+        if fresh_connection:
+            source.dispose()
+        connect_listeners = tuple(source.pool.dispatch.connect)
+        begin_listeners = tuple(source.dispatch.begin)
+
+        def fail(*args):
+            raise RuntimeError("injected failure")
+
+        if failure:
+            helper = "_insert_batch" if failure == "copy" else "_validate_counts"
+            monkeypatch.setattr(migrate_pg_mod, helper, fail)
+        try:
+            if failure:
+                error = MigrationError if failure == "copy" else RuntimeError
+                with pytest.raises(error, match="injected failure"):
+                    run_migration(source, target_engine)
+            else:
+                assert run_migration(source, target_engine).status == "success"
+
+            assert len(begins) == 1
+            assert tuple(source.pool.dispatch.connect) == connect_listeners
+            assert tuple(source.dispatch.begin) == begin_listeners
+            with source.connect() as conn:
+                raw = conn.connection.dbapi_connection
+                assert not raw.in_transaction
+                assert raw.isolation_level == isolation_level
+                conn.execute(text("UPDATE orgs SET display_name='uncommitted'"))
+                conn.rollback()
+                assert conn.execute(text(
+                    "SELECT display_name FROM orgs"
+                )).scalar_one() == "Test Org"
+        finally:
+            source.dispose()
+
+
 class TestValidationInsideTransaction:
     def test_count_mismatch_rolls_back_copied_rows(self, source_engine, target_engine):
         org_id = _insert_org(source_engine, org_id="source_org")
@@ -372,7 +576,8 @@ class TestReadAllRows:
     def test_reads_all(self, source_engine):
         _insert_org(source_engine, org_id="a")
         _insert_org(source_engine, org_id="b")
-        rows = _read_all_rows(source_engine, "orgs")
+        with source_engine.connect() as conn:
+            rows = _read_all_rows(conn, "orgs")
         assert len(rows) == 2
         assert all(isinstance(r, dict) for r in rows)
         org_ids = {r["org_id"] for r in rows}
